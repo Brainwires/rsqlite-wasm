@@ -907,7 +907,312 @@ fn eval_expr(expr: &PlanExpr, row: &Row, columns: &[String]) -> Result<Value> {
                 })?;
             Ok(row.values.get(idx).cloned().unwrap_or(Value::Null))
         }
+        PlanExpr::Function { name, args } => {
+            let vals: Vec<Value> = args
+                .iter()
+                .map(|a| eval_expr(a, row, columns))
+                .collect::<Result<Vec<_>>>()?;
+            eval_scalar_function(name, &vals)
+        }
     }
+}
+
+fn eval_scalar_function(name: &str, args: &[Value]) -> Result<Value> {
+    match name {
+        "LENGTH" => {
+            if args.is_empty() {
+                return Err(Error::Other("LENGTH requires 1 argument".into()));
+            }
+            match &args[0] {
+                Value::Null => Ok(Value::Null),
+                Value::Text(s) => Ok(Value::Integer(s.chars().count() as i64)),
+                Value::Blob(b) => Ok(Value::Integer(b.len() as i64)),
+                Value::Integer(_) | Value::Real(_) => {
+                    let s = value_to_text(&args[0]);
+                    Ok(Value::Integer(s.len() as i64))
+                }
+            }
+        }
+        "UPPER" => {
+            if args.is_empty() {
+                return Err(Error::Other("UPPER requires 1 argument".into()));
+            }
+            match &args[0] {
+                Value::Null => Ok(Value::Null),
+                Value::Text(s) => Ok(Value::Text(s.to_uppercase())),
+                other => Ok(Value::Text(value_to_text(other).to_uppercase())),
+            }
+        }
+        "LOWER" => {
+            if args.is_empty() {
+                return Err(Error::Other("LOWER requires 1 argument".into()));
+            }
+            match &args[0] {
+                Value::Null => Ok(Value::Null),
+                Value::Text(s) => Ok(Value::Text(s.to_lowercase())),
+                other => Ok(Value::Text(value_to_text(other).to_lowercase())),
+            }
+        }
+        "ABS" => {
+            if args.is_empty() {
+                return Err(Error::Other("ABS requires 1 argument".into()));
+            }
+            match &args[0] {
+                Value::Null => Ok(Value::Null),
+                Value::Integer(n) => Ok(Value::Integer(n.abs())),
+                Value::Real(f) => Ok(Value::Real(f.abs())),
+                _ => Ok(Value::Integer(0)),
+            }
+        }
+        "TYPEOF" => {
+            if args.is_empty() {
+                return Err(Error::Other("TYPEOF requires 1 argument".into()));
+            }
+            let t = match &args[0] {
+                Value::Null => "null",
+                Value::Integer(_) => "integer",
+                Value::Real(_) => "real",
+                Value::Text(_) => "text",
+                Value::Blob(_) => "blob",
+            };
+            Ok(Value::Text(t.to_string()))
+        }
+        "COALESCE" => {
+            for v in args {
+                if !matches!(v, Value::Null) {
+                    return Ok(v.clone());
+                }
+            }
+            Ok(Value::Null)
+        }
+        "IFNULL" => {
+            if args.len() < 2 {
+                return Err(Error::Other("IFNULL requires 2 arguments".into()));
+            }
+            if matches!(args[0], Value::Null) {
+                Ok(args[1].clone())
+            } else {
+                Ok(args[0].clone())
+            }
+        }
+        "NULLIF" => {
+            if args.len() < 2 {
+                return Err(Error::Other("NULLIF requires 2 arguments".into()));
+            }
+            if compare(&args[0], &args[1]) == 0 {
+                Ok(Value::Null)
+            } else {
+                Ok(args[0].clone())
+            }
+        }
+        "SUBSTR" | "SUBSTRING" => {
+            if args.len() < 2 {
+                return Err(Error::Other("SUBSTR requires 2-3 arguments".into()));
+            }
+            if matches!(args[0], Value::Null) {
+                return Ok(Value::Null);
+            }
+            let s = value_to_text(&args[0]);
+            let chars: Vec<char> = s.chars().collect();
+            let start = match &args[1] {
+                Value::Integer(n) => *n,
+                _ => 1,
+            };
+            // SQLite SUBSTR is 1-indexed; negative means from end
+            let (start_idx, take_len) = if start > 0 {
+                let idx = (start - 1) as usize;
+                let len = if args.len() > 2 {
+                    match &args[2] {
+                        Value::Integer(n) => *n as usize,
+                        _ => chars.len(),
+                    }
+                } else {
+                    chars.len()
+                };
+                (idx, len)
+            } else if start == 0 {
+                let len = if args.len() > 2 {
+                    match &args[2] {
+                        Value::Integer(n) => (*n as usize).saturating_sub(1),
+                        _ => chars.len(),
+                    }
+                } else {
+                    chars.len()
+                };
+                (0, len)
+            } else {
+                let from_end = (-start) as usize;
+                let idx = chars.len().saturating_sub(from_end);
+                let len = if args.len() > 2 {
+                    match &args[2] {
+                        Value::Integer(n) => *n as usize,
+                        _ => chars.len(),
+                    }
+                } else {
+                    chars.len()
+                };
+                (idx, len)
+            };
+            let result: String = chars
+                .iter()
+                .skip(start_idx)
+                .take(take_len)
+                .collect();
+            Ok(Value::Text(result))
+        }
+        "REPLACE" => {
+            if args.len() < 3 {
+                return Err(Error::Other("REPLACE requires 3 arguments".into()));
+            }
+            if matches!(args[0], Value::Null) {
+                return Ok(Value::Null);
+            }
+            let s = value_to_text(&args[0]);
+            let from = value_to_text(&args[1]);
+            let to = value_to_text(&args[2]);
+            Ok(Value::Text(s.replace(&from, &to)))
+        }
+        "INSTR" => {
+            if args.len() < 2 {
+                return Err(Error::Other("INSTR requires 2 arguments".into()));
+            }
+            if matches!(args[0], Value::Null) || matches!(args[1], Value::Null) {
+                return Ok(Value::Null);
+            }
+            let haystack = value_to_text(&args[0]);
+            let needle = value_to_text(&args[1]);
+            match haystack.find(&needle) {
+                Some(pos) => {
+                    let char_pos = haystack[..pos].chars().count() + 1;
+                    Ok(Value::Integer(char_pos as i64))
+                }
+                None => Ok(Value::Integer(0)),
+            }
+        }
+        "TRIM" => {
+            if args.is_empty() {
+                return Err(Error::Other("TRIM requires 1 argument".into()));
+            }
+            match &args[0] {
+                Value::Null => Ok(Value::Null),
+                other => Ok(Value::Text(value_to_text(other).trim().to_string())),
+            }
+        }
+        "LTRIM" => {
+            if args.is_empty() {
+                return Err(Error::Other("LTRIM requires 1 argument".into()));
+            }
+            match &args[0] {
+                Value::Null => Ok(Value::Null),
+                other => Ok(Value::Text(value_to_text(other).trim_start().to_string())),
+            }
+        }
+        "RTRIM" => {
+            if args.is_empty() {
+                return Err(Error::Other("RTRIM requires 1 argument".into()));
+            }
+            match &args[0] {
+                Value::Null => Ok(Value::Null),
+                other => Ok(Value::Text(value_to_text(other).trim_end().to_string())),
+            }
+        }
+        "HEX" => {
+            if args.is_empty() {
+                return Err(Error::Other("HEX requires 1 argument".into()));
+            }
+            match &args[0] {
+                Value::Null => Ok(Value::Null),
+                Value::Blob(b) => {
+                    let hex: String = b.iter().map(|byte| format!("{:02X}", byte)).collect();
+                    Ok(Value::Text(hex))
+                }
+                other => {
+                    let s = value_to_text(other);
+                    let hex: String = s.bytes().map(|b| format!("{:02X}", b)).collect();
+                    Ok(Value::Text(hex))
+                }
+            }
+        }
+        "QUOTE" => {
+            if args.is_empty() {
+                return Err(Error::Other("QUOTE requires 1 argument".into()));
+            }
+            match &args[0] {
+                Value::Null => Ok(Value::Text("NULL".to_string())),
+                Value::Integer(n) => Ok(Value::Text(n.to_string())),
+                Value::Real(f) => Ok(Value::Text(f.to_string())),
+                Value::Text(s) => {
+                    let escaped = s.replace('\'', "''");
+                    Ok(Value::Text(format!("'{escaped}'")))
+                }
+                Value::Blob(b) => {
+                    let hex: String = b.iter().map(|byte| format!("{:02X}", byte)).collect();
+                    Ok(Value::Text(format!("X'{hex}'")))
+                }
+            }
+        }
+        "UNICODE" => {
+            if args.is_empty() {
+                return Err(Error::Other("UNICODE requires 1 argument".into()));
+            }
+            match &args[0] {
+                Value::Null => Ok(Value::Null),
+                Value::Text(s) => match s.chars().next() {
+                    Some(c) => Ok(Value::Integer(c as i64)),
+                    None => Ok(Value::Null),
+                },
+                other => {
+                    let s = value_to_text(other);
+                    match s.chars().next() {
+                        Some(c) => Ok(Value::Integer(c as i64)),
+                        None => Ok(Value::Null),
+                    }
+                }
+            }
+        }
+        "CHAR" => {
+            let mut result = String::new();
+            for v in args {
+                if let Value::Integer(n) = v {
+                    if let Some(c) = char::from_u32(*n as u32) {
+                        result.push(c);
+                    }
+                }
+            }
+            Ok(Value::Text(result))
+        }
+        "ZEROBLOB" => {
+            if args.is_empty() {
+                return Err(Error::Other("ZEROBLOB requires 1 argument".into()));
+            }
+            match &args[0] {
+                Value::Integer(n) => Ok(Value::Blob(vec![0u8; *n as usize])),
+                _ => Ok(Value::Blob(vec![])),
+            }
+        }
+        "RANDOM" => Ok(Value::Integer(rand_i64())),
+        _ => Err(Error::Other(format!("unknown function: {name}"))),
+    }
+}
+
+fn value_to_text(val: &Value) -> String {
+    match val {
+        Value::Null => String::new(),
+        Value::Integer(n) => n.to_string(),
+        Value::Real(f) => f.to_string(),
+        Value::Text(s) => s.clone(),
+        Value::Blob(b) => String::from_utf8_lossy(b).into_owned(),
+    }
+}
+
+fn rand_i64() -> i64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use std::time::SystemTime;
+    let mut h = DefaultHasher::new();
+    SystemTime::now().hash(&mut h);
+    std::thread::current().id().hash(&mut h);
+    h.finish() as i64
 }
 
 fn literal_to_value(lit: &LiteralValue) -> Value {

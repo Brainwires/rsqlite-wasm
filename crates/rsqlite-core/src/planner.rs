@@ -152,6 +152,10 @@ pub enum PlanExpr {
         arg: Box<PlanExpr>,
         distinct: bool,
     },
+    Function {
+        name: String,
+        args: Vec<PlanExpr>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -570,6 +574,27 @@ fn plan_expr(expr: &Expr, columns: &[ColumnRef]) -> Result<PlanExpr> {
         }
         Expr::Nested(e) => plan_expr(e, columns),
         Expr::Function(func) => plan_function_expr(func, columns),
+        Expr::Trim {
+            expr,
+            trim_where,
+            trim_what,
+            ..
+        } => {
+            let inner = plan_expr(expr, columns)?;
+            let func_name = match trim_where {
+                Some(ast::TrimWhereField::Leading) => "LTRIM",
+                Some(ast::TrimWhereField::Trailing) => "RTRIM",
+                _ => "TRIM",
+            };
+            let mut args = vec![inner];
+            if let Some(what) = trim_what {
+                args.push(plan_expr(what, columns)?);
+            }
+            Ok(PlanExpr::Function {
+                name: func_name.to_string(),
+                args,
+            })
+        }
         _ => Err(Error::Other(format!(
             "unsupported expression: {expr}"
         ))),
@@ -625,6 +650,44 @@ fn plan_function_expr(func: &ast::Function, columns: &[ColumnRef]) -> Result<Pla
             func: func_type,
             arg: Box::new(arg),
             distinct,
+        });
+    }
+
+    let scalar_args = match &func.args {
+        ast::FunctionArguments::List(list) => {
+            let mut args = Vec::new();
+            for a in &list.args {
+                match a {
+                    ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(e)) => {
+                        args.push(plan_expr(e, columns)?);
+                    }
+                    _ => {
+                        return Err(Error::Other(format!(
+                            "unsupported function argument: {func}"
+                        )));
+                    }
+                }
+            }
+            args
+        }
+        ast::FunctionArguments::None => Vec::new(),
+        _ => {
+            return Err(Error::Other(format!(
+                "unsupported function arguments: {func}"
+            )));
+        }
+    };
+
+    static KNOWN_SCALARS: &[&str] = &[
+        "LENGTH", "SUBSTR", "SUBSTRING", "UPPER", "LOWER", "TRIM", "LTRIM", "RTRIM",
+        "REPLACE", "INSTR", "COALESCE", "IFNULL", "NULLIF", "TYPEOF", "ABS", "RANDOM",
+        "HEX", "QUOTE", "ZEROBLOB", "UNICODE", "CHAR",
+    ];
+
+    if KNOWN_SCALARS.contains(&name.as_str()) {
+        return Ok(PlanExpr::Function {
+            name,
+            args: scalar_args,
         });
     }
 
@@ -737,6 +800,7 @@ fn contains_aggregate(expr: &PlanExpr) -> bool {
         }
         PlanExpr::UnaryOp { operand, .. } => contains_aggregate(operand),
         PlanExpr::IsNull(inner) | PlanExpr::IsNotNull(inner) => contains_aggregate(inner),
+        PlanExpr::Function { args, .. } => args.iter().any(contains_aggregate),
         PlanExpr::Column(_) | PlanExpr::Rowid | PlanExpr::Literal(_) | PlanExpr::Wildcard => false,
     }
 }
@@ -755,6 +819,11 @@ fn collect_aggregates(expr: &PlanExpr, out: &mut Vec<(AggFunc, PlanExpr, bool)>)
         }
         PlanExpr::IsNull(inner) | PlanExpr::IsNotNull(inner) => {
             collect_aggregates(inner, out);
+        }
+        PlanExpr::Function { args, .. } => {
+            for a in args {
+                collect_aggregates(a, out);
+            }
         }
         _ => {}
     }

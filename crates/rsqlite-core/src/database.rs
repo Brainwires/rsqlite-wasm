@@ -1244,4 +1244,249 @@ mod tests {
 
         let _ = std::fs::remove_file(db_path);
     }
+
+    #[test]
+    fn scalar_length() {
+        let db_path = "/tmp/rsqlite_db_length.db";
+        let _ = std::fs::remove_file(db_path);
+
+        let vfs = rsqlite_vfs::native::NativeVfs::new();
+        let mut db = Database::create(&vfs, db_path).unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, s TEXT)")
+            .unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'hello')").unwrap();
+        db.execute("INSERT INTO t VALUES (2, '')").unwrap();
+        db.execute("INSERT INTO t VALUES (3, NULL)").unwrap();
+
+        let result = db.query("SELECT LENGTH(s) FROM t").unwrap();
+        use rsqlite_storage::codec::Value;
+        assert_eq!(result.rows[0].values[0], Value::Integer(5));
+        assert_eq!(result.rows[1].values[0], Value::Integer(0));
+        assert_eq!(result.rows[2].values[0], Value::Null);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn scalar_upper_lower() {
+        let db_path = "/tmp/rsqlite_db_upper_lower.db";
+        let _ = std::fs::remove_file(db_path);
+
+        let vfs = rsqlite_vfs::native::NativeVfs::new();
+        let mut db = Database::create(&vfs, db_path).unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, s TEXT)")
+            .unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'Hello World')").unwrap();
+
+        let result = db.query("SELECT UPPER(s), LOWER(s) FROM t").unwrap();
+        use rsqlite_storage::codec::Value;
+        assert_eq!(
+            result.rows[0].values[0],
+            Value::Text("HELLO WORLD".to_string())
+        );
+        assert_eq!(
+            result.rows[0].values[1],
+            Value::Text("hello world".to_string())
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn scalar_substr() {
+        let db_path = "/tmp/rsqlite_db_substr.db";
+        let _ = std::fs::remove_file(db_path);
+
+        let vfs = rsqlite_vfs::native::NativeVfs::new();
+        let mut db = Database::create(&vfs, db_path).unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, s TEXT)")
+            .unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'Hello World')").unwrap();
+
+        let result = db.query("SELECT SUBSTR(s, 1, 5) FROM t").unwrap();
+        use rsqlite_storage::codec::Value;
+        assert_eq!(result.rows[0].values[0], Value::Text("Hello".to_string()));
+
+        let result = db.query("SELECT SUBSTR(s, 7) FROM t").unwrap();
+        assert_eq!(result.rows[0].values[0], Value::Text("World".to_string()));
+
+        // Negative index: from end
+        let result = db.query("SELECT SUBSTR(s, -5) FROM t").unwrap();
+        assert_eq!(result.rows[0].values[0], Value::Text("World".to_string()));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn scalar_coalesce_ifnull() {
+        let db_path = "/tmp/rsqlite_db_coalesce.db";
+        let _ = std::fs::remove_file(db_path);
+
+        let vfs = rsqlite_vfs::native::NativeVfs::new();
+        let mut db = Database::create(&vfs, db_path).unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, a TEXT, b TEXT)")
+            .unwrap();
+        db.execute("INSERT INTO t VALUES (1, NULL, 'fallback')").unwrap();
+        db.execute("INSERT INTO t VALUES (2, 'primary', 'fallback')").unwrap();
+
+        let result = db.query("SELECT COALESCE(a, b) FROM t").unwrap();
+        use rsqlite_storage::codec::Value;
+        assert_eq!(
+            result.rows[0].values[0],
+            Value::Text("fallback".to_string())
+        );
+        assert_eq!(
+            result.rows[1].values[0],
+            Value::Text("primary".to_string())
+        );
+
+        let result = db.query("SELECT IFNULL(a, b) FROM t").unwrap();
+        assert_eq!(
+            result.rows[0].values[0],
+            Value::Text("fallback".to_string())
+        );
+        assert_eq!(
+            result.rows[1].values[0],
+            Value::Text("primary".to_string())
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn scalar_typeof() {
+        let db_path = "/tmp/rsqlite_db_typeof.db";
+        let _ = std::fs::remove_file(db_path);
+
+        let vfs = rsqlite_vfs::native::NativeVfs::new();
+        let mut db = Database::create(&vfs, db_path).unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val)")
+            .unwrap();
+        db.execute("INSERT INTO t VALUES (1, 42)").unwrap();
+        db.execute("INSERT INTO t VALUES (2, 'hello')").unwrap();
+        db.execute("INSERT INTO t VALUES (3, NULL)").unwrap();
+        db.execute("INSERT INTO t VALUES (4, 3.14)").unwrap();
+
+        let result = db.query("SELECT TYPEOF(val) FROM t").unwrap();
+        use rsqlite_storage::codec::Value;
+        assert_eq!(
+            result.rows[0].values[0],
+            Value::Text("integer".to_string())
+        );
+        assert_eq!(result.rows[1].values[0], Value::Text("text".to_string()));
+        assert_eq!(result.rows[2].values[0], Value::Text("null".to_string()));
+        assert_eq!(result.rows[3].values[0], Value::Text("real".to_string()));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn scalar_abs() {
+        let db_path = "/tmp/rsqlite_db_abs.db";
+        let _ = std::fs::remove_file(db_path);
+
+        let vfs = rsqlite_vfs::native::NativeVfs::new();
+        let mut db = Database::create(&vfs, db_path).unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)")
+            .unwrap();
+        db.execute("INSERT INTO t VALUES (1, -42)").unwrap();
+        db.execute("INSERT INTO t VALUES (2, 42)").unwrap();
+        db.execute("INSERT INTO t VALUES (3, 0)").unwrap();
+
+        let result = db.query("SELECT ABS(val) FROM t").unwrap();
+        use rsqlite_storage::codec::Value;
+        assert_eq!(result.rows[0].values[0], Value::Integer(42));
+        assert_eq!(result.rows[1].values[0], Value::Integer(42));
+        assert_eq!(result.rows[2].values[0], Value::Integer(0));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn scalar_replace_instr() {
+        let db_path = "/tmp/rsqlite_db_replace_instr.db";
+        let _ = std::fs::remove_file(db_path);
+
+        let vfs = rsqlite_vfs::native::NativeVfs::new();
+        let mut db = Database::create(&vfs, db_path).unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, s TEXT)")
+            .unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'hello world')").unwrap();
+
+        let result = db
+            .query("SELECT REPLACE(s, 'world', 'rust') FROM t")
+            .unwrap();
+        use rsqlite_storage::codec::Value;
+        assert_eq!(
+            result.rows[0].values[0],
+            Value::Text("hello rust".to_string())
+        );
+
+        let result = db.query("SELECT INSTR(s, 'world') FROM t").unwrap();
+        assert_eq!(result.rows[0].values[0], Value::Integer(7));
+
+        let result = db.query("SELECT INSTR(s, 'xyz') FROM t").unwrap();
+        assert_eq!(result.rows[0].values[0], Value::Integer(0));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn scalar_trim() {
+        let db_path = "/tmp/rsqlite_db_trim.db";
+        let _ = std::fs::remove_file(db_path);
+
+        let vfs = rsqlite_vfs::native::NativeVfs::new();
+        let mut db = Database::create(&vfs, db_path).unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, s TEXT)")
+            .unwrap();
+        db.execute("INSERT INTO t VALUES (1, '  hello  ')").unwrap();
+
+        let result = db.query("SELECT TRIM(s) FROM t").unwrap();
+        use rsqlite_storage::codec::Value;
+        assert_eq!(result.rows[0].values[0], Value::Text("hello".to_string()));
+
+        let result = db.query("SELECT LTRIM(s) FROM t").unwrap();
+        assert_eq!(
+            result.rows[0].values[0],
+            Value::Text("hello  ".to_string())
+        );
+
+        let result = db.query("SELECT RTRIM(s) FROM t").unwrap();
+        assert_eq!(
+            result.rows[0].values[0],
+            Value::Text("  hello".to_string())
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn scalar_nullif() {
+        let db_path = "/tmp/rsqlite_db_nullif.db";
+        let _ = std::fs::remove_file(db_path);
+
+        let vfs = rsqlite_vfs::native::NativeVfs::new();
+        let mut db = Database::create(&vfs, db_path).unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER)")
+            .unwrap();
+        db.execute("INSERT INTO t VALUES (1, 5, 5)").unwrap();
+        db.execute("INSERT INTO t VALUES (2, 5, 3)").unwrap();
+
+        let result = db.query("SELECT NULLIF(a, b) FROM t").unwrap();
+        use rsqlite_storage::codec::Value;
+        assert_eq!(result.rows[0].values[0], Value::Null);
+        assert_eq!(result.rows[1].values[0], Value::Integer(5));
+
+        let _ = std::fs::remove_file(db_path);
+    }
 }
