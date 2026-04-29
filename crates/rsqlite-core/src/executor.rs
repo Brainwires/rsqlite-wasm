@@ -233,7 +233,10 @@ pub fn execute(plan: &Plan, pager: &mut Pager, catalog: &Catalog) -> Result<Quer
         | Plan::CreateTableAsSelect { .. }
         | Plan::Begin
         | Plan::Commit
-        | Plan::Rollback => Err(Error::Other(
+        | Plan::Rollback
+        | Plan::Savepoint(_)
+        | Plan::Release(_)
+        | Plan::RollbackTo(_) => Err(Error::Other(
             "use execute_mut for DDL/DML statements".to_string(),
         )),
     }
@@ -289,6 +292,18 @@ pub fn execute_mut(
         }
         Plan::Rollback => {
             pager.rollback()?;
+            Ok(ExecResult { rows_affected: 0 })
+        }
+        Plan::Savepoint(name) => {
+            pager.savepoint(name)?;
+            Ok(ExecResult { rows_affected: 0 })
+        }
+        Plan::Release(name) => {
+            pager.release_savepoint(name)?;
+            Ok(ExecResult { rows_affected: 0 })
+        }
+        Plan::RollbackTo(name) => {
+            pager.rollback_to_savepoint(name)?;
             Ok(ExecResult { rows_affected: 0 })
         }
         _ => Err(Error::Other(

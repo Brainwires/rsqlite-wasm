@@ -18,6 +18,13 @@ pub struct Pager {
     in_transaction: bool,
     journal: HashMap<u32, Vec<u8>>,
     saved_page_count: u32,
+    savepoints: Vec<SavepointState>,
+}
+
+struct SavepointState {
+    name: String,
+    page_snapshots: HashMap<u32, Vec<u8>>,
+    page_count: u32,
 }
 
 #[derive(Clone)]
@@ -61,6 +68,7 @@ impl Pager {
             in_transaction: false,
             journal: HashMap::new(),
             saved_page_count: page_count,
+            savepoints: Vec::new(),
         })
     }
 
@@ -106,6 +114,7 @@ impl Pager {
             in_transaction: false,
             journal: HashMap::new(),
             saved_page_count: 1,
+            savepoints: Vec::new(),
         })
     }
 
@@ -229,6 +238,68 @@ impl Pager {
         self.page_count = self.saved_page_count;
         self.dirty.clear();
         self.in_transaction = false;
+        self.savepoints.clear();
+        Ok(())
+    }
+
+    pub fn savepoint(&mut self, name: &str) -> Result<()> {
+        if !self.in_transaction {
+            self.begin_transaction()?;
+        }
+        let mut page_snapshots = HashMap::new();
+        for &page_num in self.dirty.iter() {
+            if let Some(page) = self.cache.peek(&page_num) {
+                page_snapshots.insert(page_num, page.data.clone());
+            }
+        }
+        self.savepoints.push(SavepointState {
+            name: name.to_string(),
+            page_snapshots,
+            page_count: self.page_count,
+        });
+        Ok(())
+    }
+
+    pub fn release_savepoint(&mut self, name: &str) -> Result<()> {
+        let pos = self.savepoints.iter().rposition(|s| s.name.eq_ignore_ascii_case(name));
+        match pos {
+            Some(i) => { self.savepoints.truncate(i); Ok(()) }
+            None => Err(StorageError::Other(format!("no such savepoint: {name}"))),
+        }
+    }
+
+    pub fn rollback_to_savepoint(&mut self, name: &str) -> Result<()> {
+        let pos = self.savepoints.iter().rposition(|s| s.name.eq_ignore_ascii_case(name));
+        let pos = match pos {
+            Some(i) => i,
+            None => return Err(StorageError::Other(format!("no such savepoint: {name}"))),
+        };
+
+        let sp = &self.savepoints[pos];
+        let snapshots = sp.page_snapshots.clone();
+        let page_count_at_savepoint = sp.page_count;
+
+        for (&page_num, snap_data) in &snapshots {
+            if let Some(page) = self.cache.get_mut(&page_num) {
+                page.data = snap_data.clone();
+            }
+        }
+
+        for &page_num in self.dirty.clone().iter() {
+            if page_num > page_count_at_savepoint {
+                self.dirty.remove(&page_num);
+            } else if !snapshots.contains_key(&page_num) {
+                if let Some(original) = self.journal.get(&page_num) {
+                    if let Some(page) = self.cache.get_mut(&page_num) {
+                        page.data = original.clone();
+                    }
+                }
+                self.dirty.remove(&page_num);
+            }
+        }
+
+        self.page_count = page_count_at_savepoint;
+        self.savepoints.truncate(pos + 1);
         Ok(())
     }
 

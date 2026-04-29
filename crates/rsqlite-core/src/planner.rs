@@ -207,6 +207,9 @@ pub enum Plan {
     Begin,
     Commit,
     Rollback,
+    Savepoint(String),
+    Release(String),
+    RollbackTo(String),
 }
 
 pub fn plan_statement(stmt: &Statement, catalog: &Catalog) -> Result<Plan> {
@@ -318,7 +321,10 @@ pub fn plan_statement(stmt: &Statement, catalog: &Catalog) -> Result<Plan> {
         }
         Statement::StartTransaction { .. } => Ok(Plan::Begin),
         Statement::Commit { .. } => Ok(Plan::Commit),
+        Statement::Rollback { savepoint: Some(name), .. } => Ok(Plan::RollbackTo(name.value.clone())),
         Statement::Rollback { .. } => Ok(Plan::Rollback),
+        Statement::Savepoint { name } => Ok(Plan::Savepoint(name.value.clone())),
+        Statement::ReleaseSavepoint { name } => Ok(Plan::Release(name.value.clone())),
         _ => Err(Error::Other(format!(
             "unsupported statement type: {stmt}"
         ))),

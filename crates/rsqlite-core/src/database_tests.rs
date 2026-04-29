@@ -4213,3 +4213,76 @@
         }).collect();
         assert!(details.iter().any(|d| d.contains("JOIN")), "Expected JOIN in plan: {details:?}");
     }
+
+    // ───────────────────── SAVEPOINT tests ─────────────────────
+
+    #[test]
+    fn savepoint_rollback_to() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)").unwrap();
+        db.execute("BEGIN").unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'a')").unwrap();
+        db.execute("SAVEPOINT sp1").unwrap();
+        db.execute("INSERT INTO t VALUES (2, 'b')").unwrap();
+        db.execute("ROLLBACK TO sp1").unwrap();
+
+        let r = db.query("SELECT COUNT(*) FROM t").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(1));
+
+        db.execute("COMMIT").unwrap();
+        let r = db.query("SELECT val FROM t").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("a".into()));
+    }
+
+    #[test]
+    fn savepoint_release() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)").unwrap();
+        db.execute("BEGIN").unwrap();
+        db.execute("SAVEPOINT sp1").unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'a')").unwrap();
+        db.execute("RELEASE sp1").unwrap();
+        db.execute("COMMIT").unwrap();
+
+        let r = db.query("SELECT val FROM t").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("a".into()));
+    }
+
+    #[test]
+    fn savepoint_nested() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)").unwrap();
+        db.execute("BEGIN").unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'a')").unwrap();
+        db.execute("SAVEPOINT sp1").unwrap();
+        db.execute("INSERT INTO t VALUES (2, 'b')").unwrap();
+        db.execute("SAVEPOINT sp2").unwrap();
+        db.execute("INSERT INTO t VALUES (3, 'c')").unwrap();
+        db.execute("ROLLBACK TO sp2").unwrap();
+
+        let r = db.query("SELECT COUNT(*) FROM t").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(2));
+
+        db.execute("ROLLBACK TO sp1").unwrap();
+        let r = db.query("SELECT COUNT(*) FROM t").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(1));
+
+        db.execute("COMMIT").unwrap();
+    }
+
+    #[test]
+    fn savepoint_without_begin() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)").unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'a')").unwrap();
+        db.execute("SAVEPOINT sp1").unwrap();
+        db.execute("INSERT INTO t VALUES (2, 'b')").unwrap();
+        db.execute("ROLLBACK TO sp1").unwrap();
+
+        let r = db.query("SELECT COUNT(*) FROM t").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(1));
+    }
