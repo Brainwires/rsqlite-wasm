@@ -1385,27 +1385,28 @@ fn plan_insert(insert: &ast::Insert, catalog: &Catalog) -> Result<Plan> {
         )
     };
 
-    let source = insert.source.as_ref().ok_or_else(|| {
-        Error::Other("INSERT requires VALUES".to_string())
-    })?;
-
-    let rows = match source.body.as_ref() {
-        SetExpr::Values(values) => {
-            let mut planned_rows = Vec::new();
-            for row in &values.rows {
-                let mut exprs = Vec::new();
-                for expr in row {
-                    exprs.push(plan_expr(expr, &all_columns)?);
+    let rows = match insert.source.as_ref() {
+        None => {
+            vec![vec![]]
+        }
+        Some(source) => match source.body.as_ref() {
+            SetExpr::Values(values) => {
+                let mut planned_rows = Vec::new();
+                for row in &values.rows {
+                    let mut exprs = Vec::new();
+                    for expr in row {
+                        exprs.push(plan_expr(expr, &all_columns)?);
+                    }
+                    planned_rows.push(exprs);
                 }
-                planned_rows.push(exprs);
+                planned_rows
             }
-            planned_rows
-        }
-        _ => {
-            return Err(Error::Other(
-                "only INSERT ... VALUES is supported".to_string(),
-            ))
-        }
+            _ => {
+                return Err(Error::Other(
+                    "only INSERT ... VALUES is supported".to_string(),
+                ))
+            }
+        },
     };
 
     Ok(Plan::Insert(InsertPlan {

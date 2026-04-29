@@ -2260,4 +2260,36 @@ mod tests {
         let err = db.execute("ALTER TABLE nonexistent ADD COLUMN x TEXT").unwrap_err();
         assert!(err.to_string().contains("no such table"));
     }
+
+    #[test]
+    fn insert_default_values() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, score REAL)")
+            .unwrap();
+        db.execute("INSERT INTO t DEFAULT VALUES").unwrap();
+        db.execute("INSERT INTO t DEFAULT VALUES").unwrap();
+
+        let r = db.query("SELECT * FROM t ORDER BY id").unwrap();
+        assert_eq!(r.rows.len(), 2);
+        assert_eq!(r.rows[0].values[1], crate::types::Value::Null);
+        assert_eq!(r.rows[0].values[2], crate::types::Value::Null);
+        assert_eq!(r.rows[1].values[1], crate::types::Value::Null);
+    }
+
+    #[test]
+    fn insert_partial_columns_defaults_null() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")
+            .unwrap();
+        db.execute("INSERT INTO t(name) VALUES ('Alice')").unwrap();
+
+        let r = db.query("SELECT * FROM t").unwrap();
+        assert_eq!(r.rows.len(), 1);
+        assert_eq!(r.rows[0].values[1], crate::types::Value::Text("Alice".to_string()));
+        assert_eq!(r.rows[0].values[2], crate::types::Value::Null);
+    }
 }
