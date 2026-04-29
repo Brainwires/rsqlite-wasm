@@ -1010,6 +1010,45 @@ pub fn btree_max_rowid(pager: &mut Pager, root_page: u32) -> Result<i64> {
     }
 }
 
+pub fn btree_row_exists(pager: &mut Pager, root_page: u32, target_rowid: i64) -> Result<bool> {
+    let page_data = pager.get_page(root_page)?.data.clone();
+    let offset = btree_header_offset(root_page);
+    let header = parse_btree_header(&page_data, offset)?;
+
+    if header.cell_count == 0 && header.page_type.is_leaf() {
+        return Ok(false);
+    }
+
+    let pointers = read_cell_pointers(
+        &page_data,
+        offset + header.header_size(),
+        header.cell_count,
+    );
+
+    if header.page_type.is_leaf() {
+        let usable = pager.usable_size();
+        for &ptr in &pointers {
+            let cell = parse_table_leaf_cell(&page_data, ptr as usize, usable)?;
+            if cell.rowid == target_rowid {
+                return Ok(true);
+            }
+            if cell.rowid > target_rowid {
+                return Ok(false);
+            }
+        }
+        Ok(false)
+    } else {
+        for &ptr in &pointers {
+            let cell = parse_table_interior_cell(&page_data, ptr as usize);
+            if target_rowid <= cell.rowid {
+                return btree_row_exists(pager, cell.left_child_page, target_rowid);
+            }
+        }
+        let right = header.right_most_pointer.unwrap();
+        btree_row_exists(pager, right, target_rowid)
+    }
+}
+
 /// Create a new empty table B-tree. Returns the root page number.
 pub fn btree_create_table(pager: &mut Pager) -> Result<u32> {
     let page_num = pager.allocate_page()?;

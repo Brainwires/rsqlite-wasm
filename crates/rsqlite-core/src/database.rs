@@ -2387,4 +2387,76 @@ mod tests {
         assert_eq!(r.rows.len(), 1);
         assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(3));
     }
+
+    #[test]
+    fn upsert_do_nothing() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+            .unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'Alice')").unwrap();
+
+        db.execute("INSERT INTO t VALUES (1, 'Bob') ON CONFLICT DO NOTHING")
+            .unwrap();
+
+        let r = db.query("SELECT name FROM t WHERE id = 1").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("Alice".to_string()));
+
+        let r = db.query("SELECT COUNT(*) AS cnt FROM t").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(1));
+    }
+
+    #[test]
+    fn upsert_do_update() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, counter INTEGER)")
+            .unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'Alice', 1)").unwrap();
+
+        db.execute(
+            "INSERT INTO t VALUES (1, 'Bob', 1) ON CONFLICT(id) DO UPDATE SET counter = counter + 1",
+        )
+        .unwrap();
+
+        let r = db.query("SELECT name, counter FROM t WHERE id = 1").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("Alice".to_string()));
+        assert_eq!(r.rows[0].values[1], crate::types::Value::Integer(2));
+    }
+
+    #[test]
+    fn upsert_do_update_set_name() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+            .unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'Alice')").unwrap();
+
+        db.execute(
+            "INSERT INTO t VALUES (1, 'Bob') ON CONFLICT(id) DO UPDATE SET name = 'Updated'",
+        )
+        .unwrap();
+
+        let r = db.query("SELECT name FROM t WHERE id = 1").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("Updated".to_string()));
+    }
+
+    #[test]
+    fn upsert_no_conflict_inserts() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+            .unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'Alice')").unwrap();
+
+        db.execute("INSERT INTO t VALUES (2, 'Bob') ON CONFLICT DO NOTHING")
+            .unwrap();
+
+        let r = db.query("SELECT COUNT(*) AS cnt FROM t").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(2));
+    }
 }

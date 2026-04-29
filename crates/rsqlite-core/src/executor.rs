@@ -1,7 +1,7 @@
 use rsqlite_storage::btree::{
     btree_create_index, btree_create_table, btree_delete, btree_index_delete, btree_index_insert,
-    btree_insert, btree_max_rowid, delete_schema_entries, insert_schema_entry, BTreeCursor,
-    CursorRow, IndexCursor,
+    btree_insert, btree_max_rowid, btree_row_exists, delete_schema_entries, insert_schema_entry,
+    BTreeCursor, CursorRow, IndexCursor,
 };
 use rsqlite_storage::codec::{Record, Value};
 use rsqlite_storage::pager::Pager;
@@ -10,8 +10,8 @@ use crate::catalog::Catalog;
 use crate::error::{Error, Result};
 use crate::planner::{
     agg_column_name, AggFunc, BinOp, ColumnRef, CreateIndexPlan, CreateTablePlan, DeletePlan,
-    InsertPlan, JoinType, LiteralValue, Plan, PlanExpr, ProjectionItem, SortKey, UnaryOp,
-    UpdatePlan,
+    InsertPlan, JoinType, LiteralValue, OnConflictPlan, Plan, PlanExpr, ProjectionItem, SortKey,
+    UnaryOp, UpdatePlan,
 };
 use crate::types::{QueryResult, Row};
 
@@ -615,6 +615,63 @@ fn execute_insert(plan: &InsertPlan, pager: &mut Pager, catalog: &Catalog) -> Re
             None => btree_max_rowid(pager, current_root)? + 1,
         };
 
+        if let Some(on_conflict) = &plan.on_conflict {
+            if btree_row_exists(pager, current_root, rowid)? {
+                match on_conflict {
+                    OnConflictPlan::DoNothing => continue,
+                    OnConflictPlan::DoUpdate { assignments } => {
+                        let old_values =
+                            read_row_by_rowid(pager, current_root, rowid, &plan.table_columns)?;
+                        let col_names: Vec<String> =
+                            plan.table_columns.iter().map(|c| c.name.clone()).collect();
+                        let old_row = Row {
+                            values: old_values.clone(),
+                        };
+                        let mut updated = old_values.clone();
+                        for (col_name, expr) in assignments {
+                            let val = eval_expr(expr, &old_row, &col_names, pager, catalog)?;
+                            let idx = plan
+                                .table_columns
+                                .iter()
+                                .position(|c| c.name.eq_ignore_ascii_case(col_name))
+                                .ok_or_else(|| {
+                                    Error::Other(format!("unknown column: {col_name}"))
+                                })?;
+                            updated[idx] = val;
+                        }
+                        for (idx_root, idx_col_indices) in &table_indexes {
+                            let old_key = build_index_key(
+                                &old_values,
+                                idx_col_indices,
+                                &plan.table_columns,
+                                rowid,
+                            );
+                            btree_index_delete(pager, *idx_root, &old_key)
+                                .map_err(|e| Error::Other(e.to_string()))?;
+                        }
+                        btree_delete(pager, current_root, rowid)
+                            .map_err(|e| Error::Other(e.to_string()))?;
+                        let record = Record {
+                            values: updated.clone(),
+                        };
+                        current_root = btree_insert(pager, current_root, rowid, &record)?;
+                        for (idx_root, idx_col_indices) in &table_indexes {
+                            let new_key = build_index_key(
+                                &updated,
+                                idx_col_indices,
+                                &plan.table_columns,
+                                rowid,
+                            );
+                            btree_index_insert(pager, *idx_root, &new_key)
+                                .map_err(|e| Error::Other(e.to_string()))?;
+                        }
+                        rows_affected += 1;
+                        continue;
+                    }
+                }
+            }
+        }
+
         let record = Record {
             values: values.clone(),
         };
@@ -634,6 +691,41 @@ fn execute_insert(plan: &InsertPlan, pager: &mut Pager, catalog: &Catalog) -> Re
     }
 
     Ok(ExecResult { rows_affected })
+}
+
+fn read_row_by_rowid(
+    pager: &mut Pager,
+    root_page: u32,
+    target_rowid: i64,
+    table_columns: &[ColumnRef],
+) -> Result<Vec<Value>> {
+    let mut cursor = BTreeCursor::new(pager, root_page);
+    let mut has_row = cursor.first().map_err(|e| Error::Other(e.to_string()))?;
+    while has_row {
+        let row = cursor.current().map_err(|e| Error::Other(e.to_string()))?;
+        if row.rowid == target_rowid {
+            let mut values = Vec::with_capacity(table_columns.len());
+            for col in table_columns {
+                if col.is_rowid_alias {
+                    values.push(Value::Integer(row.rowid));
+                } else {
+                    values.push(
+                        row.record
+                            .values
+                            .get(col.column_index)
+                            .cloned()
+                            .unwrap_or(Value::Null),
+                    );
+                }
+            }
+            return Ok(values);
+        }
+        if row.rowid > target_rowid {
+            break;
+        }
+        has_row = cursor.next().map_err(|e| Error::Other(e.to_string()))?;
+    }
+    Err(Error::Other(format!("row not found: rowid={target_rowid}")))
 }
 
 fn row_values_for_rowid(

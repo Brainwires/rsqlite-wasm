@@ -35,6 +35,15 @@ pub struct InsertPlan {
     pub table_columns: Vec<ColumnRef>,
     pub target_columns: Option<Vec<String>>,
     pub rows: Vec<Vec<PlanExpr>>,
+    pub on_conflict: Option<OnConflictPlan>,
+}
+
+#[derive(Debug, Clone)]
+pub enum OnConflictPlan {
+    DoNothing,
+    DoUpdate {
+        assignments: Vec<(String, PlanExpr)>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -1452,12 +1461,36 @@ fn plan_insert(insert: &ast::Insert, catalog: &Catalog) -> Result<Plan> {
         },
     };
 
+    let on_conflict = match &insert.on {
+        Some(ast::OnInsert::OnConflict(oc)) => match &oc.action {
+            ast::OnConflictAction::DoNothing => Some(OnConflictPlan::DoNothing),
+            ast::OnConflictAction::DoUpdate(do_update) => {
+                let mut assignments = Vec::new();
+                for assign in &do_update.assignments {
+                    let col_name = match &assign.target {
+                        ast::AssignmentTarget::ColumnName(name) => name.to_string(),
+                        ast::AssignmentTarget::Tuple(_) => {
+                            return Err(Error::Other(
+                                "tuple assignment not supported".to_string(),
+                            ))
+                        }
+                    };
+                    let expr = plan_expr(&assign.value, &all_columns, catalog)?;
+                    assignments.push((col_name, expr));
+                }
+                Some(OnConflictPlan::DoUpdate { assignments })
+            }
+        },
+        _ => None,
+    };
+
     Ok(Plan::Insert(InsertPlan {
         table_name,
         root_page: table_def.root_page,
         table_columns: all_columns,
         target_columns,
         rows,
+        on_conflict,
     }))
 }
 
