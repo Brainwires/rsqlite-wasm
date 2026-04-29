@@ -8,3 +8,4 @@ Cargo.lock
 /js/dist
 *.wasm
 /pkg
+/pkg-node
