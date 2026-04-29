@@ -142,6 +142,10 @@ pub enum Plan {
         column_name: String,
         column_type: String,
     },
+    AlterTableRename {
+        old_name: String,
+        new_name: String,
+    },
     Pragma {
         name: String,
         argument: Option<String>,
@@ -320,6 +324,12 @@ pub fn plan_statement(stmt: &Statement, catalog: &Catalog) -> Result<Plan> {
                         table_name,
                         column_name: col_name,
                         column_type: col_type,
+                    })
+                }
+                ast::AlterTableOperation::RenameTable { table_name: new_name } => {
+                    Ok(Plan::AlterTableRename {
+                        old_name: table_name,
+                        new_name: new_name.to_string(),
                     })
                 }
                 other => Err(Error::Other(format!(

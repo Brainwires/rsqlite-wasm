@@ -119,6 +119,7 @@ pub fn execute(plan: &Plan, pager: &mut Pager, catalog: &Catalog) -> Result<Quer
         | Plan::Update(_)
         | Plan::Delete(_)
         | Plan::AlterTableAddColumn { .. }
+        | Plan::AlterTableRename { .. }
         | Plan::DropTable { .. }
         | Plan::DropIndex { .. }
         | Plan::Begin
@@ -153,6 +154,9 @@ pub fn execute_mut(
             index_name,
             if_exists,
         } => execute_drop_index(index_name, *if_exists, pager, catalog),
+        Plan::AlterTableRename { old_name, new_name } => {
+            execute_alter_rename(old_name, new_name, pager, catalog)
+        }
         Plan::Begin => {
             pager.begin_transaction()?;
             Ok(ExecResult { rows_affected: 0 })
@@ -451,6 +455,84 @@ fn execute_create_index(
     catalog.reload(pager)?;
 
     Ok(ExecResult { rows_affected: 0 })
+}
+
+fn execute_alter_rename(
+    old_name: &str,
+    new_name: &str,
+    pager: &mut Pager,
+    catalog: &mut Catalog,
+) -> Result<ExecResult> {
+    if catalog.get_table(old_name).is_none() {
+        return Err(Error::Other(format!("no such table: {old_name}")));
+    }
+    if catalog.get_table(new_name).is_some() {
+        return Err(Error::Other(format!(
+            "there is already a table named {new_name}"
+        )));
+    }
+
+    let mut cursor = BTreeCursor::new(pager, 1);
+    let mut entries_to_update = Vec::new();
+    let mut has_row = cursor.first().map_err(|e| Error::Other(e.to_string()))?;
+    while has_row {
+        let current = cursor.current().map_err(|e| Error::Other(e.to_string()))?;
+        let tbl_name_match = current.record.values.get(2).is_some_and(|v| {
+            if let Value::Text(s) = v {
+                s.eq_ignore_ascii_case(old_name)
+            } else {
+                false
+            }
+        });
+        if tbl_name_match {
+            entries_to_update.push((current.rowid, current.record));
+        }
+        has_row = cursor.next().map_err(|e| Error::Other(e.to_string()))?;
+    }
+
+    for (rowid, record) in &entries_to_update {
+        let mut new_values = record.values.clone();
+        if let Value::Text(ref name) = new_values[1] {
+            if name.eq_ignore_ascii_case(old_name) {
+                new_values[1] = Value::Text(new_name.to_string());
+            }
+        }
+        new_values[2] = Value::Text(new_name.to_string());
+        if let Value::Text(ref sql) = new_values[4] {
+            let new_sql = replace_table_name_in_sql(sql, old_name, new_name);
+            new_values[4] = Value::Text(new_sql);
+        }
+        let new_record = Record { values: new_values };
+        btree_delete(pager, 1, *rowid).map_err(|e| Error::Other(e.to_string()))?;
+        let new_root = btree_insert(pager, 1, *rowid, &new_record)
+            .map_err(|e| Error::Other(e.to_string()))?;
+        if new_root != 1 {
+            return Err(Error::Other(
+                "sqlite_schema root page split — not yet supported".to_string(),
+            ));
+        }
+    }
+
+    if !pager.in_transaction() {
+        pager.flush()?;
+    }
+
+    catalog.reload(pager)?;
+    Ok(ExecResult { rows_affected: 0 })
+}
+
+fn replace_table_name_in_sql(sql: &str, old_name: &str, new_name: &str) -> String {
+    let lower_sql = sql.to_lowercase();
+    let lower_old = old_name.to_lowercase();
+    if let Some(pos) = lower_sql.find(&lower_old) {
+        let mut result = String::with_capacity(sql.len());
+        result.push_str(&sql[..pos]);
+        result.push_str(new_name);
+        result.push_str(&sql[pos + old_name.len()..]);
+        result
+    } else {
+        sql.to_string()
+    }
 }
 
 fn execute_alter_add_column(

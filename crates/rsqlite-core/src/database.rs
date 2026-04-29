@@ -2459,4 +2459,62 @@ mod tests {
         let r = db.query("SELECT COUNT(*) AS cnt FROM t").unwrap();
         assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(2));
     }
+
+    #[test]
+    fn alter_table_rename() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE old_name (id INTEGER PRIMARY KEY, val TEXT)")
+            .unwrap();
+        db.execute("INSERT INTO old_name VALUES (1, 'hello')").unwrap();
+
+        db.execute("ALTER TABLE old_name RENAME TO new_name").unwrap();
+
+        let r = db.query("SELECT val FROM new_name WHERE id = 1").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("hello".to_string()));
+
+        let err = db.query("SELECT * FROM old_name");
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn alter_table_rename_with_index() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE t1 (id INTEGER PRIMARY KEY, val TEXT)")
+            .unwrap();
+        db.execute("CREATE INDEX idx_val ON t1(val)").unwrap();
+        db.execute("INSERT INTO t1 VALUES (1, 'hello')").unwrap();
+
+        db.execute("ALTER TABLE t1 RENAME TO t2").unwrap();
+
+        let r = db.query("SELECT val FROM t2 WHERE id = 1").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("hello".to_string()));
+
+        let r = db.query("PRAGMA index_list(t2)").unwrap();
+        assert_eq!(r.rows.len(), 1);
+    }
+
+    #[test]
+    fn alter_table_rename_nonexistent_error() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        let err = db.execute("ALTER TABLE nonexistent RENAME TO foo").unwrap_err();
+        assert!(err.to_string().contains("no such table"));
+    }
+
+    #[test]
+    fn alter_table_rename_conflict_error() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE t1 (id INTEGER PRIMARY KEY)").unwrap();
+        db.execute("CREATE TABLE t2 (id INTEGER PRIMARY KEY)").unwrap();
+
+        let err = db.execute("ALTER TABLE t1 RENAME TO t2").unwrap_err();
+        assert!(err.to_string().contains("already a table named"));
+    }
 }
