@@ -567,6 +567,9 @@ fn plan_function_expr(func: &ast::Function, columns: &[ColumnRef], catalog: &Cat
         "IIF",
         "VEC_DISTANCE_COSINE", "VEC_DISTANCE_L2", "VEC_DISTANCE_DOT",
         "VEC_LENGTH", "VEC_NORMALIZE", "VEC_FROM_JSON", "VEC_TO_JSON",
+        "JSON", "JSON_EXTRACT", "JSON_TYPE", "JSON_VALID", "JSON_ARRAY", "JSON_OBJECT",
+        "JSON_ARRAY_LENGTH", "JSON_INSERT", "JSON_REPLACE", "JSON_SET", "JSON_REMOVE",
+        "JSON_QUOTE", "JSON_PATCH",
     ];
 
     if KNOWN_SCALARS.contains(&name.as_str()) {

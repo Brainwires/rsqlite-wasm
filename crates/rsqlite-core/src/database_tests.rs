@@ -3789,3 +3789,204 @@
         let r = db.query("SELECT COUNT(*) FROM t").unwrap();
         assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(2));
     }
+
+    // ───────────────────── JSON function tests ─────────────────────
+
+    fn setup_json_db() -> Database {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        Database::create(&vfs, "test.db").unwrap()
+    }
+
+    #[test]
+    fn json_valid_and_parse() {
+        let mut db = setup_json_db();
+        let r = db.query("SELECT json_valid('{\"a\":1}')").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(1));
+
+        let r = db.query("SELECT json_valid('not json')").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(0));
+
+        let r = db.query("SELECT json_valid(NULL)").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Null);
+    }
+
+    #[test]
+    fn json_extract_basic() {
+        let mut db = setup_json_db();
+        let r = db.query(r#"SELECT json_extract('{"name":"Alice","age":30}', '$.name')"#).unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("Alice".into()));
+
+        let r = db.query(r#"SELECT json_extract('{"name":"Alice","age":30}', '$.age')"#).unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(30));
+
+        let r = db.query(r#"SELECT json_extract('{"a":{"b":[10,20,30]}}', '$.a.b[1]')"#).unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(20));
+    }
+
+    #[test]
+    fn json_extract_missing_path() {
+        let mut db = setup_json_db();
+        let r = db.query(r#"SELECT json_extract('{"a":1}', '$.b')"#).unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Null);
+    }
+
+    #[test]
+    fn json_type_function() {
+        let mut db = setup_json_db();
+        let r = db.query(r#"SELECT json_type('{"a":1}')"#).unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("object".into()));
+
+        let r = db.query(r#"SELECT json_type('[1,2]')"#).unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("array".into()));
+
+        let r = db.query(r#"SELECT json_type('{"a":1}', '$.a')"#).unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("real".into()));
+
+        let r = db.query(r#"SELECT json_type('{"a":"hello"}', '$.a')"#).unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("text".into()));
+    }
+
+    #[test]
+    fn json_minify() {
+        let mut db = setup_json_db();
+        let r = db.query(r#"SELECT json('  { "a" : 1 , "b" : [2, 3] }  ')"#).unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text(r#"{"a":1,"b":[2,3]}"#.into()));
+    }
+
+    #[test]
+    fn json_array_function() {
+        let mut db = setup_json_db();
+        let r = db.query("SELECT json_array(1, 'hello', NULL)").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text(r#"[1,"hello",null]"#.into()));
+
+        let r = db.query("SELECT json_array()").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("[]".into()));
+    }
+
+    #[test]
+    fn json_object_function() {
+        let mut db = setup_json_db();
+        let r = db.query("SELECT json_object('name', 'Alice', 'age', 30)").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text(r#"{"name":"Alice","age":30}"#.into()));
+    }
+
+    #[test]
+    fn json_array_length_function() {
+        let mut db = setup_json_db();
+        let r = db.query("SELECT json_array_length('[1,2,3,4]')").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(4));
+
+        let r = db.query("SELECT json_array_length('[]')").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(0));
+
+        let r = db.query(r#"SELECT json_array_length('{"a":[10,20]}', '$.a')"#).unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(2));
+    }
+
+    #[test]
+    fn json_quote_function() {
+        let mut db = setup_json_db();
+        let r = db.query("SELECT json_quote('hello')").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text(r#""hello""#.into()));
+
+        let r = db.query("SELECT json_quote(42)").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("42".into()));
+
+        let r = db.query("SELECT json_quote(NULL)").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("null".into()));
+    }
+
+    #[test]
+    fn json_with_table_data() {
+        let mut db = setup_json_db();
+        db.execute("CREATE TABLE docs (id INTEGER PRIMARY KEY, data TEXT)").unwrap();
+        db.execute(r#"INSERT INTO docs VALUES (1, '{"name":"Alice","scores":[95,87,92]}')"#).unwrap();
+        db.execute(r#"INSERT INTO docs VALUES (2, '{"name":"Bob","scores":[78,85,90]}')"#).unwrap();
+
+        let r = db.query("SELECT id, json_extract(data, '$.name') AS name FROM docs ORDER BY id").unwrap();
+        assert_eq!(r.rows.len(), 2);
+        assert_eq!(r.rows[0].values[1], crate::types::Value::Text("Alice".into()));
+        assert_eq!(r.rows[1].values[1], crate::types::Value::Text("Bob".into()));
+
+        let r = db.query("SELECT id, json_extract(data, '$.scores[0]') AS top FROM docs ORDER BY id").unwrap();
+        assert_eq!(r.rows[0].values[1], crate::types::Value::Integer(95));
+        assert_eq!(r.rows[1].values[1], crate::types::Value::Integer(78));
+    }
+
+    #[test]
+    fn json_extract_nested_object() {
+        let mut db = setup_json_db();
+        let r = db.query(r#"SELECT json_extract('{"user":{"addr":{"city":"NYC"}}}', '$.user.addr.city')"#).unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("NYC".into()));
+    }
+
+    #[test]
+    fn json_extract_returns_subobject() {
+        let mut db = setup_json_db();
+        let r = db.query(r#"SELECT json_extract('{"a":{"b":1}}', '$.a')"#).unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text(r#"{"b":1}"#.into()));
+    }
+
+    #[test]
+    fn json_invalid_input() {
+        let mut db = setup_json_db();
+        let r = db.query("SELECT json('not valid json')");
+        assert!(r.is_err());
+
+        let r = db.query(r#"SELECT json_extract('not json', '$.a')"#);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn json_insert_function() {
+        let mut db = setup_json_db();
+        let r = db.query(r#"SELECT json_insert('{"a":1}', '$.b', 2)"#).unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text(r#"{"a":1,"b":2}"#.into()));
+
+        // json_insert does NOT replace existing keys
+        let r = db.query(r#"SELECT json_insert('{"a":1}', '$.a', 99)"#).unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text(r#"{"a":1}"#.into()));
+    }
+
+    #[test]
+    fn json_replace_function() {
+        let mut db = setup_json_db();
+        let r = db.query(r#"SELECT json_replace('{"a":1}', '$.a', 99)"#).unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text(r#"{"a":99}"#.into()));
+
+        // json_replace does NOT insert new keys
+        let r = db.query(r#"SELECT json_replace('{"a":1}', '$.b', 2)"#).unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text(r#"{"a":1}"#.into()));
+    }
+
+    #[test]
+    fn json_set_function() {
+        let mut db = setup_json_db();
+        // json_set inserts AND replaces
+        let r = db.query(r#"SELECT json_set('{"a":1}', '$.a', 99)"#).unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text(r#"{"a":99}"#.into()));
+
+        let r = db.query(r#"SELECT json_set('{"a":1}', '$.b', 2)"#).unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text(r#"{"a":1,"b":2}"#.into()));
+    }
+
+    #[test]
+    fn json_remove_function() {
+        let mut db = setup_json_db();
+        let r = db.query(r#"SELECT json_remove('{"a":1,"b":2}', '$.a')"#).unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text(r#"{"b":2}"#.into()));
+
+        let r = db.query("SELECT json_remove('[1,2,3]', '$[1]')").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("[1,3]".into()));
+    }
+
+    #[test]
+    fn json_patch_function() {
+        let mut db = setup_json_db();
+        let r = db.query(r#"SELECT json_patch('{"a":1,"b":2}', '{"b":3,"c":4}')"#).unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text(r#"{"a":1,"b":3,"c":4}"#.into()));
+
+        // null in patch removes key
+        let r = db.query(r#"SELECT json_patch('{"a":1,"b":2}', '{"a":null}')"#).unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text(r#"{"b":2}"#.into()));
+    }

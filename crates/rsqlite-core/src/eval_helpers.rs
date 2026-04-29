@@ -470,6 +470,11 @@ pub(crate) fn eval_scalar_function(name: &str, args: &[Value]) -> Result<Value> 
             }
             Ok(max.clone())
         }
+        "JSON" | "JSON_EXTRACT" | "JSON_TYPE" | "JSON_VALID" | "JSON_ARRAY"
+        | "JSON_OBJECT" | "JSON_ARRAY_LENGTH" | "JSON_QUOTE" | "JSON_INSERT"
+        | "JSON_REPLACE" | "JSON_SET" | "JSON_REMOVE" | "JSON_PATCH" => {
+            crate::json::eval_json_function(name, args)
+        }
         _ => Err(Error::Other(format!("unknown function: {name}"))),
     }
 }
