@@ -1020,6 +1020,537 @@ pub fn btree_create_table(pager: &mut Pager) -> Result<u32> {
     Ok(page_num)
 }
 
+// ── Index B-tree operations ──
+
+fn build_index_leaf_cell(payload: &[u8]) -> Vec<u8> {
+    let mut cell = Vec::with_capacity(payload.len() + 9);
+    let mut tmp = [0u8; 9];
+    let n = varint::write_varint(payload.len() as u64, &mut tmp);
+    cell.extend_from_slice(&tmp[..n]);
+    cell.extend_from_slice(payload);
+    cell
+}
+
+fn build_index_interior_cell(left_child: u32, payload: &[u8]) -> Vec<u8> {
+    let mut cell = Vec::with_capacity(payload.len() + 13);
+    cell.extend_from_slice(&left_child.to_be_bytes());
+    let mut tmp = [0u8; 9];
+    let n = varint::write_varint(payload.len() as u64, &mut tmp);
+    cell.extend_from_slice(&tmp[..n]);
+    cell.extend_from_slice(payload);
+    cell
+}
+
+#[derive(Debug)]
+struct IndexLeafCell {
+    payload: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct IndexInteriorCell {
+    left_child_page: u32,
+    payload: Vec<u8>,
+}
+
+fn parse_index_leaf_cell(data: &[u8], offset: usize, usable_size: u32) -> Result<IndexLeafCell> {
+    let (payload_size, n1) = varint::read_varint(&data[offset..]);
+    let payload_start = offset + n1;
+    let payload_size = payload_size as usize;
+
+    let max_local = max_local_payload_leaf(usable_size) as usize;
+    let local_size = if payload_size <= max_local {
+        payload_size
+    } else {
+        let min_local = min_local_payload(usable_size) as usize;
+        let mut local = min_local + (payload_size - min_local) % (usable_size as usize - 4);
+        if local > max_local {
+            local = min_local;
+        }
+        local
+    };
+
+    let payload = data[payload_start..payload_start + local_size].to_vec();
+    Ok(IndexLeafCell { payload })
+}
+
+fn parse_index_interior_cell(data: &[u8], offset: usize, usable_size: u32) -> Result<IndexInteriorCell> {
+    let left_child = u32::from_be_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ]);
+    let (payload_size, n1) = varint::read_varint(&data[offset + 4..]);
+    let payload_start = offset + 4 + n1;
+    let payload_size = payload_size as usize;
+
+    let max_local = max_local_payload_leaf(usable_size) as usize;
+    let local_size = if payload_size <= max_local {
+        payload_size
+    } else {
+        let min_local = min_local_payload(usable_size) as usize;
+        let mut local = min_local + (payload_size - min_local) % (usable_size as usize - 4);
+        if local > max_local {
+            local = min_local;
+        }
+        local
+    };
+
+    let payload = data[payload_start..payload_start + local_size].to_vec();
+    Ok(IndexInteriorCell {
+        left_child_page: left_child,
+        payload,
+    })
+}
+
+fn init_leaf_index_page(data: &mut [u8], page_num: u32) {
+    let offset = btree_header_offset(page_num);
+    let usable = data.len() as u32;
+    data[offset] = PageType::LeafIndex as u8;
+    data[offset + 1] = 0;
+    data[offset + 2] = 0;
+    data[offset + 3] = 0;
+    data[offset + 4] = 0;
+    let content_offset = usable as u16;
+    data[offset + 5] = (content_offset >> 8) as u8;
+    data[offset + 6] = content_offset as u8;
+    data[offset + 7] = 0;
+}
+
+fn init_interior_index_page(data: &mut [u8], page_num: u32, right_child: u32) {
+    let offset = btree_header_offset(page_num);
+    let usable = data.len() as u32;
+    data[offset] = PageType::InteriorIndex as u8;
+    data[offset + 1] = 0;
+    data[offset + 2] = 0;
+    data[offset + 3] = 0;
+    data[offset + 4] = 0;
+    let content_offset = usable as u16;
+    data[offset + 5] = (content_offset >> 8) as u8;
+    data[offset + 6] = content_offset as u8;
+    data[offset + 7] = 0;
+    data[offset + 8..offset + 12].copy_from_slice(&right_child.to_be_bytes());
+}
+
+fn compare_records(a: &Record, b: &Record) -> std::cmp::Ordering {
+    let len = a.values.len().min(b.values.len());
+    for i in 0..len {
+        let ord = compare_values(&a.values[i], &b.values[i]);
+        if ord != std::cmp::Ordering::Equal {
+            return ord;
+        }
+    }
+    a.values.len().cmp(&b.values.len())
+}
+
+fn compare_values(a: &Value, b: &Value) -> std::cmp::Ordering {
+    let ao = value_type_order(a);
+    let bo = value_type_order(b);
+    if ao != bo {
+        return ao.cmp(&bo);
+    }
+    match (a, b) {
+        (Value::Null, Value::Null) => std::cmp::Ordering::Equal,
+        (Value::Integer(x), Value::Integer(y)) => x.cmp(y),
+        (Value::Real(x), Value::Real(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
+        (Value::Integer(x), Value::Real(y)) => (*x as f64).partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
+        (Value::Real(x), Value::Integer(y)) => x.partial_cmp(&(*y as f64)).unwrap_or(std::cmp::Ordering::Equal),
+        (Value::Text(x), Value::Text(y)) => x.cmp(y),
+        (Value::Blob(x), Value::Blob(y)) => x.cmp(y),
+        _ => std::cmp::Ordering::Equal,
+    }
+}
+
+fn value_type_order(v: &Value) -> i32 {
+    match v {
+        Value::Null => 0,
+        Value::Integer(_) | Value::Real(_) => 1,
+        Value::Text(_) => 2,
+        Value::Blob(_) => 3,
+    }
+}
+
+/// Create a new empty index B-tree. Returns the root page number.
+pub fn btree_create_index(pager: &mut Pager) -> Result<u32> {
+    let page_num = pager.allocate_page()?;
+    {
+        let page = pager.get_page_mut(page_num)?;
+        init_leaf_index_page(&mut page.data, page_num);
+    }
+    Ok(page_num)
+}
+
+/// Insert a key record into an index B-tree. Returns the new root page number.
+pub fn btree_index_insert(pager: &mut Pager, root_page: u32, key: &Record) -> Result<u32> {
+    let payload = key.encode();
+    let cell = build_index_leaf_cell(&payload);
+    index_insert_into_page(pager, root_page, key, &cell)
+}
+
+fn index_insert_into_page(
+    pager: &mut Pager,
+    page_num: u32,
+    key: &Record,
+    cell: &[u8],
+) -> Result<u32> {
+    let page_data = pager.get_page(page_num)?.data.clone();
+    let offset = btree_header_offset(page_num);
+    let header = parse_btree_header(&page_data, offset)?;
+    let usable = pager.usable_size();
+
+    if header.page_type == PageType::LeafIndex {
+        let result = try_insert_cell_into_index_leaf(pager, page_num, key, cell)?;
+        match result {
+            InsertResult::Ok => Ok(page_num),
+            InsertResult::Split {
+                new_page,
+                median_rowid: _,
+            } => {
+                let new_root = pager.allocate_page()?;
+                let median_page_data = pager.get_page(page_num)?.data.clone();
+                let median_offset = btree_header_offset(page_num);
+                let median_header = parse_btree_header(&median_page_data, median_offset)?;
+                let median_pointers = read_cell_pointers(
+                    &median_page_data,
+                    median_offset + median_header.header_size(),
+                    median_header.cell_count,
+                );
+                let last_ptr = median_pointers[median_header.cell_count as usize - 1] as usize;
+                let last_cell = parse_index_leaf_cell(&median_page_data, last_ptr, usable)?;
+
+                {
+                    let root_data = &mut pager.get_page_mut(new_root)?.data;
+                    init_interior_index_page(root_data, new_root, new_page);
+                }
+                let interior_cell = build_index_interior_cell(page_num, &last_cell.payload);
+                insert_cell_into_interior(pager, new_root, &interior_cell)?;
+                Ok(new_root)
+            }
+        }
+    } else {
+        let pointers = read_cell_pointers(&page_data, offset + header.header_size(), header.cell_count);
+        let mut child_page = header.right_most_pointer.unwrap();
+
+        for i in 0..header.cell_count as usize {
+            let cell_offset = pointers[i] as usize;
+            let ic = parse_index_interior_cell(&page_data, cell_offset, usable)?;
+            let ic_record = Record::decode(&ic.payload)?;
+            if compare_records(key, &ic_record) != std::cmp::Ordering::Greater {
+                child_page = ic.left_child_page;
+                break;
+            }
+        }
+
+        let new_child_root = index_insert_into_page(pager, child_page, key, cell)?;
+        if new_child_root != child_page {
+            update_child_pointer(pager, page_num, child_page, new_child_root)?;
+        }
+        Ok(page_num)
+    }
+}
+
+fn try_insert_cell_into_index_leaf(
+    pager: &mut Pager,
+    page_num: u32,
+    key: &Record,
+    cell: &[u8],
+) -> Result<InsertResult> {
+    let usable = pager.usable_size();
+    let page = pager.get_page_mut(page_num)?;
+    let data = &mut page.data;
+    let offset = btree_header_offset(page_num);
+    let header = parse_btree_header(data, offset)?;
+
+    let ptr_area_start = offset + header.header_size();
+    let ptr_area_end = ptr_area_start + header.cell_count as usize * 2;
+    let content_start = header.cell_content_offset as usize;
+
+    let space_needed = 2 + cell.len();
+    let free_space = content_start - ptr_area_end;
+
+    if space_needed <= free_space {
+        let pointers = read_cell_pointers(data, ptr_area_start, header.cell_count);
+
+        let mut insert_pos = pointers.len();
+        for (i, &ptr) in pointers.iter().enumerate() {
+            let existing_cell = parse_index_leaf_cell(data, ptr as usize, usable)?;
+            let existing_record = Record::decode(&existing_cell.payload)?;
+            if compare_records(key, &existing_record) != std::cmp::Ordering::Greater {
+                insert_pos = i;
+                break;
+            }
+        }
+
+        let new_content_start = content_start - cell.len();
+        data[new_content_start..new_content_start + cell.len()].copy_from_slice(cell);
+
+        let mut new_pointers = Vec::with_capacity(pointers.len() + 1);
+        for (i, &ptr) in pointers.iter().enumerate() {
+            if i == insert_pos {
+                new_pointers.push(new_content_start as u16);
+            }
+            new_pointers.push(ptr);
+        }
+        if insert_pos == pointers.len() {
+            new_pointers.push(new_content_start as u16);
+        }
+
+        let new_cell_count = header.cell_count + 1;
+        data[offset + 3..offset + 5].copy_from_slice(&new_cell_count.to_be_bytes());
+        let content_u16 = new_content_start as u16;
+        data[offset + 5..offset + 7].copy_from_slice(&content_u16.to_be_bytes());
+        write_cell_pointers(data, ptr_area_start, &new_pointers);
+
+        Ok(InsertResult::Ok)
+    } else {
+        split_index_leaf(pager, page_num, key, cell)
+    }
+}
+
+fn split_index_leaf(
+    pager: &mut Pager,
+    page_num: u32,
+    new_key: &Record,
+    new_cell: &[u8],
+) -> Result<InsertResult> {
+    let usable = pager.usable_size();
+    let page_data = pager.get_page(page_num)?.data.clone();
+    let offset = btree_header_offset(page_num);
+    let header = parse_btree_header(&page_data, offset)?;
+    let pointers = read_cell_pointers(&page_data, offset + header.header_size(), header.cell_count);
+
+    let mut cells: Vec<(Record, Vec<u8>)> = Vec::new();
+    for &ptr in &pointers {
+        let c = parse_index_leaf_cell(&page_data, ptr as usize, usable)?;
+        let record = Record::decode(&c.payload)?;
+        let raw = build_index_leaf_cell(&c.payload);
+        cells.push((record, raw));
+    }
+    cells.push((new_key.clone(), new_cell.to_vec()));
+    cells.sort_by(|(a, _), (b, _)| compare_records(a, b));
+
+    let mid = cells.len() / 2;
+    let left_cells: Vec<(i64, Vec<u8>)> = cells[..mid].iter().map(|(_, raw)| (0, raw.clone())).collect();
+    let right_cells: Vec<(i64, Vec<u8>)> = cells[mid..].iter().map(|(_, raw)| (0, raw.clone())).collect();
+
+    rewrite_index_leaf_page(pager, page_num, &left_cells)?;
+
+    let new_page = pager.allocate_page()?;
+    {
+        let data = &mut pager.get_page_mut(new_page)?.data;
+        init_leaf_index_page(data, new_page);
+    }
+    rewrite_index_leaf_page(pager, new_page, &right_cells)?;
+
+    Ok(InsertResult::Split {
+        new_page,
+        median_rowid: 0,
+    })
+}
+
+fn rewrite_index_leaf_page(pager: &mut Pager, page_num: u32, cells: &[(i64, Vec<u8>)]) -> Result<()> {
+    let page_size = pager.page_size() as usize;
+    let page = pager.get_page_mut(page_num)?;
+    let data = &mut page.data;
+    let offset = btree_header_offset(page_num);
+
+    let clear_start = offset;
+    data[clear_start..page_size].fill(0);
+    init_leaf_index_page(data, page_num);
+
+    let ptr_area_start = offset + 8;
+    let mut content_end = page_size;
+    let mut pointers = Vec::with_capacity(cells.len());
+
+    for (_, cell_data) in cells {
+        content_end -= cell_data.len();
+        data[content_end..content_end + cell_data.len()].copy_from_slice(cell_data);
+        pointers.push(content_end as u16);
+    }
+
+    let cell_count = cells.len() as u16;
+    data[offset + 3..offset + 5].copy_from_slice(&cell_count.to_be_bytes());
+    let content_u16 = content_end as u16;
+    data[offset + 5..offset + 7].copy_from_slice(&content_u16.to_be_bytes());
+    write_cell_pointers(data, ptr_area_start, &pointers);
+
+    Ok(())
+}
+
+/// Delete a key from an index B-tree by matching exact record values.
+pub fn btree_index_delete(pager: &mut Pager, root_page: u32, key: &Record) -> Result<()> {
+    let mut cursor = IndexCursor::new(pager, root_page);
+    let entries = cursor.collect_all()?;
+
+    let remaining: Vec<Vec<u8>> = entries
+        .into_iter()
+        .filter(|rec| compare_records(rec, key) != std::cmp::Ordering::Equal)
+        .map(|rec| {
+            let payload = rec.encode();
+            build_index_leaf_cell(&payload)
+        })
+        .collect();
+
+    let cells: Vec<(i64, Vec<u8>)> = remaining.into_iter().map(|raw| (0, raw)).collect();
+    rewrite_index_leaf_page(pager, root_page, &cells)?;
+
+    Ok(())
+}
+
+/// Cursor for traversing an index B-tree.
+pub struct IndexCursor<'a> {
+    pager: &'a mut Pager,
+    root_page: u32,
+    stack: Vec<(u32, usize)>,
+    state: CursorState,
+}
+
+impl<'a> IndexCursor<'a> {
+    pub fn new(pager: &'a mut Pager, root_page: u32) -> Self {
+        Self {
+            pager,
+            root_page,
+            stack: Vec::new(),
+            state: CursorState::Invalid,
+        }
+    }
+
+    pub fn first(&mut self) -> Result<bool> {
+        self.stack.clear();
+        self.state = CursorState::Invalid;
+        self.descend_to_leftmost(self.root_page)?;
+        self.check_valid()
+    }
+
+    pub fn next(&mut self) -> Result<bool> {
+        if self.state != CursorState::Valid {
+            return Ok(false);
+        }
+
+        if let Some(entry) = self.stack.last_mut() {
+            entry.1 += 1;
+        }
+
+        loop {
+            let (page_num, idx) = match self.stack.last().copied() {
+                Some(entry) => entry,
+                None => {
+                    self.state = CursorState::AtEnd;
+                    return Ok(false);
+                }
+            };
+
+            let page = self.pager.get_page(page_num)?.data.clone();
+            let offset = btree_header_offset(page_num);
+            let header = parse_btree_header(&page, offset)?;
+
+            if header.page_type.is_leaf() {
+                if idx < header.cell_count as usize {
+                    self.state = CursorState::Valid;
+                    return Ok(true);
+                }
+                self.stack.pop();
+                if let Some(entry) = self.stack.last_mut() {
+                    entry.1 += 1;
+                }
+            } else {
+                let total_children = header.cell_count as usize + 1;
+                if idx < total_children {
+                    let child_page = self.get_child_page(&page, offset, &header, idx)?;
+                    self.descend_to_leftmost(child_page)?;
+                    return self.check_valid();
+                }
+                self.stack.pop();
+                if let Some(entry) = self.stack.last_mut() {
+                    entry.1 += 1;
+                }
+            }
+        }
+    }
+
+    pub fn current(&mut self) -> Result<Record> {
+        if self.state != CursorState::Valid {
+            return Err(StorageError::Other("cursor not positioned".to_string()));
+        }
+
+        let &(page_num, cell_idx) = self.stack.last().unwrap();
+        let page = self.pager.get_page(page_num)?.data.clone();
+        let offset = btree_header_offset(page_num);
+        let header = parse_btree_header(&page, offset)?;
+        let usable = self.pager.usable_size();
+
+        let pointers =
+            read_cell_pointers(&page, offset + header.header_size(), header.cell_count);
+        let cell_offset = pointers[cell_idx] as usize;
+        let cell = parse_index_leaf_cell(&page, cell_offset, usable)?;
+        Record::decode(&cell.payload)
+    }
+
+    pub fn collect_all(&mut self) -> Result<Vec<Record>> {
+        let mut records = Vec::new();
+        let mut has_row = self.first()?;
+        while has_row {
+            records.push(self.current()?);
+            has_row = self.next()?;
+        }
+        Ok(records)
+    }
+
+    fn get_child_page(
+        &mut self,
+        page_data: &[u8],
+        offset: usize,
+        header: &BTreePageHeader,
+        child_idx: usize,
+    ) -> Result<u32> {
+        let cell_count = header.cell_count as usize;
+        if child_idx < cell_count {
+            let pointers =
+                read_cell_pointers(page_data, offset + header.header_size(), header.cell_count);
+            let cell_offset = pointers[child_idx] as usize;
+            let usable = self.pager.usable_size();
+            let cell = parse_index_interior_cell(page_data, cell_offset, usable)?;
+            Ok(cell.left_child_page)
+        } else {
+            header.right_most_pointer.ok_or_else(|| {
+                StorageError::Corrupt("interior page missing rightmost pointer".to_string())
+            })
+        }
+    }
+
+    fn descend_to_leftmost(&mut self, page_num: u32) -> Result<()> {
+        let mut current_page = page_num;
+        loop {
+            let page_data = self.pager.get_page(current_page)?.data.clone();
+            let offset = btree_header_offset(current_page);
+            let header = parse_btree_header(&page_data, offset)?;
+
+            if header.page_type.is_leaf() {
+                self.stack.push((current_page, 0));
+                return Ok(());
+            }
+
+            self.stack.push((current_page, 0));
+            let child = self.get_child_page(&page_data, offset, &header, 0)?;
+            current_page = child;
+        }
+    }
+
+    fn check_valid(&mut self) -> Result<bool> {
+        if let Some(&(page_num, cell_idx)) = self.stack.last() {
+            let page_data = self.pager.get_page(page_num)?.data.clone();
+            let offset = btree_header_offset(page_num);
+            let header = parse_btree_header(&page_data, offset)?;
+            if header.page_type.is_leaf() && cell_idx < header.cell_count as usize {
+                self.state = CursorState::Valid;
+                return Ok(true);
+            }
+        }
+        self.state = CursorState::AtEnd;
+        Ok(false)
+    }
+}
+
 /// Delete a row by rowid from a table B-tree. Simple approach: rebuild without the row.
 pub fn btree_delete(pager: &mut Pager, root_page: u32, rowid: i64) -> Result<()> {
     let mut cursor = BTreeCursor::new(pager, root_page);

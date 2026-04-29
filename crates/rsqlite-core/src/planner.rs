@@ -20,6 +20,15 @@ pub struct CreateColumnDef {
 }
 
 #[derive(Debug, Clone)]
+pub struct CreateIndexPlan {
+    pub index_name: String,
+    pub table_name: String,
+    pub columns: Vec<String>,
+    pub sql: String,
+    pub if_not_exists: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct InsertPlan {
     pub table_name: String,
     pub root_page: u32,
@@ -99,6 +108,7 @@ pub enum Plan {
         join_type: JoinType,
     },
     CreateTable(CreateTablePlan),
+    CreateIndex(CreateIndexPlan),
     Insert(InsertPlan),
     Update(UpdatePlan),
     Delete(DeletePlan),
@@ -194,6 +204,7 @@ pub fn plan_statement(stmt: &Statement, catalog: &Catalog) -> Result<Plan> {
     match stmt {
         Statement::Query(query) => plan_select(query, catalog),
         Statement::CreateTable(ct) => plan_create_table(ct),
+        Statement::CreateIndex(ci) => plan_create_index(ci),
         Statement::Insert(insert) => plan_insert(insert, catalog),
         Statement::Update {
             table,
@@ -902,6 +913,31 @@ fn plan_create_table(ct: &ast::CreateTable) -> Result<Plan> {
         sql,
         columns,
         if_not_exists: ct.if_not_exists,
+    }))
+}
+
+fn plan_create_index(ci: &ast::CreateIndex) -> Result<Plan> {
+    let index_name = ci
+        .name
+        .as_ref()
+        .map(|n| n.to_string())
+        .unwrap_or_default();
+    let table_name = ci.table_name.to_string();
+
+    let columns: Vec<String> = ci
+        .columns
+        .iter()
+        .map(|c| c.expr.to_string())
+        .collect();
+
+    let sql = format!("{ci}");
+
+    Ok(Plan::CreateIndex(CreateIndexPlan {
+        index_name,
+        table_name,
+        columns,
+        sql,
+        if_not_exists: ci.if_not_exists,
     }))
 }
 

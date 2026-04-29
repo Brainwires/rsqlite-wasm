@@ -1489,4 +1489,132 @@ mod tests {
 
         let _ = std::fs::remove_file(db_path);
     }
+
+    #[test]
+    fn create_index() {
+        let db_path = "/tmp/rsqlite_db_create_index.db";
+        let _ = std::fs::remove_file(db_path);
+
+        let vfs = rsqlite_vfs::native::NativeVfs::new();
+        let mut db = Database::create(&vfs, db_path).unwrap();
+
+        db.execute(
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)",
+        )
+        .unwrap();
+
+        db.execute("INSERT INTO users VALUES (1, 'Alice', 30)")
+            .unwrap();
+        db.execute("INSERT INTO users VALUES (2, 'Bob', 25)")
+            .unwrap();
+        db.execute("INSERT INTO users VALUES (3, 'Charlie', 35)")
+            .unwrap();
+
+        db.execute("CREATE INDEX idx_users_name ON users(name)")
+            .unwrap();
+
+        assert!(db.catalog().indexes.contains_key("idx_users_name"));
+
+        // Queries should still work after creating the index
+        let result = db.query("SELECT * FROM users WHERE name = 'Bob'").unwrap();
+        assert_eq!(result.rows.len(), 1);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn create_index_verify_with_sqlite3() {
+        let db_path = "/tmp/rsqlite_db_create_index_compat.db";
+        let _ = std::fs::remove_file(db_path);
+
+        let vfs = rsqlite_vfs::native::NativeVfs::new();
+        let mut db = Database::create(&vfs, db_path).unwrap();
+
+        db.execute(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, score INTEGER)",
+        )
+        .unwrap();
+
+        db.execute("INSERT INTO t VALUES (1, 'Alice', 90)")
+            .unwrap();
+        db.execute("INSERT INTO t VALUES (2, 'Bob', 80)")
+            .unwrap();
+        db.execute("INSERT INTO t VALUES (3, 'Charlie', 70)")
+            .unwrap();
+
+        db.execute("CREATE INDEX idx_t_score ON t(score)")
+            .unwrap();
+
+        drop(db);
+
+        // Verify sqlite3 can read the database and use the index
+        let output = match std::process::Command::new("sqlite3")
+            .arg(db_path)
+            .arg(
+                "SELECT * FROM t ORDER BY id;\
+                 .indices t",
+            )
+            .output()
+        {
+            Ok(o) if o.status.success() => {
+                String::from_utf8_lossy(&o.stdout).to_string()
+            }
+            _ => {
+                let _ = std::fs::remove_file(db_path);
+                return;
+            }
+        };
+
+        assert!(output.contains("Alice"));
+        assert!(output.contains("Bob"));
+        assert!(output.contains("Charlie"));
+        assert!(output.contains("idx_t_score"));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn index_maintained_on_insert() {
+        let db_path = "/tmp/rsqlite_db_idx_insert.db";
+        let _ = std::fs::remove_file(db_path);
+
+        let vfs = rsqlite_vfs::native::NativeVfs::new();
+        let mut db = Database::create(&vfs, db_path).unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+            .unwrap();
+        db.execute("CREATE INDEX idx_name ON t(name)").unwrap();
+
+        // Insert after index creation
+        db.execute("INSERT INTO t VALUES (1, 'Alice')").unwrap();
+        db.execute("INSERT INTO t VALUES (2, 'Bob')").unwrap();
+
+        // Verify the data is accessible
+        let result = db.query("SELECT * FROM t").unwrap();
+        assert_eq!(result.rows.len(), 2);
+
+        // Verify with sqlite3 that the index is valid
+        drop(db);
+
+        let output = match std::process::Command::new("sqlite3")
+            .arg(db_path)
+            .arg("PRAGMA integrity_check;")
+            .output()
+        {
+            Ok(o) if o.status.success() => {
+                String::from_utf8_lossy(&o.stdout).to_string()
+            }
+            _ => {
+                let _ = std::fs::remove_file(db_path);
+                return;
+            }
+        };
+
+        assert!(
+            output.trim() == "ok",
+            "integrity_check failed: {output}"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
 }

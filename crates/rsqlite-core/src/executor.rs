@@ -1,6 +1,6 @@
 use rsqlite_storage::btree::{
-    btree_create_table, btree_delete, btree_insert, btree_max_rowid, insert_schema_entry,
-    BTreeCursor,
+    btree_create_index, btree_create_table, btree_delete, btree_index_delete, btree_index_insert,
+    btree_insert, btree_max_rowid, insert_schema_entry, BTreeCursor, CursorRow,
 };
 use rsqlite_storage::codec::{Record, Value};
 use rsqlite_storage::pager::Pager;
@@ -8,8 +8,9 @@ use rsqlite_storage::pager::Pager;
 use crate::catalog::Catalog;
 use crate::error::{Error, Result};
 use crate::planner::{
-    agg_column_name, AggFunc, BinOp, ColumnRef, CreateTablePlan, DeletePlan, InsertPlan,
-    JoinType, LiteralValue, Plan, PlanExpr, ProjectionItem, SortKey, UnaryOp, UpdatePlan,
+    agg_column_name, AggFunc, BinOp, ColumnRef, CreateIndexPlan, CreateTablePlan, DeletePlan,
+    InsertPlan, JoinType, LiteralValue, Plan, PlanExpr, ProjectionItem, SortKey, UnaryOp,
+    UpdatePlan,
 };
 use crate::types::{QueryResult, Row};
 
@@ -92,6 +93,7 @@ pub fn execute(plan: &Plan, pager: &mut Pager) -> Result<QueryResult> {
             having,
         } => execute_aggregate(input, group_by, aggregates, having.as_ref(), pager),
         Plan::CreateTable(_)
+        | Plan::CreateIndex(_)
         | Plan::Insert(_)
         | Plan::Update(_)
         | Plan::Delete(_)
@@ -110,9 +112,10 @@ pub fn execute_mut(
 ) -> Result<ExecResult> {
     match plan {
         Plan::CreateTable(ct) => execute_create_table(ct, pager, catalog),
-        Plan::Insert(ins) => execute_insert(ins, pager),
-        Plan::Update(upd) => execute_update(upd, pager),
-        Plan::Delete(del) => execute_delete(del, pager),
+        Plan::CreateIndex(ci) => execute_create_index(ci, pager, catalog),
+        Plan::Insert(ins) => execute_insert(ins, pager, catalog),
+        Plan::Update(upd) => execute_update(upd, pager, catalog),
+        Plan::Delete(del) => execute_delete(del, pager, catalog),
         Plan::Begin => {
             pager.begin_transaction()?;
             Ok(ExecResult { rows_affected: 0 })
@@ -167,7 +170,99 @@ fn execute_create_table(
     Ok(ExecResult { rows_affected: 0 })
 }
 
-fn execute_insert(plan: &InsertPlan, pager: &mut Pager) -> Result<ExecResult> {
+fn execute_create_index(
+    plan: &CreateIndexPlan,
+    pager: &mut Pager,
+    catalog: &mut Catalog,
+) -> Result<ExecResult> {
+    if plan.if_not_exists && catalog.indexes.contains_key(&plan.index_name.to_lowercase()) {
+        return Ok(ExecResult { rows_affected: 0 });
+    }
+
+    if catalog.indexes.contains_key(&plan.index_name.to_lowercase()) {
+        return Err(Error::Other(format!(
+            "index {} already exists",
+            plan.index_name
+        )));
+    }
+
+    let table_def = catalog.get_table(&plan.table_name).ok_or_else(|| {
+        Error::Other(format!("table not found: {}", plan.table_name))
+    })?;
+    let table_root = table_def.root_page;
+
+    let col_indices: Vec<usize> = plan
+        .columns
+        .iter()
+        .map(|col_name| {
+            table_def
+                .columns
+                .iter()
+                .position(|c| c.name.eq_ignore_ascii_case(col_name))
+                .ok_or_else(|| {
+                    Error::Other(format!(
+                        "column {} not found in table {}",
+                        col_name, plan.table_name
+                    ))
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let has_rowid_alias = table_def
+        .columns
+        .iter()
+        .any(|c| c.is_rowid_alias);
+
+    let root_page = btree_create_index(pager)?;
+
+    let mut cursor = BTreeCursor::new(pager, table_root);
+    let rows = cursor.collect_all().map_err(|e| Error::Other(e.to_string()))?;
+
+    let mut current_root = root_page;
+    for row in &rows {
+        let mut key_values: Vec<Value> = Vec::new();
+        for &col_idx in &col_indices {
+            let table_col = &table_def.columns[col_idx];
+            if table_col.is_rowid_alias {
+                key_values.push(Value::Integer(row.rowid));
+            } else {
+                let val = row.record.values
+                    .get(col_idx)
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                key_values.push(val);
+            }
+        }
+        key_values.push(Value::Integer(row.rowid));
+
+        let key_record = Record { values: key_values };
+        current_root = btree_index_insert(pager, current_root, &key_record)
+            .map_err(|e| Error::Other(e.to_string()))?;
+    }
+
+    let _ = has_rowid_alias;
+
+    insert_schema_entry(
+        pager,
+        "index",
+        &plan.index_name,
+        &plan.table_name,
+        current_root,
+        &plan.sql,
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+    if !pager.in_transaction() {
+        pager.flush()?;
+    }
+
+    catalog.reload(pager)?;
+
+    Ok(ExecResult { rows_affected: 0 })
+}
+
+fn execute_insert(plan: &InsertPlan, pager: &mut Pager, catalog: &Catalog) -> Result<ExecResult> {
+    let table_indexes = get_table_indexes(catalog, &plan.table_name);
     let mut rows_affected = 0u64;
     let mut current_root = plan.root_page;
 
@@ -188,8 +283,17 @@ fn execute_insert(plan: &InsertPlan, pager: &mut Pager) -> Result<ExecResult> {
             None => btree_max_rowid(pager, current_root)? + 1,
         };
 
-        let record = Record { values };
+        let record = Record {
+            values: values.clone(),
+        };
         current_root = btree_insert(pager, current_root, rowid, &record)?;
+
+        for (idx_root, idx_col_indices) in &table_indexes {
+            let key = build_index_key(&values, idx_col_indices, &plan.table_columns, rowid);
+            btree_index_insert(pager, *idx_root, &key)
+                .map_err(|e| Error::Other(e.to_string()))?;
+        }
+
         rows_affected += 1;
     }
 
@@ -198,6 +302,81 @@ fn execute_insert(plan: &InsertPlan, pager: &mut Pager) -> Result<ExecResult> {
     }
 
     Ok(ExecResult { rows_affected })
+}
+
+fn row_values_for_rowid(
+    btree_rows: &[CursorRow],
+    rowid: i64,
+    table_columns: &[ColumnRef],
+) -> Vec<Value> {
+    for row in btree_rows {
+        if row.rowid == rowid {
+            let mut values = Vec::with_capacity(table_columns.len());
+            for col in table_columns {
+                if col.is_rowid_alias {
+                    values.push(Value::Integer(row.rowid));
+                } else {
+                    values.push(
+                        row.record
+                            .values
+                            .get(col.column_index)
+                            .cloned()
+                            .unwrap_or(Value::Null),
+                    );
+                }
+            }
+            return values;
+        }
+    }
+    vec![Value::Null; table_columns.len()]
+}
+
+fn get_table_indexes(catalog: &Catalog, table_name: &str) -> Vec<(u32, Vec<usize>)> {
+    let table_def = match catalog.get_table(table_name) {
+        Some(t) => t,
+        None => return vec![],
+    };
+
+    catalog
+        .indexes
+        .values()
+        .filter(|idx| idx.table_name.eq_ignore_ascii_case(table_name) && !idx.columns.is_empty())
+        .filter_map(|idx| {
+            let col_indices: Vec<usize> = idx
+                .columns
+                .iter()
+                .filter_map(|col_name| {
+                    table_def
+                        .columns
+                        .iter()
+                        .position(|c| c.name.eq_ignore_ascii_case(col_name))
+                })
+                .collect();
+            if col_indices.len() == idx.columns.len() {
+                Some((idx.root_page, col_indices))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn build_index_key(
+    values: &[Value],
+    col_indices: &[usize],
+    table_columns: &[ColumnRef],
+    rowid: i64,
+) -> Record {
+    let mut key_values: Vec<Value> = Vec::new();
+    for &col_idx in col_indices {
+        if table_columns[col_idx].is_rowid_alias {
+            key_values.push(Value::Integer(rowid));
+        } else {
+            key_values.push(values.get(col_idx).cloned().unwrap_or(Value::Null));
+        }
+    }
+    key_values.push(Value::Integer(rowid));
+    Record { values: key_values }
 }
 
 fn eval_insert_row(
@@ -338,7 +517,7 @@ fn row_hash_key(row: &Row) -> Vec<u8> {
     key
 }
 
-fn execute_update(plan: &UpdatePlan, pager: &mut Pager) -> Result<ExecResult> {
+fn execute_update(plan: &UpdatePlan, pager: &mut Pager, catalog: &Catalog) -> Result<ExecResult> {
     let column_names: Vec<String> = plan.table_columns.iter().map(|c| c.name.clone()).collect();
 
     let mut cursor = BTreeCursor::new(pager, plan.root_page);
@@ -392,11 +571,29 @@ fn execute_update(plan: &UpdatePlan, pager: &mut Pager) -> Result<ExecResult> {
     }
 
     let rows_affected = to_update.len() as u64;
+    let table_indexes = get_table_indexes(catalog, &plan.table_name);
 
     let mut current_root = plan.root_page;
-    for (rowid, values) in to_update {
+    for (rowid, new_values) in to_update {
+        // Remove old index entries and add new ones
+        for (idx_root, idx_col_indices) in &table_indexes {
+            let old_key = build_index_key(
+                &row_values_for_rowid(&btree_rows, rowid, &plan.table_columns),
+                idx_col_indices,
+                &plan.table_columns,
+                rowid,
+            );
+            let _ = btree_index_delete(pager, *idx_root, &old_key);
+
+            let new_key =
+                build_index_key(&new_values, idx_col_indices, &plan.table_columns, rowid);
+            let _ = btree_index_insert(pager, *idx_root, &new_key);
+        }
+
         btree_delete(pager, current_root, rowid)?;
-        let record = Record { values };
+        let record = Record {
+            values: new_values,
+        };
         current_root = btree_insert(pager, current_root, rowid, &record)?;
     }
 
@@ -407,7 +604,7 @@ fn execute_update(plan: &UpdatePlan, pager: &mut Pager) -> Result<ExecResult> {
     Ok(ExecResult { rows_affected })
 }
 
-fn execute_delete(plan: &DeletePlan, pager: &mut Pager) -> Result<ExecResult> {
+fn execute_delete(plan: &DeletePlan, pager: &mut Pager, catalog: &Catalog) -> Result<ExecResult> {
     let column_names: Vec<String> = plan.table_columns.iter().map(|c| c.name.clone()).collect();
 
     let mut cursor = BTreeCursor::new(pager, plan.root_page);
@@ -451,8 +648,15 @@ fn execute_delete(plan: &DeletePlan, pager: &mut Pager) -> Result<ExecResult> {
     }
 
     let rows_affected = to_delete.len() as u64;
+    let table_indexes = get_table_indexes(catalog, &plan.table_name);
 
     for rowid in to_delete {
+        for (idx_root, idx_col_indices) in &table_indexes {
+            let old_values = row_values_for_rowid(&btree_rows, rowid, &plan.table_columns);
+            let old_key =
+                build_index_key(&old_values, idx_col_indices, &plan.table_columns, rowid);
+            let _ = btree_index_delete(pager, *idx_root, &old_key);
+        }
         btree_delete(pager, plan.root_page, rowid)?;
     }
 
