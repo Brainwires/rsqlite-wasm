@@ -80,6 +80,11 @@ pub struct SortKey {
 #[derive(Debug, Clone)]
 pub enum Plan {
     SingleRow,
+    Union {
+        left: Box<Plan>,
+        right: Box<Plan>,
+        all: bool,
+    },
     Scan {
         table: String,
         root_page: u32,
@@ -404,24 +409,104 @@ fn resolve_table_factor(
     }
 }
 
-fn plan_select(query: &ast::Query, catalog: &Catalog) -> Result<Plan> {
-    let select = match query.body.as_ref() {
-        SetExpr::Select(s) => s,
-        _ => {
-            return Err(Error::Other(
-                "only simple SELECT is supported".to_string(),
-            ))
+fn plan_set_expr(set_expr: &SetExpr, catalog: &Catalog) -> Result<Plan> {
+    match set_expr {
+        SetExpr::Select(s) => plan_select_body(s, catalog).map(|(plan, _, _)| plan),
+        SetExpr::SetOperation {
+            op,
+            set_quantifier,
+            left,
+            right,
+        } => {
+            if *op != ast::SetOperator::Union {
+                return Err(Error::Other(format!("unsupported set operation: {op}")));
+            }
+            let left_plan = plan_set_expr(left, catalog)?;
+            let right_plan = plan_set_expr(right, catalog)?;
+            let all = matches!(set_quantifier, ast::SetQuantifier::All);
+            Ok(Plan::Union {
+                left: Box::new(left_plan),
+                right: Box::new(right_plan),
+                all,
+            })
         }
-    };
+        _ => Err(Error::Other(
+            "unsupported set expression".to_string(),
+        )),
+    }
+}
 
+fn plan_select(query: &ast::Query, catalog: &Catalog) -> Result<Plan> {
+    match query.body.as_ref() {
+        SetExpr::SetOperation { .. } => plan_set_expr(query.body.as_ref(), catalog),
+        SetExpr::Select(s) => plan_simple_select(query, s, catalog),
+        _ => Err(Error::Other("unsupported query form".to_string())),
+    }
+}
+
+fn plan_simple_select(
+    query: &ast::Query,
+    select: &ast::Select,
+    catalog: &Catalog,
+) -> Result<Plan> {
+    let (mut plan, all_columns, output_names) = plan_select_body(select, catalog)?;
+
+    // ORDER BY
+    if let Some(order_by) = &query.order_by {
+        if let ast::OrderByKind::Expressions(exprs) = &order_by.kind {
+            let mut keys = Vec::new();
+            for ob in exprs {
+                let expr = plan_order_expr(&ob.expr, &all_columns, &output_names, catalog)?;
+                let descending = ob.options.asc == Some(false);
+                keys.push(SortKey {
+                    expr,
+                    descending,
+                    nulls_first: ob.options.nulls_first,
+                });
+            }
+            if !keys.is_empty() {
+                plan = Plan::Sort {
+                    input: Box::new(plan),
+                    keys,
+                };
+            }
+        }
+    }
+
+    // LIMIT / OFFSET
+    let limit_val = query.limit.as_ref().map(plan_limit_expr).transpose()?;
+    let offset_val = query
+        .offset
+        .as_ref()
+        .map(|o| plan_limit_expr(&o.value))
+        .transpose()?
+        .unwrap_or(0);
+
+    if limit_val.is_some() || offset_val > 0 {
+        plan = Plan::Limit {
+            input: Box::new(plan),
+            limit: limit_val,
+            offset: offset_val,
+        };
+    }
+
+    Ok(plan)
+}
+
+fn plan_select_body(
+    select: &ast::Select,
+    catalog: &Catalog,
+) -> Result<(Plan, Vec<ColumnRef>, Vec<String>)> {
     if select.from.is_empty() {
         let plan = Plan::SingleRow;
         let all_columns: Vec<ColumnRef> = vec![];
         let outputs = plan_select_items(&select.projection, &all_columns, catalog)?;
-        return Ok(Plan::Project {
+        let output_names: Vec<String> = outputs.iter().map(|o| o.alias.clone()).collect();
+        let project = Plan::Project {
             input: Box::new(plan),
             outputs,
-        });
+        };
+        return Ok((project, all_columns, output_names));
     }
 
     // Build plan from FROM clause (first item + its joins)
@@ -575,46 +660,7 @@ fn plan_select(query: &ast::Query, catalog: &Catalog) -> Result<Plan> {
         };
     }
 
-    // ORDER BY
-    if let Some(order_by) = &query.order_by {
-        if let ast::OrderByKind::Expressions(exprs) = &order_by.kind {
-            let mut keys = Vec::new();
-            for ob in exprs {
-                let expr = plan_order_expr(&ob.expr, &all_columns, &output_names, catalog)?;
-                let descending = ob.options.asc == Some(false);
-                keys.push(SortKey {
-                    expr,
-                    descending,
-                    nulls_first: ob.options.nulls_first,
-                });
-            }
-            if !keys.is_empty() {
-                plan = Plan::Sort {
-                    input: Box::new(plan),
-                    keys,
-                };
-            }
-        }
-    }
-
-    // LIMIT / OFFSET
-    let limit_val = query.limit.as_ref().map(plan_limit_expr).transpose()?;
-    let offset_val = query
-        .offset
-        .as_ref()
-        .map(|o| plan_limit_expr(&o.value))
-        .transpose()?
-        .unwrap_or(0);
-
-    if limit_val.is_some() || offset_val > 0 {
-        plan = Plan::Limit {
-            input: Box::new(plan),
-            limit: limit_val,
-            offset: offset_val,
-        };
-    }
-
-    Ok(plan)
+    Ok((plan, all_columns, output_names))
 }
 
 fn plan_select_items(

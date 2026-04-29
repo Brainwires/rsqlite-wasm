@@ -26,6 +26,25 @@ pub fn execute(plan: &Plan, pager: &mut Pager, catalog: &Catalog) -> Result<Quer
             columns: vec![],
             rows: vec![Row { values: vec![] }],
         }),
+        Plan::Union { left, right, all } => {
+            let left_result = execute(left, pager, catalog)?;
+            let right_result = execute(right, pager, catalog)?;
+            let mut rows = left_result.rows;
+            if *all {
+                rows.extend(right_result.rows);
+            } else {
+                for row in right_result.rows {
+                    let is_dup = rows.iter().any(|existing| existing.values == row.values);
+                    if !is_dup {
+                        rows.push(row);
+                    }
+                }
+            }
+            Ok(QueryResult {
+                columns: left_result.columns,
+                rows,
+            })
+        }
         Plan::Project { input, outputs } => execute_project(input, outputs, pager, catalog),
         Plan::Filter { input, predicate } => {
             let inner = execute(input, pager, catalog)?;

@@ -2519,6 +2519,46 @@ mod tests {
     }
 
     #[test]
+    fn union_all() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE t1 (id INTEGER PRIMARY KEY, name TEXT)")
+            .unwrap();
+        db.execute("CREATE TABLE t2 (id INTEGER PRIMARY KEY, name TEXT)")
+            .unwrap();
+        db.execute("INSERT INTO t1 VALUES (1, 'Alice')").unwrap();
+        db.execute("INSERT INTO t1 VALUES (2, 'Bob')").unwrap();
+        db.execute("INSERT INTO t2 VALUES (3, 'Charlie')").unwrap();
+        db.execute("INSERT INTO t2 VALUES (4, 'Dave')").unwrap();
+
+        let r = db
+            .query("SELECT name FROM t1 UNION ALL SELECT name FROM t2")
+            .unwrap();
+        assert_eq!(r.rows.len(), 4);
+    }
+
+    #[test]
+    fn union_dedup() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE t1 (id INTEGER PRIMARY KEY, name TEXT)")
+            .unwrap();
+        db.execute("CREATE TABLE t2 (id INTEGER PRIMARY KEY, name TEXT)")
+            .unwrap();
+        db.execute("INSERT INTO t1 VALUES (1, 'Alice')").unwrap();
+        db.execute("INSERT INTO t1 VALUES (2, 'Bob')").unwrap();
+        db.execute("INSERT INTO t2 VALUES (3, 'Alice')").unwrap();
+        db.execute("INSERT INTO t2 VALUES (4, 'Charlie')").unwrap();
+
+        let r = db
+            .query("SELECT name FROM t1 UNION SELECT name FROM t2")
+            .unwrap();
+        assert_eq!(r.rows.len(), 3);
+    }
+
+    #[test]
     fn select_without_from() {
         let vfs = rsqlite_vfs::memory::MemoryVfs::new();
         let mut db = Database::create(&vfs, "test.db").unwrap();
