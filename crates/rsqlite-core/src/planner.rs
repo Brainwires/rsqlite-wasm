@@ -86,6 +86,12 @@ pub enum Plan {
     Distinct {
         input: Box<Plan>,
     },
+    Aggregate {
+        input: Box<Plan>,
+        group_by: Vec<PlanExpr>,
+        aggregates: Vec<(AggFunc, PlanExpr, bool)>,
+        having: Option<PlanExpr>,
+    },
     NestedLoopJoin {
         left: Box<Plan>,
         right: Box<Plan>,
@@ -115,6 +121,15 @@ pub struct ProjectionItem {
     pub alias: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AggFunc {
+    Count,
+    Sum,
+    Avg,
+    Min,
+    Max,
+}
+
 #[derive(Debug, Clone)]
 pub enum PlanExpr {
     Column(ColumnRef),
@@ -132,6 +147,11 @@ pub enum PlanExpr {
     IsNull(Box<PlanExpr>),
     IsNotNull(Box<PlanExpr>),
     Wildcard,
+    Aggregate {
+        func: AggFunc,
+        arg: Box<PlanExpr>,
+        distinct: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -339,8 +359,46 @@ fn plan_select(query: &ast::Query, catalog: &Catalog) -> Result<Plan> {
         };
     }
 
-    // SELECT list -> Project
+    // Check for GROUP BY and aggregate functions
+    let group_by_exprs = match &select.group_by {
+        ast::GroupByExpr::Expressions(exprs, _) if !exprs.is_empty() => {
+            let mut planned = Vec::new();
+            for e in exprs {
+                planned.push(plan_expr(e, &all_columns)?);
+            }
+            planned
+        }
+        _ => Vec::new(),
+    };
+
     let outputs = plan_select_items(&select.projection, &all_columns)?;
+    let has_aggregates = outputs.iter().any(|o| contains_aggregate(&o.expr));
+
+    if has_aggregates || !group_by_exprs.is_empty() {
+        let mut aggregates: Vec<(AggFunc, PlanExpr, bool)> = Vec::new();
+        for o in &outputs {
+            collect_aggregates(&o.expr, &mut aggregates);
+        }
+
+        let having = select
+            .having
+            .as_ref()
+            .map(|e| plan_expr(e, &all_columns))
+            .transpose()?;
+
+        if let Some(ref having_expr) = having {
+            collect_aggregates(having_expr, &mut aggregates);
+        }
+
+        plan = Plan::Aggregate {
+            input: Box::new(plan),
+            group_by: group_by_exprs,
+            aggregates,
+            having,
+        };
+    }
+
+    // SELECT list -> Project
     let output_names: Vec<String> = outputs.iter().map(|o| o.alias.clone()).collect();
     plan = Plan::Project {
         input: Box::new(plan),
@@ -511,10 +569,66 @@ fn plan_expr(expr: &Expr, columns: &[ColumnRef]) -> Result<PlanExpr> {
             Ok(PlanExpr::IsNotNull(Box::new(inner)))
         }
         Expr::Nested(e) => plan_expr(e, columns),
+        Expr::Function(func) => plan_function_expr(func, columns),
         _ => Err(Error::Other(format!(
             "unsupported expression: {expr}"
         ))),
     }
+}
+
+fn plan_function_expr(func: &ast::Function, columns: &[ColumnRef]) -> Result<PlanExpr> {
+    let name = func.name.to_string().to_uppercase();
+
+    let agg_func = match name.as_str() {
+        "COUNT" => Some(AggFunc::Count),
+        "SUM" => Some(AggFunc::Sum),
+        "AVG" => Some(AggFunc::Avg),
+        "MIN" => Some(AggFunc::Min),
+        "MAX" => Some(AggFunc::Max),
+        _ => None,
+    };
+
+    if let Some(func_type) = agg_func {
+        let (arg, distinct) = match &func.args {
+            ast::FunctionArguments::List(list) => {
+                let distinct = list.duplicate_treatment
+                    == Some(ast::DuplicateTreatment::Distinct);
+                if list.args.is_empty() {
+                    (PlanExpr::Wildcard, distinct)
+                } else {
+                    match &list.args[0] {
+                        ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Wildcard) => {
+                            (PlanExpr::Wildcard, distinct)
+                        }
+                        ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(e)) => {
+                            (plan_expr(e, columns)?, distinct)
+                        }
+                        _ => {
+                            return Err(Error::Other(format!(
+                                "unsupported aggregate argument: {}",
+                                func
+                            )))
+                        }
+                    }
+                }
+            }
+            ast::FunctionArguments::None => (PlanExpr::Wildcard, false),
+            _ => {
+                return Err(Error::Other(format!(
+                    "unsupported aggregate arguments: {}",
+                    func
+                )))
+            }
+        };
+
+        return Ok(PlanExpr::Aggregate {
+            func: func_type,
+            arg: Box::new(arg),
+            distinct,
+        });
+    }
+
+    Err(Error::Other(format!("unknown function: {name}")))
 }
 
 fn plan_value(val: &ast::Value) -> Result<LiteralValue> {
@@ -612,6 +726,57 @@ fn plan_join_constraint(
         ast::JoinConstraint::Using(_) => Err(Error::Other(
             "USING clause not yet supported".to_string(),
         )),
+    }
+}
+
+fn contains_aggregate(expr: &PlanExpr) -> bool {
+    match expr {
+        PlanExpr::Aggregate { .. } => true,
+        PlanExpr::BinaryOp { left, right, .. } => {
+            contains_aggregate(left) || contains_aggregate(right)
+        }
+        PlanExpr::UnaryOp { operand, .. } => contains_aggregate(operand),
+        PlanExpr::IsNull(inner) | PlanExpr::IsNotNull(inner) => contains_aggregate(inner),
+        PlanExpr::Column(_) | PlanExpr::Rowid | PlanExpr::Literal(_) | PlanExpr::Wildcard => false,
+    }
+}
+
+fn collect_aggregates(expr: &PlanExpr, out: &mut Vec<(AggFunc, PlanExpr, bool)>) {
+    match expr {
+        PlanExpr::Aggregate { func, arg, distinct } => {
+            out.push((*func, arg.as_ref().clone(), *distinct));
+        }
+        PlanExpr::BinaryOp { left, right, .. } => {
+            collect_aggregates(left, out);
+            collect_aggregates(right, out);
+        }
+        PlanExpr::UnaryOp { operand, .. } => {
+            collect_aggregates(operand, out);
+        }
+        PlanExpr::IsNull(inner) | PlanExpr::IsNotNull(inner) => {
+            collect_aggregates(inner, out);
+        }
+        _ => {}
+    }
+}
+
+pub fn agg_column_name(func: &AggFunc, arg: &PlanExpr, distinct: bool) -> String {
+    let func_name = match func {
+        AggFunc::Count => "COUNT",
+        AggFunc::Sum => "SUM",
+        AggFunc::Avg => "AVG",
+        AggFunc::Min => "MIN",
+        AggFunc::Max => "MAX",
+    };
+    let arg_str = match arg {
+        PlanExpr::Wildcard => "*".to_string(),
+        PlanExpr::Column(c) => c.name.clone(),
+        _ => format!("{:?}", arg),
+    };
+    if distinct {
+        format!("{func_name}(DISTINCT {arg_str})")
+    } else {
+        format!("{func_name}({arg_str})")
     }
 }
 

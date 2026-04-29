@@ -1039,4 +1039,209 @@ mod tests {
 
         let _ = std::fs::remove_file(db_path);
     }
+
+    #[test]
+    fn count_star() {
+        let db_path = "/tmp/rsqlite_db_count_star.db";
+        let _ = std::fs::remove_file(db_path);
+
+        let vfs = rsqlite_vfs::native::NativeVfs::new();
+        let mut db = Database::create(&vfs, db_path).unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+            .unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'Alice')").unwrap();
+        db.execute("INSERT INTO t VALUES (2, 'Bob')").unwrap();
+        db.execute("INSERT INTO t VALUES (3, 'Charlie')").unwrap();
+
+        let result = db.query("SELECT COUNT(*) FROM t").unwrap();
+        assert_eq!(result.rows.len(), 1);
+        use rsqlite_storage::codec::Value;
+        assert_eq!(result.rows[0].values[0], Value::Integer(3));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn count_column() {
+        let db_path = "/tmp/rsqlite_db_count_col.db";
+        let _ = std::fs::remove_file(db_path);
+
+        let vfs = rsqlite_vfs::native::NativeVfs::new();
+        let mut db = Database::create(&vfs, db_path).unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)")
+            .unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'a')").unwrap();
+        db.execute("INSERT INTO t VALUES (2, NULL)").unwrap();
+        db.execute("INSERT INTO t VALUES (3, 'c')").unwrap();
+
+        let result = db.query("SELECT COUNT(val) FROM t").unwrap();
+        use rsqlite_storage::codec::Value;
+        assert_eq!(result.rows[0].values[0], Value::Integer(2));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn sum_and_avg() {
+        let db_path = "/tmp/rsqlite_db_sum_avg.db";
+        let _ = std::fs::remove_file(db_path);
+
+        let vfs = rsqlite_vfs::native::NativeVfs::new();
+        let mut db = Database::create(&vfs, db_path).unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)")
+            .unwrap();
+        db.execute("INSERT INTO t VALUES (1, 10)").unwrap();
+        db.execute("INSERT INTO t VALUES (2, 20)").unwrap();
+        db.execute("INSERT INTO t VALUES (3, 30)").unwrap();
+
+        let result = db.query("SELECT SUM(val) FROM t").unwrap();
+        use rsqlite_storage::codec::Value;
+        assert_eq!(result.rows[0].values[0], Value::Integer(60));
+
+        let result = db.query("SELECT AVG(val) FROM t").unwrap();
+        assert_eq!(result.rows[0].values[0], Value::Real(20.0));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn min_and_max() {
+        let db_path = "/tmp/rsqlite_db_min_max.db";
+        let _ = std::fs::remove_file(db_path);
+
+        let vfs = rsqlite_vfs::native::NativeVfs::new();
+        let mut db = Database::create(&vfs, db_path).unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)")
+            .unwrap();
+        db.execute("INSERT INTO t VALUES (1, 50)").unwrap();
+        db.execute("INSERT INTO t VALUES (2, 10)").unwrap();
+        db.execute("INSERT INTO t VALUES (3, 90)").unwrap();
+        db.execute("INSERT INTO t VALUES (4, 30)").unwrap();
+
+        let result = db.query("SELECT MIN(val), MAX(val) FROM t").unwrap();
+        use rsqlite_storage::codec::Value;
+        assert_eq!(result.rows[0].values[0], Value::Integer(10));
+        assert_eq!(result.rows[0].values[1], Value::Integer(90));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn group_by() {
+        let db_path = "/tmp/rsqlite_db_group_by.db";
+        let _ = std::fs::remove_file(db_path);
+
+        let vfs = rsqlite_vfs::native::NativeVfs::new();
+        let mut db = Database::create(&vfs, db_path).unwrap();
+
+        db.execute(
+            "CREATE TABLE emp (id INTEGER PRIMARY KEY, dept TEXT, salary INTEGER)",
+        )
+        .unwrap();
+        db.execute("INSERT INTO emp VALUES (1, 'eng', 100)").unwrap();
+        db.execute("INSERT INTO emp VALUES (2, 'eng', 120)").unwrap();
+        db.execute("INSERT INTO emp VALUES (3, 'sales', 80)").unwrap();
+        db.execute("INSERT INTO emp VALUES (4, 'sales', 90)").unwrap();
+        db.execute("INSERT INTO emp VALUES (5, 'eng', 110)").unwrap();
+
+        let result = db
+            .query("SELECT dept, COUNT(*), SUM(salary) FROM emp GROUP BY dept ORDER BY dept")
+            .unwrap();
+
+        assert_eq!(result.rows.len(), 2);
+        use rsqlite_storage::codec::Value;
+        // eng: 3 employees, sum=330
+        assert_eq!(result.rows[0].values[0], Value::Text("eng".to_string()));
+        assert_eq!(result.rows[0].values[1], Value::Integer(3));
+        assert_eq!(result.rows[0].values[2], Value::Integer(330));
+        // sales: 2 employees, sum=170
+        assert_eq!(result.rows[1].values[0], Value::Text("sales".to_string()));
+        assert_eq!(result.rows[1].values[1], Value::Integer(2));
+        assert_eq!(result.rows[1].values[2], Value::Integer(170));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn group_by_having() {
+        let db_path = "/tmp/rsqlite_db_having.db";
+        let _ = std::fs::remove_file(db_path);
+
+        let vfs = rsqlite_vfs::native::NativeVfs::new();
+        let mut db = Database::create(&vfs, db_path).unwrap();
+
+        db.execute(
+            "CREATE TABLE emp (id INTEGER PRIMARY KEY, dept TEXT, salary INTEGER)",
+        )
+        .unwrap();
+        db.execute("INSERT INTO emp VALUES (1, 'eng', 100)").unwrap();
+        db.execute("INSERT INTO emp VALUES (2, 'eng', 120)").unwrap();
+        db.execute("INSERT INTO emp VALUES (3, 'sales', 80)").unwrap();
+        db.execute("INSERT INTO emp VALUES (4, 'sales', 90)").unwrap();
+        db.execute("INSERT INTO emp VALUES (5, 'eng', 110)").unwrap();
+
+        let result = db
+            .query(
+                "SELECT dept, COUNT(*) FROM emp GROUP BY dept HAVING COUNT(*) > 2",
+            )
+            .unwrap();
+
+        assert_eq!(result.rows.len(), 1);
+        use rsqlite_storage::codec::Value;
+        assert_eq!(result.rows[0].values[0], Value::Text("eng".to_string()));
+        assert_eq!(result.rows[0].values[1], Value::Integer(3));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn aggregate_empty_table() {
+        let db_path = "/tmp/rsqlite_db_agg_empty.db";
+        let _ = std::fs::remove_file(db_path);
+
+        let vfs = rsqlite_vfs::native::NativeVfs::new();
+        let mut db = Database::create(&vfs, db_path).unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)")
+            .unwrap();
+
+        let result = db.query("SELECT COUNT(*) FROM t").unwrap();
+        use rsqlite_storage::codec::Value;
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].values[0], Value::Integer(0));
+
+        let result = db.query("SELECT SUM(val) FROM t").unwrap();
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].values[0], Value::Null);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn aggregate_with_where() {
+        let db_path = "/tmp/rsqlite_db_agg_where.db";
+        let _ = std::fs::remove_file(db_path);
+
+        let vfs = rsqlite_vfs::native::NativeVfs::new();
+        let mut db = Database::create(&vfs, db_path).unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, category TEXT, val INTEGER)")
+            .unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'a', 10)").unwrap();
+        db.execute("INSERT INTO t VALUES (2, 'a', 20)").unwrap();
+        db.execute("INSERT INTO t VALUES (3, 'b', 30)").unwrap();
+        db.execute("INSERT INTO t VALUES (4, 'b', 40)").unwrap();
+
+        let result = db
+            .query("SELECT SUM(val) FROM t WHERE category = 'a'")
+            .unwrap();
+        use rsqlite_storage::codec::Value;
+        assert_eq!(result.rows[0].values[0], Value::Integer(30));
+
+        let _ = std::fs::remove_file(db_path);
+    }
 }
