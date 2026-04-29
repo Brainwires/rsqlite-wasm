@@ -3204,3 +3204,588 @@
         assert_eq!(r.rows[1].values[0], crate::types::Value::Text("b".into()));
         assert_eq!(r.rows[1].values[1], crate::types::Value::Integer(20));
     }
+
+    // --- Vector functions ---
+
+    fn make_f32_blob(floats: &[f32]) -> Vec<u8> {
+        floats.iter().flat_map(|f| f.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn vec_distance_cosine_basic() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE v (id INTEGER PRIMARY KEY, vec BLOB)").unwrap();
+        let v1 = make_f32_blob(&[1.0, 0.0, 0.0]);
+        let v2 = make_f32_blob(&[0.0, 1.0, 0.0]);
+        let v3 = make_f32_blob(&[1.0, 0.0, 0.0]);
+        db.execute_with_params("INSERT INTO v VALUES (1, ?)", vec![crate::types::Value::Blob(v1)]).unwrap();
+        db.execute_with_params("INSERT INTO v VALUES (2, ?)", vec![crate::types::Value::Blob(v2)]).unwrap();
+        db.execute_with_params("INSERT INTO v VALUES (3, ?)", vec![crate::types::Value::Blob(v3)]).unwrap();
+
+        let query_vec = crate::types::Value::Blob(make_f32_blob(&[1.0, 0.0, 0.0]));
+        let r = db.query_with_params(
+            "SELECT id, vec_distance_cosine(vec, ?) AS dist FROM v ORDER BY dist",
+            vec![query_vec],
+        ).unwrap();
+        assert_eq!(r.rows.len(), 3);
+        // IDs 1 and 3 should have distance ~0.0 (identical vectors)
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(1));
+        if let crate::types::Value::Real(d) = &r.rows[0].values[1] {
+            assert!(*d < 0.001, "expected ~0.0, got {d}");
+        }
+        // ID 2 should have distance ~1.0 (orthogonal vectors)
+        assert_eq!(r.rows[2].values[0], crate::types::Value::Integer(2));
+        if let crate::types::Value::Real(d) = &r.rows[2].values[1] {
+            assert!((*d - 1.0).abs() < 0.001, "expected ~1.0, got {d}");
+        }
+    }
+
+    #[test]
+    fn vec_distance_l2_basic() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let v1 = crate::types::Value::Blob(make_f32_blob(&[0.0, 0.0]));
+        let v2 = crate::types::Value::Blob(make_f32_blob(&[3.0, 4.0]));
+        let r = db.query_with_params("SELECT vec_distance_l2(?, ?)", vec![v1, v2]).unwrap();
+        if let crate::types::Value::Real(d) = &r.rows[0].values[0] {
+            assert!((*d - 5.0).abs() < 0.001, "expected 5.0, got {d}");
+        } else {
+            panic!("expected Real");
+        }
+    }
+
+    #[test]
+    fn vec_distance_dot_basic() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let v1 = crate::types::Value::Blob(make_f32_blob(&[1.0, 2.0, 3.0]));
+        let v2 = crate::types::Value::Blob(make_f32_blob(&[4.0, 5.0, 6.0]));
+        // dot = 1*4 + 2*5 + 3*6 = 32, returned as -32
+        let r = db.query_with_params("SELECT vec_distance_dot(?, ?)", vec![v1, v2]).unwrap();
+        if let crate::types::Value::Real(d) = &r.rows[0].values[0] {
+            assert!((*d - (-32.0)).abs() < 0.001, "expected -32.0, got {d}");
+        } else {
+            panic!("expected Real");
+        }
+    }
+
+    #[test]
+    fn vec_length_basic() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let v = crate::types::Value::Blob(make_f32_blob(&[1.0, 2.0, 3.0, 4.0]));
+        let r = db.query_with_params("SELECT vec_length(?)", vec![v]).unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(4));
+    }
+
+    #[test]
+    fn vec_normalize_basic() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let v = crate::types::Value::Blob(make_f32_blob(&[3.0, 4.0]));
+        let r = db.query_with_params("SELECT vec_normalize(?)", vec![v]).unwrap();
+        if let crate::types::Value::Blob(b) = &r.rows[0].values[0] {
+            assert_eq!(b.len(), 8);
+            let x = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+            let y = f32::from_le_bytes([b[4], b[5], b[6], b[7]]);
+            let norm = (x * x + y * y).sqrt();
+            assert!((norm - 1.0).abs() < 0.001, "expected unit norm, got {norm}");
+            assert!((x - 0.6).abs() < 0.001, "expected 0.6, got {x}");
+            assert!((y - 0.8).abs() < 0.001, "expected 0.8, got {y}");
+        } else {
+            panic!("expected Blob");
+        }
+    }
+
+    #[test]
+    fn vec_from_json_to_json_roundtrip() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db.query("SELECT vec_to_json(vec_from_json('[1.5, 2.5, 3.5]'))").unwrap();
+        if let crate::types::Value::Text(s) = &r.rows[0].values[0] {
+            assert_eq!(s, "[1.5,2.5,3.5]");
+        } else {
+            panic!("expected Text");
+        }
+    }
+
+    #[test]
+    fn vec_knn_query() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE embeddings (id INTEGER PRIMARY KEY, text TEXT, vector BLOB)").unwrap();
+        let cat_vec = crate::types::Value::Blob(make_f32_blob(&[1.0, 0.0, 0.0]));
+        let dog_vec = crate::types::Value::Blob(make_f32_blob(&[0.9, 0.1, 0.0]));
+        let car_vec = crate::types::Value::Blob(make_f32_blob(&[0.0, 0.0, 1.0]));
+        db.execute_with_params("INSERT INTO embeddings VALUES (1, 'cat', ?)", vec![cat_vec]).unwrap();
+        db.execute_with_params("INSERT INTO embeddings VALUES (2, 'dog', ?)", vec![dog_vec]).unwrap();
+        db.execute_with_params("INSERT INTO embeddings VALUES (3, 'car', ?)", vec![car_vec]).unwrap();
+
+        let query_vec = crate::types::Value::Blob(make_f32_blob(&[1.0, 0.0, 0.0]));
+        let r = db.query_with_params(
+            "SELECT text, vec_distance_cosine(vector, ?) AS dist FROM embeddings ORDER BY dist LIMIT 2",
+            vec![query_vec],
+        ).unwrap();
+        assert_eq!(r.rows.len(), 2);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("cat".into()));
+        assert_eq!(r.rows[1].values[0], crate::types::Value::Text("dog".into()));
+    }
+
+    #[test]
+    fn vec_mismatched_dimensions() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let v1 = crate::types::Value::Blob(make_f32_blob(&[1.0, 2.0]));
+        let v2 = crate::types::Value::Blob(make_f32_blob(&[1.0, 2.0, 3.0]));
+        let r = db.query_with_params("SELECT vec_distance_cosine(?, ?)", vec![v1, v2]);
+        assert!(r.is_err());
+        let err = r.unwrap_err().to_string();
+        assert!(err.contains("dimension mismatch"), "got: {err}");
+    }
+
+    #[test]
+    fn vec_invalid_blob() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let v = crate::types::Value::Blob(vec![1, 2, 3]); // 3 bytes, not multiple of 4
+        let r = db.query_with_params("SELECT vec_length(?)", vec![v]);
+        assert!(r.is_err());
+    }
+
+    // --- Window functions ---
+
+    fn setup_employees() -> Database {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE emp (id INTEGER PRIMARY KEY, name TEXT, dept TEXT, salary INTEGER)").unwrap();
+        db.execute("INSERT INTO emp VALUES (1, 'Alice', 'eng', 100)").unwrap();
+        db.execute("INSERT INTO emp VALUES (2, 'Bob', 'eng', 120)").unwrap();
+        db.execute("INSERT INTO emp VALUES (3, 'Carol', 'sales', 90)").unwrap();
+        db.execute("INSERT INTO emp VALUES (4, 'Dave', 'sales', 110)").unwrap();
+        db.execute("INSERT INTO emp VALUES (5, 'Eve', 'eng', 100)").unwrap();
+        db
+    }
+
+    #[test]
+    fn window_row_number() {
+        let mut db = setup_employees();
+        let r = db.query(
+            "SELECT name, ROW_NUMBER() OVER (ORDER BY salary DESC) AS rn FROM emp ORDER BY rn"
+        ).unwrap();
+        assert_eq!(r.rows.len(), 5);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("Bob".into()));
+        assert_eq!(r.rows[0].values[1], crate::types::Value::Integer(1));
+        assert_eq!(r.rows[4].values[1], crate::types::Value::Integer(5));
+    }
+
+    #[test]
+    fn window_rank_with_ties() {
+        let mut db = setup_employees();
+        let r = db.query(
+            "SELECT name, salary, RANK() OVER (ORDER BY salary DESC) AS rnk FROM emp ORDER BY rnk, name"
+        ).unwrap();
+        assert_eq!(r.rows.len(), 5);
+        assert_eq!(r.rows[0].values[2], crate::types::Value::Integer(1)); // Bob=120
+        assert_eq!(r.rows[1].values[2], crate::types::Value::Integer(2)); // Dave=110
+        // Alice=100 and Eve=100 -> rank 3
+        assert_eq!(r.rows[2].values[2], crate::types::Value::Integer(3));
+        assert_eq!(r.rows[3].values[2], crate::types::Value::Integer(3));
+        // Carol=90 -> rank 5
+        assert_eq!(r.rows[4].values[2], crate::types::Value::Integer(5));
+    }
+
+    #[test]
+    fn window_dense_rank() {
+        let mut db = setup_employees();
+        let r = db.query(
+            "SELECT name, salary, DENSE_RANK() OVER (ORDER BY salary DESC) AS drnk FROM emp ORDER BY drnk, name"
+        ).unwrap();
+        assert_eq!(r.rows.len(), 5);
+        assert_eq!(r.rows[0].values[2], crate::types::Value::Integer(1)); // Bob=120
+        assert_eq!(r.rows[1].values[2], crate::types::Value::Integer(2)); // Dave=110
+        assert_eq!(r.rows[2].values[2], crate::types::Value::Integer(3)); // Alice=100
+        assert_eq!(r.rows[3].values[2], crate::types::Value::Integer(3)); // Eve=100
+        assert_eq!(r.rows[4].values[2], crate::types::Value::Integer(4)); // Carol=90
+    }
+
+    #[test]
+    fn window_partition_by() {
+        let mut db = setup_employees();
+        let r = db.query(
+            "SELECT name, dept, ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC) AS rn \
+             FROM emp ORDER BY dept, rn"
+        ).unwrap();
+        assert_eq!(r.rows.len(), 5);
+        // eng partition first (alphabetical): Bob(120)=1, then Alice/Eve
+        let eng_rows: Vec<_> = r.rows.iter()
+            .filter(|row| row.values[1] == crate::types::Value::Text("eng".into()))
+            .collect();
+        assert_eq!(eng_rows.len(), 3);
+        assert_eq!(eng_rows[0].values[2], crate::types::Value::Integer(1));
+        assert_eq!(eng_rows[1].values[2], crate::types::Value::Integer(2));
+        assert_eq!(eng_rows[2].values[2], crate::types::Value::Integer(3));
+    }
+
+    #[test]
+    fn window_lag_lead() {
+        let mut db = setup_employees();
+        let r = db.query(
+            "SELECT name, salary, LAG(salary, 1, 0) OVER (ORDER BY salary) AS prev_sal, \
+             LEAD(salary, 1, 0) OVER (ORDER BY salary) AS next_sal FROM emp ORDER BY salary"
+        ).unwrap();
+        assert_eq!(r.rows.len(), 5);
+        // First row by salary (Carol, 90): prev=0 (default)
+        assert_eq!(r.rows[0].values[2], crate::types::Value::Integer(0));
+        // Last row by salary (Bob, 120): next=0 (default)
+        assert_eq!(r.rows[4].values[3], crate::types::Value::Integer(0));
+    }
+
+    #[test]
+    fn window_aggregate_over() {
+        let mut db = setup_employees();
+        let r = db.query(
+            "SELECT name, dept, salary, SUM(salary) OVER (PARTITION BY dept) AS dept_total FROM emp"
+        ).unwrap();
+        assert_eq!(r.rows.len(), 5);
+        // eng total: 100+120+100=320, sales total: 90+110=200
+        for row in &r.rows {
+            let dept = &row.values[1];
+            let total = &row.values[3];
+            if *dept == crate::types::Value::Text("eng".into()) {
+                assert_eq!(*total, crate::types::Value::Integer(320));
+            } else {
+                assert_eq!(*total, crate::types::Value::Integer(200));
+            }
+        }
+    }
+
+    #[test]
+    fn window_no_partition() {
+        let mut db = setup_employees();
+        let r = db.query("SELECT name, COUNT(*) OVER () AS total FROM emp").unwrap();
+        assert_eq!(r.rows.len(), 5);
+        for row in &r.rows {
+            assert_eq!(row.values[1], crate::types::Value::Integer(5));
+        }
+    }
+
+    #[test]
+    fn window_ntile() {
+        let mut db = setup_employees();
+        let r = db.query("SELECT name, NTILE(2) OVER (ORDER BY salary) AS bucket FROM emp").unwrap();
+        assert_eq!(r.rows.len(), 5);
+        // 5 rows in 2 buckets: 3 in bucket 1, 2 in bucket 2
+        let bucket1_count = r.rows.iter().filter(|r| r.values[1] == crate::types::Value::Integer(1)).count();
+        let bucket2_count = r.rows.iter().filter(|r| r.values[1] == crate::types::Value::Integer(2)).count();
+        assert!(bucket1_count > 0 && bucket2_count > 0, "both buckets should have rows");
+    }
+
+    #[test]
+    fn window_first_last_value() {
+        let mut db = setup_employees();
+        let r = db.query(
+            "SELECT name, FIRST_VALUE(name) OVER (ORDER BY salary DESC) AS first_n, \
+             LAST_VALUE(name) OVER (ORDER BY salary DESC) AS last_n FROM emp"
+        ).unwrap();
+        assert_eq!(r.rows.len(), 5);
+        // First value should be Bob (highest salary)
+        assert_eq!(r.rows[0].values[1], crate::types::Value::Text("Bob".into()));
+    }
+
+    #[test]
+    fn window_multiple_functions() {
+        let mut db = setup_employees();
+        let r = db.query(
+            "SELECT name, ROW_NUMBER() OVER (ORDER BY name) AS rn, \
+             COUNT(*) OVER () AS total FROM emp"
+        ).unwrap();
+        assert_eq!(r.rows.len(), 5);
+        for row in &r.rows {
+            assert_eq!(row.values[2], crate::types::Value::Integer(5));
+        }
+        assert_eq!(r.rows[0].values[1], crate::types::Value::Integer(1));
+    }
+
+    // --- Error handling tests ---
+
+    #[test]
+    fn error_table_not_found() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db.query("SELECT * FROM nonexistent");
+        assert!(r.is_err());
+        assert!(r.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn error_column_not_found() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+        let r = db.query("SELECT nonexistent FROM t");
+        assert!(r.is_err());
+        assert!(r.unwrap_err().to_string().contains("unknown column"));
+    }
+
+    #[test]
+    fn error_insert_named_nonexistent_column() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+        let r = db.execute("INSERT INTO t (id, nonexistent) VALUES (1, 'x')");
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn error_drop_nonexistent_table() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db.execute("DROP TABLE nonexistent");
+        assert!(r.is_err());
+        // But IF EXISTS should succeed
+        let r = db.execute("DROP TABLE IF EXISTS nonexistent");
+        assert!(r.is_ok());
+    }
+
+    #[test]
+    fn error_duplicate_table() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)").unwrap();
+        let r = db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)");
+        assert!(r.is_err());
+        // IF NOT EXISTS should succeed
+        let r = db.execute("CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY)");
+        assert!(r.is_ok());
+    }
+
+    #[test]
+    fn error_division_by_zero() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db.query("SELECT 10 / 0").unwrap();
+        // SQLite returns 0 for integer division by zero
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(0));
+    }
+
+    // --- NULL handling edge cases ---
+
+    #[test]
+    fn null_comparison_semantics() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        // NULL = NULL should be NULL (falsy), not TRUE
+        let r = db.query("SELECT NULL = NULL").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Null);
+
+        let r = db.query("SELECT NULL IS NULL").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(1));
+
+        let r = db.query("SELECT NULL IS NOT NULL").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(0));
+    }
+
+    #[test]
+    fn null_in_aggregate() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)").unwrap();
+        db.execute("INSERT INTO t VALUES (1, 10)").unwrap();
+        db.execute("INSERT INTO t VALUES (2, NULL)").unwrap();
+        db.execute("INSERT INTO t VALUES (3, 30)").unwrap();
+
+        let r = db.query("SELECT COUNT(val) FROM t").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(2)); // NULLs excluded
+
+        let r = db.query("SELECT COUNT(*) FROM t").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(3)); // NULLs counted
+
+        let r = db.query("SELECT SUM(val) FROM t").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(40)); // NULLs skipped
+
+        let r = db.query("SELECT AVG(val) FROM t").unwrap();
+        if let crate::types::Value::Real(f) = &r.rows[0].values[0] {
+            assert!((*f - 20.0).abs() < 0.001); // 40/2 = 20
+        }
+    }
+
+    #[test]
+    fn null_in_order_by() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)").unwrap();
+        db.execute("INSERT INTO t VALUES (1, 10)").unwrap();
+        db.execute("INSERT INTO t VALUES (2, NULL)").unwrap();
+        db.execute("INSERT INTO t VALUES (3, 5)").unwrap();
+
+        let r = db.query("SELECT val FROM t ORDER BY val").unwrap();
+        // SQLite sorts NULLs first (smallest)
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Null);
+        assert_eq!(r.rows[1].values[0], crate::types::Value::Integer(5));
+        assert_eq!(r.rows[2].values[0], crate::types::Value::Integer(10));
+    }
+
+    // --- Type affinity tests ---
+
+    #[test]
+    fn affinity_text_integer_comparison() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        // In SQLite, integers sort before text
+        let r = db.query("SELECT 1 < 'a'").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(1));
+    }
+
+    // --- CAST edge cases ---
+
+    #[test]
+    fn cast_edge_cases() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db.query("SELECT CAST(NULL AS INTEGER)").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Null);
+
+        let r = db.query("SELECT CAST('hello' AS INTEGER)").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(0));
+
+        let r = db.query("SELECT CAST(3.14 AS INTEGER)").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(3));
+
+        let r = db.query("SELECT CAST(42 AS TEXT)").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("42".into()));
+    }
+
+    // --- Transaction edge cases ---
+
+    #[test]
+    fn rollback_restores_data() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)").unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'original')").unwrap();
+
+        db.execute("BEGIN").unwrap();
+        db.execute("UPDATE t SET val = 'modified' WHERE id = 1").unwrap();
+        let r = db.query("SELECT val FROM t WHERE id = 1").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("modified".into()));
+        db.execute("ROLLBACK").unwrap();
+
+        let r = db.query("SELECT val FROM t WHERE id = 1").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("original".into()));
+    }
+
+    // --- View edge cases ---
+
+    #[test]
+    fn view_with_aggregation_complex() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE sales (id INTEGER PRIMARY KEY, product TEXT, amount INTEGER)").unwrap();
+        db.execute("INSERT INTO sales VALUES (1, 'A', 100)").unwrap();
+        db.execute("INSERT INTO sales VALUES (2, 'B', 200)").unwrap();
+        db.execute("INSERT INTO sales VALUES (3, 'A', 150)").unwrap();
+        db.execute("CREATE VIEW product_totals AS SELECT product, SUM(amount) AS total FROM sales GROUP BY product").unwrap();
+
+        let r = db.query("SELECT * FROM product_totals ORDER BY product").unwrap();
+        assert_eq!(r.rows.len(), 2);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("A".into()));
+        assert_eq!(r.rows[0].values[1], crate::types::Value::Integer(250));
+    }
+
+    // --- Large data test ---
+
+    #[test]
+    fn insert_100_rows_and_query() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)").unwrap();
+
+        for i in 0..100 {
+            db.execute(&format!("INSERT INTO t VALUES ({i}, {})", i * 2)).unwrap();
+        }
+
+        let r = db.query("SELECT COUNT(*) FROM t").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(100));
+
+        let r = db.query("SELECT val FROM t WHERE id = 50").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(100));
+
+        let r = db.query("SELECT MAX(val) FROM t").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(198));
+    }
+
+    // --- LIKE edge cases ---
+
+    #[test]
+    fn like_case_sensitivity() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        // SQLite LIKE is case-insensitive for ASCII
+        let r = db.query("SELECT 'Hello' LIKE 'hello'").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(1));
+
+        let r = db.query("SELECT 'Hello' LIKE 'HELLO'").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(1));
+
+        let r = db.query("SELECT 'Hello' LIKE 'h%'").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(1));
+    }
+
+    // --- CTE edge cases ---
+
+    #[test]
+    fn cte_with_multiple_ctes() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)").unwrap();
+        db.execute("INSERT INTO t VALUES (1, 10)").unwrap();
+        db.execute("INSERT INTO t VALUES (2, 20)").unwrap();
+
+        // Test multiple CTEs in sequence
+        let r = db.query(
+            "WITH doubled AS (SELECT id, val * 2 AS dval FROM t), \
+             tripled AS (SELECT id, val * 3 AS tval FROM t) \
+             SELECT d.dval FROM doubled AS d WHERE d.id = 1"
+        ).unwrap();
+        assert_eq!(r.rows.len(), 1);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(20));
+    }
+
+    // --- Index edge cases ---
+
+    #[test]
+    fn index_with_null_values() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+        db.execute("CREATE INDEX idx_name ON t(name)").unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'Alice')").unwrap();
+        db.execute("INSERT INTO t VALUES (2, NULL)").unwrap();
+        db.execute("INSERT INTO t VALUES (3, 'Bob')").unwrap();
+
+        let r = db.query("SELECT id FROM t WHERE name = 'Alice'").unwrap();
+        assert_eq!(r.rows.len(), 1);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(1));
+
+        let r = db.query("SELECT COUNT(*) FROM t WHERE name IS NULL").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(1));
+    }
+
+    #[test]
+    fn index_after_delete() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)").unwrap();
+        db.execute("CREATE INDEX idx_val ON t(val)").unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'a')").unwrap();
+        db.execute("INSERT INTO t VALUES (2, 'b')").unwrap();
+        db.execute("INSERT INTO t VALUES (3, 'c')").unwrap();
+        db.execute("DELETE FROM t WHERE id = 2").unwrap();
+
+        let r = db.query("SELECT id FROM t WHERE val = 'b'").unwrap();
+        assert_eq!(r.rows.len(), 0);
+
+        let r = db.query("SELECT COUNT(*) FROM t").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(2));
+    }

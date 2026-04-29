@@ -90,6 +90,12 @@ pub enum PlanExpr {
         negated: bool,
     },
     Param(usize),
+    WindowFunction {
+        func_name: String,
+        args: Vec<PlanExpr>,
+        partition_by: Vec<PlanExpr>,
+        order_by: Vec<(PlanExpr, bool)>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -426,6 +432,10 @@ pub(super) fn plan_expr(expr: &Expr, columns: &[ColumnRef], catalog: &Catalog) -
 fn plan_function_expr(func: &ast::Function, columns: &[ColumnRef], catalog: &Catalog) -> Result<PlanExpr> {
     let name = func.name.to_string().to_uppercase();
 
+    if let Some(ref over) = func.over {
+        return plan_window_function(&name, func, over, columns, catalog);
+    }
+
     if name == "GROUP_CONCAT" {
         let (arg, separator, distinct) = match &func.args {
             ast::FunctionArguments::List(list) => {
@@ -555,6 +565,8 @@ fn plan_function_expr(func: &ast::Function, columns: &[ColumnRef], catalog: &Cat
         "MIN", "MAX",
         "DATE", "TIME", "DATETIME", "JULIANDAY", "UNIXEPOCH", "STRFTIME",
         "IIF",
+        "VEC_DISTANCE_COSINE", "VEC_DISTANCE_L2", "VEC_DISTANCE_DOT",
+        "VEC_LENGTH", "VEC_NORMALIZE", "VEC_FROM_JSON", "VEC_TO_JSON",
     ];
 
     if KNOWN_SCALARS.contains(&name.as_str()) {
@@ -726,7 +738,8 @@ pub(super) fn contains_aggregate(expr: &PlanExpr) -> bool {
         | PlanExpr::Wildcard
         | PlanExpr::Subquery(_)
         | PlanExpr::Exists { .. }
-        | PlanExpr::Param(_) => false,
+        | PlanExpr::Param(_)
+        | PlanExpr::WindowFunction { .. } => false,
     }
 }
 
@@ -749,6 +762,123 @@ pub(super) fn collect_aggregates(expr: &PlanExpr, out: &mut Vec<(AggFunc, PlanEx
             for a in args {
                 collect_aggregates(a, out);
             }
+        }
+        _ => {}
+    }
+}
+
+fn plan_window_function(
+    name: &str,
+    func: &ast::Function,
+    over: &ast::WindowType,
+    columns: &[ColumnRef],
+    catalog: &Catalog,
+) -> Result<PlanExpr> {
+    let spec = match over {
+        ast::WindowType::WindowSpec(spec) => spec,
+        ast::WindowType::NamedWindow(_) => {
+            return Err(Error::Other("named windows are not yet supported".into()));
+        }
+    };
+
+    let partition_by = spec
+        .partition_by
+        .iter()
+        .map(|e| plan_expr(e, columns, catalog))
+        .collect::<Result<Vec<_>>>()?;
+
+    let order_by = spec
+        .order_by
+        .iter()
+        .map(|ob| {
+            let expr = plan_expr(&ob.expr, columns, catalog)?;
+            let desc = ob.options.asc == Some(false);
+            Ok((expr, desc))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let args = match &func.args {
+        ast::FunctionArguments::List(list) => {
+            let mut planned = Vec::new();
+            for a in &list.args {
+                match a {
+                    ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(e)) => {
+                        planned.push(plan_expr(e, columns, catalog)?);
+                    }
+                    ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Wildcard) => {
+                        planned.push(PlanExpr::Wildcard);
+                    }
+                    _ => {}
+                }
+            }
+            planned
+        }
+        ast::FunctionArguments::None => Vec::new(),
+        _ => Vec::new(),
+    };
+
+    static KNOWN_WINDOW_FUNCS: &[&str] = &[
+        "ROW_NUMBER", "RANK", "DENSE_RANK", "NTILE",
+        "LAG", "LEAD", "FIRST_VALUE", "LAST_VALUE",
+        "COUNT", "SUM", "AVG", "MIN", "MAX", "TOTAL",
+    ];
+
+    if !KNOWN_WINDOW_FUNCS.contains(&name) {
+        return Err(Error::Other(format!("unknown window function: {name}")));
+    }
+
+    Ok(PlanExpr::WindowFunction {
+        func_name: name.to_string(),
+        args,
+        partition_by,
+        order_by,
+    })
+}
+
+pub(super) fn contains_window_function(expr: &PlanExpr) -> bool {
+    match expr {
+        PlanExpr::WindowFunction { .. } => true,
+        PlanExpr::BinaryOp { left, right, .. } => {
+            contains_window_function(left) || contains_window_function(right)
+        }
+        PlanExpr::UnaryOp { operand, .. } => contains_window_function(operand),
+        PlanExpr::IsNull(inner) | PlanExpr::IsNotNull(inner) => contains_window_function(inner),
+        PlanExpr::Function { args, .. } => args.iter().any(contains_window_function),
+        PlanExpr::Like { expr, pattern, .. } => {
+            contains_window_function(expr) || contains_window_function(pattern)
+        }
+        PlanExpr::Case { operand, when_clauses, else_result } => {
+            operand.as_ref().is_some_and(|e| contains_window_function(e))
+                || when_clauses.iter().any(|(c, r)| contains_window_function(c) || contains_window_function(r))
+                || else_result.as_ref().is_some_and(|e| contains_window_function(e))
+        }
+        PlanExpr::Cast { expr, .. } => contains_window_function(expr),
+        _ => false,
+    }
+}
+
+pub(super) fn collect_window_functions(expr: &PlanExpr, out: &mut Vec<PlanExpr>) {
+    match expr {
+        PlanExpr::WindowFunction { .. } => {
+            out.push(expr.clone());
+        }
+        PlanExpr::BinaryOp { left, right, .. } => {
+            collect_window_functions(left, out);
+            collect_window_functions(right, out);
+        }
+        PlanExpr::UnaryOp { operand, .. } => {
+            collect_window_functions(operand, out);
+        }
+        PlanExpr::IsNull(inner) | PlanExpr::IsNotNull(inner) => {
+            collect_window_functions(inner, out);
+        }
+        PlanExpr::Function { args, .. } => {
+            for a in args {
+                collect_window_functions(a, out);
+            }
+        }
+        PlanExpr::Cast { expr, .. } => {
+            collect_window_functions(expr, out);
         }
         _ => {}
     }

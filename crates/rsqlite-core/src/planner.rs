@@ -17,8 +17,8 @@ struct CteDef {
 mod expr;
 pub use expr::*;
 use expr::{
-    collect_aggregates, contains_aggregate, plan_expr, plan_limit_expr, plan_order_expr,
-    plan_select_items,
+    collect_aggregates, collect_window_functions, contains_aggregate, contains_window_function,
+    plan_expr, plan_limit_expr, plan_order_expr, plan_select_items,
 };
 
 #[derive(Debug, Clone)]
@@ -189,6 +189,11 @@ pub enum Plan {
     DropView {
         name: String,
         if_exists: bool,
+    },
+    Window {
+        input: Box<Plan>,
+        window_exprs: Vec<(PlanExpr, String)>,
+        output_columns: Vec<String>,
     },
     CreateTableAsSelect {
         table_name: String,
@@ -441,7 +446,41 @@ fn extract_plan_output_names(plan: &Plan, view_cols: &[ast::ViewColumnDef]) -> V
         Plan::Sort { input, .. } => extract_plan_output_names(input, view_cols),
         Plan::Limit { input, .. } => extract_plan_output_names(input, view_cols),
         Plan::Filter { input, .. } => extract_plan_output_names(input, view_cols),
+        Plan::Window { output_columns, .. } => output_columns.clone(),
         _ => vec![],
+    }
+}
+
+fn rewrite_window_refs(expr: &PlanExpr, win_idx: &mut usize, base_col_offset: usize) -> PlanExpr {
+    match expr {
+        PlanExpr::WindowFunction { .. } => {
+            let idx = *win_idx;
+            *win_idx += 1;
+            PlanExpr::Column(ColumnRef {
+                name: format!("__window_{idx}"),
+                column_index: base_col_offset + idx,
+                is_rowid_alias: false,
+                table: None,
+            })
+        }
+        PlanExpr::BinaryOp { left, op, right } => PlanExpr::BinaryOp {
+            left: Box::new(rewrite_window_refs(left, win_idx, base_col_offset)),
+            op: *op,
+            right: Box::new(rewrite_window_refs(right, win_idx, base_col_offset)),
+        },
+        PlanExpr::UnaryOp { op, operand } => PlanExpr::UnaryOp {
+            op: *op,
+            operand: Box::new(rewrite_window_refs(operand, win_idx, base_col_offset)),
+        },
+        PlanExpr::Cast { expr, type_name } => PlanExpr::Cast {
+            expr: Box::new(rewrite_window_refs(expr, win_idx, base_col_offset)),
+            type_name: type_name.clone(),
+        },
+        PlanExpr::Function { name, args } => PlanExpr::Function {
+            name: name.clone(),
+            args: args.iter().map(|a| rewrite_window_refs(a, win_idx, base_col_offset)).collect(),
+        },
+        other => other.clone(),
     }
 }
 
@@ -680,7 +719,7 @@ fn plan_select_body(
         }
     }
 
-    let outputs = plan_select_items(&select.projection, &all_columns, catalog)?;
+    let mut outputs = plan_select_items(&select.projection, &all_columns, catalog)?;
     let output_names: Vec<String> = outputs.iter().map(|o| o.alias.clone()).collect();
 
     let group_by_exprs = match &select.group_by {
@@ -733,6 +772,64 @@ fn plan_select_body(
             aggregates,
             having,
         };
+    }
+
+    let has_windows = outputs.iter().any(|o| contains_window_function(&o.expr));
+
+    if has_windows {
+        let mut win_funcs: Vec<PlanExpr> = Vec::new();
+        for o in &outputs {
+            collect_window_functions(&o.expr, &mut win_funcs);
+        }
+
+        let mut window_exprs: Vec<(PlanExpr, String)> = Vec::new();
+        for (i, wf) in win_funcs.iter().enumerate() {
+            let alias = format!("__window_{i}");
+            window_exprs.push((wf.clone(), alias));
+        }
+
+        let current_output_names: Vec<String> = match &plan {
+            Plan::Aggregate { group_by, aggregates, .. } => {
+                let mut names = Vec::new();
+                for gb in group_by {
+                    if let PlanExpr::Column(c) = gb {
+                        names.push(c.name.clone());
+                    } else {
+                        names.push(format!("{:?}", gb));
+                    }
+                }
+                for (func, arg, distinct) in aggregates {
+                    names.push(agg_column_name(func, arg, *distinct));
+                }
+                names
+            }
+            Plan::Filter { .. } | Plan::Scan { .. } | Plan::NestedLoopJoin { .. } => {
+                all_columns.iter().map(|c| c.name.clone()).collect()
+            }
+            _ => all_columns.iter().map(|c| c.name.clone()).collect(),
+        };
+
+        let mut all_output_names = current_output_names.clone();
+        for (_, alias) in &window_exprs {
+            all_output_names.push(alias.clone());
+        }
+
+        plan = Plan::Window {
+            input: Box::new(plan),
+            window_exprs,
+            output_columns: all_output_names.clone(),
+        };
+
+        let mut win_idx = 0;
+        let mut new_outputs = Vec::new();
+        for o in &outputs {
+            let rewritten = rewrite_window_refs(&o.expr, &mut win_idx, current_output_names.len());
+            new_outputs.push(ProjectionItem {
+                expr: rewritten,
+                alias: o.alias.clone(),
+            });
+        }
+        outputs = new_outputs;
     }
 
     let output_names: Vec<String> = outputs.iter().map(|o| o.alias.clone()).collect();

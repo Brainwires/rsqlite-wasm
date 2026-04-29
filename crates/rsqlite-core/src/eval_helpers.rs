@@ -355,6 +355,91 @@ pub(crate) fn eval_scalar_function(name: &str, args: &[Value]) -> Result<Value> 
                 Ok(args[2].clone())
             }
         }
+        "VEC_DISTANCE_COSINE" => {
+            if args.len() != 2 {
+                return Err(Error::Other("VEC_DISTANCE_COSINE requires 2 arguments".into()));
+            }
+            let (v1, v2) = blob_pair_to_f32(args)?;
+            Ok(Value::Real(cosine_distance(&v1, &v2)))
+        }
+        "VEC_DISTANCE_L2" => {
+            if args.len() != 2 {
+                return Err(Error::Other("VEC_DISTANCE_L2 requires 2 arguments".into()));
+            }
+            let (v1, v2) = blob_pair_to_f32(args)?;
+            Ok(Value::Real(l2_distance(&v1, &v2)))
+        }
+        "VEC_DISTANCE_DOT" => {
+            if args.len() != 2 {
+                return Err(Error::Other("VEC_DISTANCE_DOT requires 2 arguments".into()));
+            }
+            let (v1, v2) = blob_pair_to_f32(args)?;
+            let dot: f64 = v1.iter().zip(&v2).map(|(a, b)| (*a as f64) * (*b as f64)).sum();
+            Ok(Value::Real(-dot))
+        }
+        "VEC_LENGTH" => {
+            if args.len() != 1 {
+                return Err(Error::Other("VEC_LENGTH requires 1 argument".into()));
+            }
+            match &args[0] {
+                Value::Null => Ok(Value::Null),
+                Value::Blob(b) => {
+                    if b.len() % 4 != 0 {
+                        return Err(Error::Other("VEC_LENGTH: BLOB length must be a multiple of 4".into()));
+                    }
+                    Ok(Value::Integer((b.len() / 4) as i64))
+                }
+                _ => Err(Error::Other("VEC_LENGTH requires a BLOB argument".into())),
+            }
+        }
+        "VEC_NORMALIZE" => {
+            if args.len() != 1 {
+                return Err(Error::Other("VEC_NORMALIZE requires 1 argument".into()));
+            }
+            match &args[0] {
+                Value::Null => Ok(Value::Null),
+                Value::Blob(b) => {
+                    let v = blob_to_f32_vec(b)?;
+                    let norm: f64 = v.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>().sqrt();
+                    if norm == 0.0 {
+                        return Ok(args[0].clone());
+                    }
+                    let normalized: Vec<u8> = v.iter()
+                        .flat_map(|x| ((*x as f64 / norm) as f32).to_le_bytes())
+                        .collect();
+                    Ok(Value::Blob(normalized))
+                }
+                _ => Err(Error::Other("VEC_NORMALIZE requires a BLOB argument".into())),
+            }
+        }
+        "VEC_FROM_JSON" => {
+            if args.len() != 1 {
+                return Err(Error::Other("VEC_FROM_JSON requires 1 argument".into()));
+            }
+            match &args[0] {
+                Value::Null => Ok(Value::Null),
+                Value::Text(s) => {
+                    let floats = parse_json_float_array(s)?;
+                    let blob: Vec<u8> = floats.iter().flat_map(|f| f.to_le_bytes()).collect();
+                    Ok(Value::Blob(blob))
+                }
+                _ => Err(Error::Other("VEC_FROM_JSON requires a TEXT argument".into())),
+            }
+        }
+        "VEC_TO_JSON" => {
+            if args.len() != 1 {
+                return Err(Error::Other("VEC_TO_JSON requires 1 argument".into()));
+            }
+            match &args[0] {
+                Value::Null => Ok(Value::Null),
+                Value::Blob(b) => {
+                    let v = blob_to_f32_vec(b)?;
+                    let parts: Vec<String> = v.iter().map(|f| format!("{f}")).collect();
+                    Ok(Value::Text(format!("[{}]", parts.join(","))))
+                }
+                _ => Err(Error::Other("VEC_TO_JSON requires a BLOB argument".into())),
+            }
+        }
         "MIN" => {
             if args.is_empty() {
                 return Ok(Value::Null);
@@ -719,6 +804,68 @@ pub(crate) fn numeric_op(
         (Value::Real(a), Value::Integer(b)) => Ok(Value::Real(float_op(*a, *b as f64))),
         _ => Ok(Value::Integer(0)),
     }
+}
+
+fn blob_to_f32_vec(blob: &[u8]) -> Result<Vec<f32>> {
+    if blob.len() % 4 != 0 {
+        return Err(Error::Other("vector BLOB length must be a multiple of 4 bytes".into()));
+    }
+    Ok(blob.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+}
+
+fn blob_pair_to_f32(args: &[Value]) -> Result<(Vec<f32>, Vec<f32>)> {
+    let b1 = match &args[0] {
+        Value::Blob(b) => b,
+        Value::Null => return Err(Error::Other("vector argument must not be NULL".into())),
+        _ => return Err(Error::Other("vector distance requires BLOB arguments".into())),
+    };
+    let b2 = match &args[1] {
+        Value::Blob(b) => b,
+        Value::Null => return Err(Error::Other("vector argument must not be NULL".into())),
+        _ => return Err(Error::Other("vector distance requires BLOB arguments".into())),
+    };
+    let v1 = blob_to_f32_vec(b1)?;
+    let v2 = blob_to_f32_vec(b2)?;
+    if v1.len() != v2.len() {
+        return Err(Error::Other(format!(
+            "vector dimension mismatch: {} vs {}", v1.len(), v2.len()
+        )));
+    }
+    Ok((v1, v2))
+}
+
+fn cosine_distance(v1: &[f32], v2: &[f32]) -> f64 {
+    let dot: f64 = v1.iter().zip(v2).map(|(a, b)| (*a as f64) * (*b as f64)).sum();
+    let norm1: f64 = v1.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>().sqrt();
+    let norm2: f64 = v2.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>().sqrt();
+    if norm1 == 0.0 || norm2 == 0.0 {
+        return 1.0;
+    }
+    1.0 - (dot / (norm1 * norm2))
+}
+
+fn l2_distance(v1: &[f32], v2: &[f32]) -> f64 {
+    v1.iter().zip(v2).map(|(a, b)| {
+        let d = (*a as f64) - (*b as f64);
+        d * d
+    }).sum::<f64>().sqrt()
+}
+
+fn parse_json_float_array(s: &str) -> Result<Vec<f32>> {
+    let trimmed = s.trim();
+    if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
+        return Err(Error::Other("VEC_FROM_JSON: expected JSON array like [1.0, 2.0, ...]".into()));
+    }
+    let inner = &trimmed[1..trimmed.len()-1];
+    if inner.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    inner.split(',')
+        .map(|part| {
+            part.trim().parse::<f32>()
+                .map_err(|_| Error::Other(format!("VEC_FROM_JSON: invalid float: {}", part.trim())))
+        })
+        .collect()
 }
 
 fn simple_printf(fmt: &str, args: &[Value]) -> String {
