@@ -1,0 +1,31 @@
+{
+  "name": "rsqlite-wasm",
+  "version": "0.1.0",
+  "description": "SQLite-compatible database for the browser, powered by Rust and WebAssembly",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist/"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "build:wasm": "cd .. && wasm-pack build --target web --out-dir pkg crates/rsqlite-wasm",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "sqlite",
+    "wasm",
+    "webassembly",
+    "database",
+    "sql",
+    "browser",
+    "pwa",
+    "indexeddb",
+    "opfs"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.4"
+  }
+}
