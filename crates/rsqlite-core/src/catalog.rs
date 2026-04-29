@@ -40,6 +40,7 @@ impl TypeAffinity {
 #[derive(Debug, Clone)]
 pub struct ColumnDef {
     pub name: String,
+    pub type_name: String,
     pub affinity: TypeAffinity,
     pub is_primary_key: bool,
     pub is_rowid_alias: bool,
@@ -181,6 +182,7 @@ fn parse_table_def(entry: &SchemaEntry) -> Result<Option<TableDef>> {
 
             columns.push(ColumnDef {
                 name: col.name.value.clone(),
+                type_name: type_name.clone(),
                 affinity,
                 is_primary_key,
                 is_rowid_alias,

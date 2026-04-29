@@ -36,6 +36,9 @@ impl Database {
         }
 
         let plan = planner::plan_statement(&stmts[0], &self.catalog)?;
+        if let planner::Plan::Pragma { ref name, ref argument } = plan {
+            return executor::execute_pragma(name, argument.as_deref(), &self.pager, &self.catalog);
+        }
         executor::execute(&plan, &mut self.pager)
     }
 
@@ -57,6 +60,15 @@ impl Database {
 
         let stmt = &stmts[0];
         let plan = planner::plan_statement(stmt, &self.catalog)?;
+
+        if let planner::Plan::Pragma { ref name, ref argument } = plan {
+            return Ok(SqlResult::Query(executor::execute_pragma(
+                name,
+                argument.as_deref(),
+                &self.pager,
+                &self.catalog,
+            )?));
+        }
 
         if is_query_statement(stmt) {
             Ok(SqlResult::Query(executor::execute(
@@ -1740,5 +1752,155 @@ mod tests {
         let before_ids: Vec<_> = before_index.rows.iter().map(|r| &r.values[0]).collect();
         let after_ids: Vec<_> = after_index.rows.iter().map(|r| &r.values[0]).collect();
         assert_eq!(before_ids, after_ids);
+    }
+
+    #[test]
+    fn pragma_table_info() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, age INTEGER)")
+            .unwrap();
+
+        let result = db.query("PRAGMA table_info(users)").unwrap();
+        assert_eq!(result.columns, vec!["cid", "name", "type", "notnull", "dflt_value", "pk"]);
+        assert_eq!(result.rows.len(), 3);
+
+        // cid=0, name=id, type=INTEGER, notnull=1, dflt_value=NULL, pk=1
+        assert_eq!(result.rows[0].values[0], crate::types::Value::Integer(0));
+        assert_eq!(result.rows[0].values[1], crate::types::Value::Text("id".to_string()));
+        assert_eq!(result.rows[0].values[2], crate::types::Value::Text("INTEGER".to_string()));
+        assert_eq!(result.rows[0].values[3], crate::types::Value::Integer(1)); // not null (PK)
+        assert_eq!(result.rows[0].values[5], crate::types::Value::Integer(1)); // pk
+
+        // cid=1, name=name, type=TEXT, notnull=1, pk=0
+        assert_eq!(result.rows[1].values[1], crate::types::Value::Text("name".to_string()));
+        assert_eq!(result.rows[1].values[2], crate::types::Value::Text("TEXT".to_string()));
+        assert_eq!(result.rows[1].values[3], crate::types::Value::Integer(1)); // NOT NULL
+        assert_eq!(result.rows[1].values[5], crate::types::Value::Integer(0));
+
+        // cid=2, name=age, type=INTEGER, notnull=0, pk=0
+        assert_eq!(result.rows[2].values[1], crate::types::Value::Text("age".to_string()));
+        assert_eq!(result.rows[2].values[3], crate::types::Value::Integer(0)); // nullable
+        assert_eq!(result.rows[2].values[5], crate::types::Value::Integer(0));
+    }
+
+    #[test]
+    fn pragma_table_info_quoted() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, code TEXT)")
+            .unwrap();
+
+        // Also works with quoted argument
+        let result = db.query("PRAGMA table_info('items')").unwrap();
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(result.rows[0].values[1], crate::types::Value::Text("id".to_string()));
+        assert_eq!(result.rows[1].values[1], crate::types::Value::Text("code".to_string()));
+    }
+
+    #[test]
+    fn pragma_table_list() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE alpha (id INTEGER PRIMARY KEY)").unwrap();
+        db.execute("CREATE TABLE beta (id INTEGER PRIMARY KEY)").unwrap();
+
+        let result = db.query("PRAGMA table_list").unwrap();
+        assert_eq!(result.columns, vec!["schema", "name", "type"]);
+        assert!(result.rows.len() >= 2);
+
+        let names: Vec<String> = result
+            .rows
+            .iter()
+            .map(|r| {
+                if let crate::types::Value::Text(s) = &r.values[1] {
+                    s.clone()
+                } else {
+                    String::new()
+                }
+            })
+            .collect();
+        assert!(names.contains(&"alpha".to_string()));
+        assert!(names.contains(&"beta".to_string()));
+    }
+
+    #[test]
+    fn pragma_index_list() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")
+            .unwrap();
+        db.execute("CREATE INDEX idx_name ON t(name)").unwrap();
+        db.execute("CREATE INDEX idx_age ON t(age)").unwrap();
+
+        let result = db.query("PRAGMA index_list(t)").unwrap();
+        assert_eq!(result.columns, vec!["seq", "name", "unique", "origin", "partial"]);
+        assert_eq!(result.rows.len(), 2);
+    }
+
+    #[test]
+    fn pragma_index_info() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")
+            .unwrap();
+        db.execute("CREATE INDEX idx_name ON t(name)").unwrap();
+
+        let result = db.query("PRAGMA index_info(idx_name)").unwrap();
+        assert_eq!(result.columns, vec!["seqno", "cid", "name"]);
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].values[0], crate::types::Value::Integer(0)); // seqno
+        assert_eq!(result.rows[0].values[1], crate::types::Value::Integer(1)); // cid (name is col 1)
+        assert_eq!(result.rows[0].values[2], crate::types::Value::Text("name".to_string()));
+    }
+
+    #[test]
+    fn pragma_page_size() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        let result = db.query("PRAGMA page_size").unwrap();
+        assert_eq!(result.columns, vec!["page_size"]);
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].values[0], crate::types::Value::Integer(4096));
+    }
+
+    #[test]
+    fn pragma_page_count() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        let result = db.query("PRAGMA page_count").unwrap();
+        assert_eq!(result.columns, vec!["page_count"]);
+        assert_eq!(result.rows.len(), 1);
+        // Freshly created DB has 1 page
+        assert_eq!(result.rows[0].values[0], crate::types::Value::Integer(1));
+
+        // Create a table and check page count grows
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, data TEXT)").unwrap();
+        let result2 = db.query("PRAGMA page_count").unwrap();
+        let count = if let crate::types::Value::Integer(n) = result2.rows[0].values[0] {
+            n
+        } else {
+            panic!("expected integer");
+        };
+        assert!(count >= 2, "page_count should grow after CREATE TABLE");
+    }
+
+    #[test]
+    fn pragma_database_list() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        let result = db.query("PRAGMA database_list").unwrap();
+        assert_eq!(result.columns, vec!["seq", "name", "file"]);
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].values[0], crate::types::Value::Integer(0));
+        assert_eq!(result.rows[0].values[1], crate::types::Value::Text("main".to_string()));
     }
 }

@@ -120,6 +120,10 @@ pub enum Plan {
     Insert(InsertPlan),
     Update(UpdatePlan),
     Delete(DeletePlan),
+    Pragma {
+        name: String,
+        argument: Option<String>,
+    },
     Begin,
     Commit,
     Rollback,
@@ -221,6 +225,18 @@ pub fn plan_statement(stmt: &Statement, catalog: &Catalog) -> Result<Plan> {
             ..
         } => plan_update(table, assignments, selection.as_ref(), catalog),
         Statement::Delete(delete) => plan_delete(delete, catalog),
+        Statement::Pragma { name, value, .. } => {
+            let pragma_name = name.to_string().to_lowercase();
+            let argument = value.as_ref().map(|v| match v {
+                ast::Value::SingleQuotedString(s) => s.clone(),
+                ast::Value::Number(n, _) => n.clone(),
+                other => other.to_string(),
+            });
+            Ok(Plan::Pragma {
+                name: pragma_name,
+                argument,
+            })
+        }
         Statement::StartTransaction { .. } => Ok(Plan::Begin),
         Statement::Commit { .. } => Ok(Plan::Commit),
         Statement::Rollback { .. } => Ok(Plan::Rollback),
