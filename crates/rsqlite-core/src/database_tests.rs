@@ -4166,3 +4166,50 @@
         let err = r.unwrap_err().to_string();
         assert!(err.contains("CHECK"), "Expected CHECK error, got: {err}");
     }
+
+    // ───────────────────── EXPLAIN QUERY PLAN tests ─────────────────────
+
+    #[test]
+    fn explain_query_plan_scan() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+        let r = db.query("EXPLAIN QUERY PLAN SELECT * FROM users").unwrap();
+        assert_eq!(r.columns, vec!["id", "parent", "notused", "detail"]);
+        assert!(!r.rows.is_empty());
+        let detail = &r.rows[0].values[3];
+        if let crate::types::Value::Text(s) = detail {
+            assert!(s.contains("SCAN TABLE users"), "Expected SCAN TABLE users, got: {s}");
+        } else {
+            panic!("Expected text detail");
+        }
+    }
+
+    #[test]
+    fn explain_query_plan_index() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+        db.execute("CREATE INDEX idx_name ON users(name)").unwrap();
+        let r = db.query("EXPLAIN QUERY PLAN SELECT * FROM users WHERE name = 'Alice'").unwrap();
+        assert!(!r.rows.is_empty());
+        let detail = &r.rows[0].values[3];
+        if let crate::types::Value::Text(s) = detail {
+            assert!(s.contains("SEARCH TABLE") || s.contains("SCAN TABLE"), "got: {s}");
+        } else {
+            panic!("Expected text detail");
+        }
+    }
+
+    #[test]
+    fn explain_query_plan_join() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE a (id INTEGER PRIMARY KEY)").unwrap();
+        db.execute("CREATE TABLE b (id INTEGER PRIMARY KEY, a_id INTEGER)").unwrap();
+        let r = db.query("EXPLAIN QUERY PLAN SELECT * FROM a INNER JOIN b ON a.id = b.a_id").unwrap();
+        let details: Vec<String> = r.rows.iter().filter_map(|row| {
+            if let crate::types::Value::Text(s) = &row.values[3] { Some(s.clone()) } else { None }
+        }).collect();
+        assert!(details.iter().any(|d| d.contains("JOIN")), "Expected JOIN in plan: {details:?}");
+    }
