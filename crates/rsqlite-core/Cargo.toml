@@ -11,4 +11,5 @@ rsqlite-parser = { workspace = true }
 rsqlite-storage = { workspace = true }
 rsqlite-vfs = { workspace = true, features = ["native"] }
 sqlparser = { workspace = true }
+lru = { workspace = true }
 thiserror = { workspace = true }
