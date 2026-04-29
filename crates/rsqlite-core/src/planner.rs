@@ -198,6 +198,7 @@ pub enum Plan {
 }
 
 pub fn plan_statement(stmt: &Statement, catalog: &Catalog) -> Result<Plan> {
+    reset_param_counter();
     match stmt {
         Statement::Query(query) => plan_select(query, catalog, &HashMap::new()),
         Statement::CreateTable(ct) => plan_create_table(ct),

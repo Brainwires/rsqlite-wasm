@@ -8,7 +8,9 @@ interface WasmModule {
 
 interface WasmDatabaseInstance {
   exec(sql: string): bigint;
+  execParams(sql: string, params: SqlValue[]): bigint;
   query(sql: string): unknown[];
+  queryParams(sql: string, params: SqlValue[]): unknown[];
   queryOne(sql: string): unknown | null;
   execMany(sql: string): void;
   toBuffer(): Uint8Array;
@@ -26,7 +28,7 @@ interface WasmDatabaseConstructor {
   fromBuffer(data: Uint8Array): WasmDatabaseInstance;
 }
 
-import type { Row, DatabaseOptions } from "./types.js";
+import type { SqlValue, Row, DatabaseOptions } from "./types.js";
 
 let wasmModule: WasmModule | null = null;
 let wasmInitPromise: Promise<WasmModule> | null = null;
@@ -97,13 +99,19 @@ export class Database {
     return new Database(inner);
   }
 
-  exec(sql: string): number {
+  exec(sql: string, params?: SqlValue[]): number {
     this.ensureOpen();
+    if (params && params.length > 0) {
+      return Number(this.inner.execParams(sql, params));
+    }
     return Number(this.inner.exec(sql));
   }
 
-  query<T extends Row = Row>(sql: string): T[] {
+  query<T extends Row = Row>(sql: string, params?: SqlValue[]): T[] {
     this.ensureOpen();
+    if (params && params.length > 0) {
+      return this.inner.queryParams(sql, params) as T[];
+    }
     return this.inner.query(sql) as T[];
   }
 

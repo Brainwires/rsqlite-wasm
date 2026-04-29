@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+
 use rsqlite_storage::btree::{
     btree_create_index, btree_create_table, btree_delete, btree_index_delete, btree_index_insert,
     btree_insert, btree_max_rowid, btree_row_exists, delete_schema_entries, insert_schema_entry,
@@ -17,6 +19,27 @@ use crate::planner::{
     JoinType, OnConflictPlan, Plan, PlanExpr, ProjectionItem, SortKey, UnaryOp, UpdatePlan,
 };
 use crate::types::{QueryResult, Row};
+
+thread_local! {
+    static BOUND_PARAMS: RefCell<Vec<Value>> = RefCell::new(Vec::new());
+}
+
+pub fn set_params(params: Vec<Value>) {
+    BOUND_PARAMS.with(|p| *p.borrow_mut() = params);
+}
+
+pub fn clear_params() {
+    BOUND_PARAMS.with(|p| p.borrow_mut().clear());
+}
+
+fn get_param(index: usize) -> Value {
+    BOUND_PARAMS.with(|p| {
+        p.borrow()
+            .get(index)
+            .cloned()
+            .unwrap_or(Value::Null)
+    })
+}
 
 #[derive(Debug)]
 pub struct ExecResult {
@@ -1027,6 +1050,7 @@ fn eval_insert_row(
 fn eval_literal(expr: &PlanExpr) -> Result<Value> {
     match expr {
         PlanExpr::Literal(lit) => Ok(literal_to_value(lit)),
+        PlanExpr::Param(index) => Ok(get_param(*index)),
         PlanExpr::UnaryOp {
             op: UnaryOp::Neg,
             operand,
@@ -2030,6 +2054,7 @@ fn eval_expr(expr: &PlanExpr, row: &Row, columns: &[String], pager: &mut Pager, 
             let result = if *negated { !exists } else { exists };
             Ok(Value::Integer(if result { 1 } else { 0 }))
         }
+        PlanExpr::Param(index) => Ok(get_param(*index)),
     }
 }
 

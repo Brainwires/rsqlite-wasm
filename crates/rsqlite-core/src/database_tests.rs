@@ -2819,3 +2819,60 @@
         let r = db.query("SELECT name FROM items WHERE price >= 10 AND price <= 50 ORDER BY price").unwrap();
         assert_eq!(r.rows.len(), 5);
     }
+
+    // ── Parameter binding tests ────────────────────────────
+
+    #[test]
+    fn param_binding_select() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'alice')").unwrap();
+        db.execute("INSERT INTO t VALUES (2, 'bob')").unwrap();
+
+        let r = db.query_with_params(
+            "SELECT name FROM t WHERE id = ?",
+            vec![rsqlite_storage::codec::Value::Integer(2)],
+        ).unwrap();
+        assert_eq!(r.rows.len(), 1);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("bob".to_string()));
+    }
+
+    #[test]
+    fn param_binding_insert() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+
+        db.execute_with_params(
+            "INSERT INTO t VALUES (?, ?)",
+            vec![
+                rsqlite_storage::codec::Value::Integer(1),
+                rsqlite_storage::codec::Value::Text("charlie".to_string()),
+            ],
+        ).unwrap();
+
+        let r = db.query("SELECT name FROM t WHERE id = 1").unwrap();
+        assert_eq!(r.rows.len(), 1);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("charlie".to_string()));
+    }
+
+    #[test]
+    fn param_binding_multiple() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)").unwrap();
+        db.execute("INSERT INTO t VALUES (1, 10)").unwrap();
+        db.execute("INSERT INTO t VALUES (2, 20)").unwrap();
+        db.execute("INSERT INTO t VALUES (3, 30)").unwrap();
+
+        let r = db.query_with_params(
+            "SELECT id FROM t WHERE val > ? AND val < ? ORDER BY id",
+            vec![
+                rsqlite_storage::codec::Value::Integer(10),
+                rsqlite_storage::codec::Value::Integer(30),
+            ],
+        ).unwrap();
+        assert_eq!(r.rows.len(), 1);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(2));
+    }

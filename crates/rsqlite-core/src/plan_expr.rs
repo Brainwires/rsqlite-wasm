@@ -1,7 +1,13 @@
+use std::cell::RefCell;
+
 use sqlparser::ast::{self, Expr, SelectItem};
 
 use crate::catalog::Catalog;
 use crate::error::{Error, Result};
+
+thread_local! {
+    pub(super) static PARAM_AUTO_INDEX: RefCell<usize> = RefCell::new(0);
+}
 
 #[derive(Debug, Clone)]
 pub struct ColumnRef {
@@ -81,6 +87,7 @@ pub enum PlanExpr {
         subquery: Box<super::Plan>,
         negated: bool,
     },
+    Param(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -201,7 +208,16 @@ pub(super) fn plan_expr(expr: &Expr, columns: &[ColumnRef], catalog: &Catalog) -
                 })?;
             Ok(PlanExpr::Column(col.clone()))
         }
-        Expr::Value(val) => Ok(PlanExpr::Literal(plan_value(&val.value)?)),
+        Expr::Value(val) => {
+            if let ast::Value::Placeholder(s) = &val.value {
+                PARAM_AUTO_INDEX.with(|c| {
+                    let idx = parse_placeholder(s, &mut c.borrow_mut());
+                    Ok(PlanExpr::Param(idx))
+                })
+            } else {
+                Ok(PlanExpr::Literal(plan_value(&val.value)?))
+            }
+        }
         Expr::BinaryOp { left, op, right } => {
             let left = plan_expr(left, columns, catalog)?;
             let right = plan_expr(right, columns, catalog)?;
@@ -516,6 +532,24 @@ fn plan_value(val: &ast::Value) -> Result<LiteralValue> {
     }
 }
 
+pub(super) fn reset_param_counter() {
+    PARAM_AUTO_INDEX.with(|c| *c.borrow_mut() = 0);
+}
+
+fn parse_placeholder(s: &str, auto_idx: &mut usize) -> usize {
+    if s == "?" {
+        let idx = *auto_idx;
+        *auto_idx += 1;
+        idx
+    } else if let Some(rest) = s.strip_prefix('?') {
+        rest.parse::<usize>().unwrap_or(1).saturating_sub(1)
+    } else {
+        let idx = *auto_idx;
+        *auto_idx += 1;
+        idx
+    }
+}
+
 fn plan_binop(op: &ast::BinaryOperator) -> Result<BinOp> {
     match op {
         ast::BinaryOperator::Eq => Ok(BinOp::Eq),
@@ -617,7 +651,8 @@ pub(super) fn contains_aggregate(expr: &PlanExpr) -> bool {
         | PlanExpr::Literal(_)
         | PlanExpr::Wildcard
         | PlanExpr::Subquery(_)
-        | PlanExpr::Exists { .. } => false,
+        | PlanExpr::Exists { .. }
+        | PlanExpr::Param(_) => false,
     }
 }
 

@@ -1,3 +1,4 @@
+use rsqlite_storage::codec::Value;
 use rsqlite_storage::pager::Pager;
 use rsqlite_vfs::Vfs;
 use sqlparser::ast::Statement;
@@ -24,6 +25,20 @@ impl Database {
         let mut pager = Pager::create(vfs, path)?;
         let catalog = Catalog::load(&mut pager)?;
         Ok(Self { pager, catalog })
+    }
+
+    pub fn query_with_params(&mut self, sql: &str, params: Vec<Value>) -> Result<QueryResult> {
+        executor::set_params(params);
+        let result = self.query(sql);
+        executor::clear_params();
+        result
+    }
+
+    pub fn execute_with_params(&mut self, sql: &str, params: Vec<Value>) -> Result<ExecResult> {
+        executor::set_params(params);
+        let result = self.execute(sql);
+        executor::clear_params();
+        result
     }
 
     pub fn query(&mut self, sql: &str) -> Result<QueryResult> {
