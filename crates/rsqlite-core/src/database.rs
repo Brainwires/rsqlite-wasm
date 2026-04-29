@@ -615,4 +615,142 @@ mod tests {
 
         let _ = std::fs::remove_file(db_path);
     }
+
+    #[test]
+    fn transaction_commit() {
+        let db_path = "/tmp/rsqlite_db_txn_commit.db";
+        let _ = std::fs::remove_file(db_path);
+
+        let vfs = rsqlite_vfs::native::NativeVfs::new();
+        let mut db = Database::create(&vfs, db_path).unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)")
+            .unwrap();
+
+        db.execute("BEGIN").unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'hello')").unwrap();
+        db.execute("INSERT INTO t VALUES (2, 'world')").unwrap();
+        db.execute("COMMIT").unwrap();
+
+        let result = db.query("SELECT * FROM t").unwrap();
+        assert_eq!(result.rows.len(), 2);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn transaction_rollback() {
+        let db_path = "/tmp/rsqlite_db_txn_rollback.db";
+        let _ = std::fs::remove_file(db_path);
+
+        let vfs = rsqlite_vfs::native::NativeVfs::new();
+        let mut db = Database::create(&vfs, db_path).unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)")
+            .unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'keep')").unwrap();
+
+        db.execute("BEGIN").unwrap();
+        db.execute("INSERT INTO t VALUES (2, 'discard')").unwrap();
+        db.execute("INSERT INTO t VALUES (3, 'also discard')").unwrap();
+        db.execute("ROLLBACK").unwrap();
+
+        let result = db.query("SELECT * FROM t").unwrap();
+        assert_eq!(result.rows.len(), 1);
+        use rsqlite_storage::codec::Value;
+        assert_eq!(result.rows[0].values[1], Value::Text("keep".to_string()));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn transaction_rollback_update() {
+        let db_path = "/tmp/rsqlite_db_txn_rollback_upd.db";
+        let _ = std::fs::remove_file(db_path);
+
+        let vfs = rsqlite_vfs::native::NativeVfs::new();
+        let mut db = Database::create(&vfs, db_path).unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)")
+            .unwrap();
+        db.execute("INSERT INTO t VALUES (1, 100)").unwrap();
+        db.execute("INSERT INTO t VALUES (2, 200)").unwrap();
+
+        db.execute("BEGIN").unwrap();
+        db.execute("UPDATE t SET val = 999 WHERE id = 1").unwrap();
+        db.execute("DELETE FROM t WHERE id = 2").unwrap();
+        db.execute("ROLLBACK").unwrap();
+
+        let result = db.query("SELECT * FROM t").unwrap();
+        assert_eq!(result.rows.len(), 2);
+        use rsqlite_storage::codec::Value;
+        assert_eq!(result.rows[0].values[1], Value::Integer(100));
+        assert_eq!(result.rows[1].values[1], Value::Integer(200));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn transaction_commit_persists_to_disk() {
+        let db_path = "/tmp/rsqlite_db_txn_persist.db";
+        let _ = std::fs::remove_file(db_path);
+
+        let vfs = rsqlite_vfs::native::NativeVfs::new();
+
+        {
+            let mut db = Database::create(&vfs, db_path).unwrap();
+            db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)")
+                .unwrap();
+            db.execute("BEGIN").unwrap();
+            db.execute("INSERT INTO t VALUES (1, 'persisted')").unwrap();
+            db.execute("COMMIT").unwrap();
+        }
+
+        // Reopen and verify
+        {
+            let mut db = Database::open(&vfs, db_path).unwrap();
+            let result = db.query("SELECT * FROM t").unwrap();
+            assert_eq!(result.rows.len(), 1);
+            use rsqlite_storage::codec::Value;
+            assert_eq!(
+                result.rows[0].values[1],
+                Value::Text("persisted".to_string())
+            );
+        }
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn transaction_rollback_not_persisted() {
+        let db_path = "/tmp/rsqlite_db_txn_no_persist.db";
+        let _ = std::fs::remove_file(db_path);
+
+        let vfs = rsqlite_vfs::native::NativeVfs::new();
+
+        {
+            let mut db = Database::create(&vfs, db_path).unwrap();
+            db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)")
+                .unwrap();
+            db.execute("INSERT INTO t VALUES (1, 'original')").unwrap();
+
+            db.execute("BEGIN").unwrap();
+            db.execute("INSERT INTO t VALUES (2, 'rolled_back')").unwrap();
+            db.execute("ROLLBACK").unwrap();
+        }
+
+        // Reopen and verify only original data
+        {
+            let mut db = Database::open(&vfs, db_path).unwrap();
+            let result = db.query("SELECT * FROM t").unwrap();
+            assert_eq!(result.rows.len(), 1);
+            use rsqlite_storage::codec::Value;
+            assert_eq!(
+                result.rows[0].values[1],
+                Value::Text("original".to_string())
+            );
+        }
+
+        let _ = std::fs::remove_file(db_path);
+    }
 }

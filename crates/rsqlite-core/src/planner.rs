@@ -64,6 +64,9 @@ pub enum Plan {
     Insert(InsertPlan),
     Update(UpdatePlan),
     Delete(DeletePlan),
+    Begin,
+    Commit,
+    Rollback,
 }
 
 #[derive(Debug, Clone)]
@@ -142,6 +145,9 @@ pub fn plan_statement(stmt: &Statement, catalog: &Catalog) -> Result<Plan> {
             ..
         } => plan_update(table, assignments, selection.as_ref(), catalog),
         Statement::Delete(delete) => plan_delete(delete, catalog),
+        Statement::StartTransaction { .. } => Ok(Plan::Begin),
+        Statement::Commit { .. } => Ok(Plan::Commit),
+        Statement::Rollback { .. } => Ok(Plan::Rollback),
         _ => Err(Error::Other(format!(
             "unsupported statement type: {stmt}"
         ))),

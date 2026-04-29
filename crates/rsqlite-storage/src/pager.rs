@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZero;
 
 use lru::LruCache;
@@ -15,6 +15,9 @@ pub struct Pager {
     cache: LruCache<u32, Page>,
     dirty: HashSet<u32>,
     page_count: u32,
+    in_transaction: bool,
+    journal: HashMap<u32, Vec<u8>>,
+    saved_page_count: u32,
 }
 
 #[derive(Clone)]
@@ -55,6 +58,9 @@ impl Pager {
             cache: LruCache::new(NonZero::new(DEFAULT_CACHE_SIZE).unwrap()),
             dirty: HashSet::new(),
             page_count,
+            in_transaction: false,
+            journal: HashMap::new(),
+            saved_page_count: page_count,
         })
     }
 
@@ -97,6 +103,9 @@ impl Pager {
             cache: LruCache::new(NonZero::new(DEFAULT_CACHE_SIZE).unwrap()),
             dirty: HashSet::new(),
             page_count: 1,
+            in_transaction: false,
+            journal: HashMap::new(),
+            saved_page_count: 1,
         })
     }
 
@@ -115,6 +124,7 @@ impl Pager {
     }
 
     /// Get a mutable reference to a page, marking it dirty.
+    /// If in a transaction, saves the original page to the journal before first modification.
     pub fn get_page_mut(&mut self, page_num: u32) -> Result<&mut Page> {
         if page_num < 1 || page_num > self.page_count {
             return Err(StorageError::PageOutOfRange(page_num, self.page_count));
@@ -123,6 +133,11 @@ impl Pager {
         if !self.cache.contains(&page_num) {
             let page = self.read_page_from_disk(page_num)?;
             self.cache.put(page_num, page);
+        }
+
+        if self.in_transaction && !self.journal.contains_key(&page_num) {
+            let original = self.cache.get(&page_num).unwrap().data.clone();
+            self.journal.insert(page_num, original);
         }
 
         self.dirty.insert(page_num);
@@ -172,6 +187,49 @@ impl Pager {
 
     pub fn page_count(&self) -> u32 {
         self.page_count
+    }
+
+    pub fn in_transaction(&self) -> bool {
+        self.in_transaction
+    }
+
+    pub fn begin_transaction(&mut self) -> Result<()> {
+        if self.in_transaction {
+            return Err(StorageError::Other(
+                "transaction already active".to_string(),
+            ));
+        }
+        self.in_transaction = true;
+        self.journal.clear();
+        self.saved_page_count = self.page_count;
+        Ok(())
+    }
+
+    pub fn commit(&mut self) -> Result<()> {
+        if !self.in_transaction {
+            return Err(StorageError::Other("no active transaction".to_string()));
+        }
+        self.flush()?;
+        self.journal.clear();
+        self.in_transaction = false;
+        Ok(())
+    }
+
+    pub fn rollback(&mut self) -> Result<()> {
+        if !self.in_transaction {
+            return Err(StorageError::Other("no active transaction".to_string()));
+        }
+
+        for (page_num, original_data) in self.journal.drain() {
+            if let Some(page) = self.cache.get_mut(&page_num) {
+                page.data = original_data;
+            }
+        }
+
+        self.page_count = self.saved_page_count;
+        self.dirty.clear();
+        self.in_transaction = false;
+        Ok(())
     }
 
     fn read_page_from_disk(&self, page_num: u32) -> Result<Page> {

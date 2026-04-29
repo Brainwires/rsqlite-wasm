@@ -40,11 +40,15 @@ pub fn execute(plan: &Plan, pager: &mut Pager) -> Result<QueryResult> {
             columns,
             ..
         } => execute_scan(*root_page, columns, pager),
-        Plan::CreateTable(_) | Plan::Insert(_) | Plan::Update(_) | Plan::Delete(_) => {
-            Err(Error::Other(
-                "use execute_mut for DDL/DML statements".to_string(),
-            ))
-        }
+        Plan::CreateTable(_)
+        | Plan::Insert(_)
+        | Plan::Update(_)
+        | Plan::Delete(_)
+        | Plan::Begin
+        | Plan::Commit
+        | Plan::Rollback => Err(Error::Other(
+            "use execute_mut for DDL/DML statements".to_string(),
+        )),
     }
 }
 
@@ -58,6 +62,18 @@ pub fn execute_mut(
         Plan::Insert(ins) => execute_insert(ins, pager),
         Plan::Update(upd) => execute_update(upd, pager),
         Plan::Delete(del) => execute_delete(del, pager),
+        Plan::Begin => {
+            pager.begin_transaction()?;
+            Ok(ExecResult { rows_affected: 0 })
+        }
+        Plan::Commit => {
+            pager.commit()?;
+            Ok(ExecResult { rows_affected: 0 })
+        }
+        Plan::Rollback => {
+            pager.rollback()?;
+            Ok(ExecResult { rows_affected: 0 })
+        }
         _ => Err(Error::Other(
             "use execute for query statements".to_string(),
         )),
@@ -91,7 +107,9 @@ fn execute_create_table(
         &plan.sql,
     )?;
 
-    pager.flush()?;
+    if !pager.in_transaction() {
+        pager.flush()?;
+    }
 
     catalog.reload(pager)?;
 
@@ -124,7 +142,9 @@ fn execute_insert(plan: &InsertPlan, pager: &mut Pager) -> Result<ExecResult> {
         rows_affected += 1;
     }
 
-    pager.flush()?;
+    if !pager.in_transaction() {
+        pager.flush()?;
+    }
 
     Ok(ExecResult { rows_affected })
 }
@@ -248,7 +268,9 @@ fn execute_update(plan: &UpdatePlan, pager: &mut Pager) -> Result<ExecResult> {
         current_root = btree_insert(pager, current_root, rowid, &record)?;
     }
 
-    pager.flush()?;
+    if !pager.in_transaction() {
+        pager.flush()?;
+    }
 
     Ok(ExecResult { rows_affected })
 }
@@ -302,7 +324,9 @@ fn execute_delete(plan: &DeletePlan, pager: &mut Pager) -> Result<ExecResult> {
         btree_delete(pager, plan.root_page, rowid)?;
     }
 
-    pager.flush()?;
+    if !pager.in_transaction() {
+        pager.flush()?;
+    }
 
     Ok(ExecResult { rows_affected })
 }
