@@ -22,6 +22,10 @@ pub struct ExecResult {
 
 pub fn execute(plan: &Plan, pager: &mut Pager, catalog: &Catalog) -> Result<QueryResult> {
     match plan {
+        Plan::SingleRow => Ok(QueryResult {
+            columns: vec![],
+            rows: vec![Row { values: vec![] }],
+        }),
         Plan::Project { input, outputs } => execute_project(input, outputs, pager, catalog),
         Plan::Filter { input, predicate } => {
             let inner = execute(input, pager, catalog)?;

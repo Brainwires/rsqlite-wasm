@@ -2517,4 +2517,43 @@ mod tests {
         let err = db.execute("ALTER TABLE t1 RENAME TO t2").unwrap_err();
         assert!(err.to_string().contains("already a table named"));
     }
+
+    #[test]
+    fn select_without_from() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        let r = db.query("SELECT 1 + 2").unwrap();
+        assert_eq!(r.rows.len(), 1);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(3));
+    }
+
+    #[test]
+    fn select_without_from_string() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        let r = db.query("SELECT 'hello' || ' ' || 'world'").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("hello world".to_string()));
+    }
+
+    #[test]
+    fn select_without_from_functions() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        let r = db.query("SELECT TYPEOF(42), TYPEOF('hi'), TYPEOF(NULL)").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("integer".to_string()));
+        assert_eq!(r.rows[0].values[1], crate::types::Value::Text("text".to_string()));
+        assert_eq!(r.rows[0].values[2], crate::types::Value::Text("null".to_string()));
+    }
+
+    #[test]
+    fn select_without_from_coalesce() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        let r = db.query("SELECT COALESCE(NULL, NULL, 'found')").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("found".to_string()));
+    }
 }

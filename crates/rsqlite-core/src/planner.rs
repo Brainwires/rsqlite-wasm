@@ -79,6 +79,7 @@ pub struct SortKey {
 
 #[derive(Debug, Clone)]
 pub enum Plan {
+    SingleRow,
     Scan {
         table: String,
         root_page: u32,
@@ -414,9 +415,13 @@ fn plan_select(query: &ast::Query, catalog: &Catalog) -> Result<Plan> {
     };
 
     if select.from.is_empty() {
-        return Err(Error::Other(
-            "at least one table in FROM is required".to_string(),
-        ));
+        let plan = Plan::SingleRow;
+        let all_columns: Vec<ColumnRef> = vec![];
+        let outputs = plan_select_items(&select.projection, &all_columns, catalog)?;
+        return Ok(Plan::Project {
+            input: Box::new(plan),
+            outputs,
+        });
     }
 
     // Build plan from FROM clause (first item + its joins)
