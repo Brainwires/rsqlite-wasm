@@ -148,6 +148,8 @@ pub fn execute(plan: &Plan, pager: &mut Pager, catalog: &Catalog) -> Result<Quer
         | Plan::AlterTableRename { .. }
         | Plan::DropTable { .. }
         | Plan::DropIndex { .. }
+        | Plan::DropView { .. }
+        | Plan::CreateView { .. }
         | Plan::Begin
         | Plan::Commit
         | Plan::Rollback => Err(Error::Other(
@@ -182,6 +184,14 @@ pub fn execute_mut(
         } => execute_drop_index(index_name, *if_exists, pager, catalog),
         Plan::AlterTableRename { old_name, new_name } => {
             execute_alter_rename(old_name, new_name, pager, catalog)
+        }
+        Plan::CreateView {
+            name,
+            sql,
+            if_not_exists,
+        } => execute_create_view(name, sql, *if_not_exists, pager, catalog),
+        Plan::DropView { name, if_exists } => {
+            execute_drop_view(name, *if_exists, pager, catalog)
         }
         Plan::Begin => {
             pager.begin_transaction()?;
@@ -692,6 +702,54 @@ fn execute_drop_index(
     }
 
     delete_schema_entries(pager, index_name).map_err(|e| Error::Other(e.to_string()))?;
+
+    if !pager.in_transaction() {
+        pager.flush()?;
+    }
+
+    catalog.reload(pager)?;
+    Ok(ExecResult { rows_affected: 0 })
+}
+
+fn execute_create_view(
+    name: &str,
+    sql: &str,
+    if_not_exists: bool,
+    pager: &mut Pager,
+    catalog: &mut Catalog,
+) -> Result<ExecResult> {
+    if catalog.get_view(name).is_some() {
+        if if_not_exists {
+            return Ok(ExecResult { rows_affected: 0 });
+        }
+        return Err(Error::Other(format!("view {name} already exists")));
+    }
+
+    insert_schema_entry(pager, "view", name, name, 0, sql)
+        .map_err(|e| Error::Other(e.to_string()))?;
+
+    if !pager.in_transaction() {
+        pager.flush()?;
+    }
+
+    catalog.reload(pager)?;
+    Ok(ExecResult { rows_affected: 0 })
+}
+
+fn execute_drop_view(
+    name: &str,
+    if_exists: bool,
+    pager: &mut Pager,
+    catalog: &mut Catalog,
+) -> Result<ExecResult> {
+    if catalog.get_view(name).is_none() {
+        if if_exists {
+            return Ok(ExecResult { rows_affected: 0 });
+        }
+        return Err(Error::Other(format!("no such view: {name}")));
+    }
+
+    delete_schema_entries(pager, name).map_err(|e| Error::Other(e.to_string()))?;
 
     if !pager.in_transaction() {
         pager.flush()?;

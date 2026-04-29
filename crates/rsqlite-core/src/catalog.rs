@@ -72,10 +72,17 @@ pub struct IndexDef {
     pub sql: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ViewDef {
+    pub name: String,
+    pub sql: String,
+}
+
 #[derive(Debug)]
 pub struct Catalog {
     pub tables: HashMap<String, TableDef>,
     pub indexes: HashMap<String, IndexDef>,
+    pub views: HashMap<String, ViewDef>,
 }
 
 impl Catalog {
@@ -83,6 +90,7 @@ impl Catalog {
         let schema_entries = read_schema(pager)?;
         let mut tables = HashMap::new();
         let mut indexes = HashMap::new();
+        let mut views = HashMap::new();
 
         for entry in &schema_entries {
             match entry.entry_type.as_str() {
@@ -96,21 +104,37 @@ impl Catalog {
                         indexes.insert(index_def.name.to_lowercase(), index_def);
                     }
                 }
+                "view" => {
+                    if let Some(sql) = &entry.sql {
+                        views.insert(
+                            entry.name.to_lowercase(),
+                            ViewDef {
+                                name: entry.name.clone(),
+                                sql: sql.clone(),
+                            },
+                        );
+                    }
+                }
                 _ => {}
             }
         }
 
-        Ok(Catalog { tables, indexes })
+        Ok(Catalog { tables, indexes, views })
     }
 
     pub fn get_table(&self, name: &str) -> Option<&TableDef> {
         self.tables.get(&name.to_lowercase())
     }
 
+    pub fn get_view(&self, name: &str) -> Option<&ViewDef> {
+        self.views.get(&name.to_lowercase())
+    }
+
     pub fn reload(&mut self, pager: &mut Pager) -> Result<()> {
         let fresh = Self::load(pager)?;
         self.tables = fresh.tables;
         self.indexes = fresh.indexes;
+        self.views = fresh.views;
         Ok(())
     }
 }

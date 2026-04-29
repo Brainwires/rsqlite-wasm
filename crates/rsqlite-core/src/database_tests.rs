@@ -2493,3 +2493,118 @@
         let r = db.query("SELECT COALESCE(NULL, NULL, 'found')").unwrap();
         assert_eq!(r.rows[0].values[0], crate::types::Value::Text("found".to_string()));
     }
+
+    #[test]
+    fn create_view_and_select() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)").unwrap();
+        db.execute("INSERT INTO users VALUES (1, 'Alice', 30)").unwrap();
+        db.execute("INSERT INTO users VALUES (2, 'Bob', 25)").unwrap();
+        db.execute("INSERT INTO users VALUES (3, 'Charlie', 35)").unwrap();
+
+        db.execute("CREATE VIEW adults AS SELECT id, name, age FROM users WHERE age >= 30").unwrap();
+
+        let r = db.query("SELECT name, age FROM adults").unwrap();
+        assert_eq!(r.rows.len(), 2);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("Alice".to_string()));
+        assert_eq!(r.rows[1].values[0], crate::types::Value::Text("Charlie".to_string()));
+    }
+
+    #[test]
+    fn view_with_filter() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, price REAL)").unwrap();
+        db.execute("INSERT INTO items VALUES (1, 'Widget', 9.99)").unwrap();
+        db.execute("INSERT INTO items VALUES (2, 'Gadget', 24.99)").unwrap();
+        db.execute("INSERT INTO items VALUES (3, 'Doohickey', 4.99)").unwrap();
+
+        db.execute("CREATE VIEW expensive AS SELECT * FROM items WHERE price > 10.0").unwrap();
+
+        let r = db.query("SELECT name FROM expensive WHERE name LIKE 'G%'").unwrap();
+        assert_eq!(r.rows.len(), 1);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("Gadget".to_string()));
+    }
+
+    #[test]
+    fn view_with_aggregation() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE sales (id INTEGER PRIMARY KEY, product TEXT, amount REAL)").unwrap();
+        db.execute("INSERT INTO sales VALUES (1, 'A', 100.0)").unwrap();
+        db.execute("INSERT INTO sales VALUES (2, 'B', 200.0)").unwrap();
+        db.execute("INSERT INTO sales VALUES (3, 'A', 150.0)").unwrap();
+
+        db.execute("CREATE VIEW product_totals AS SELECT product, SUM(amount) AS total FROM sales GROUP BY product").unwrap();
+
+        let r = db.query("SELECT * FROM product_totals ORDER BY product").unwrap();
+        assert_eq!(r.rows.len(), 2);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("A".to_string()));
+        assert_eq!(r.rows[0].values[1], crate::types::Value::Real(250.0));
+        assert_eq!(r.rows[1].values[0], crate::types::Value::Text("B".to_string()));
+        assert_eq!(r.rows[1].values[1], crate::types::Value::Real(200.0));
+    }
+
+    #[test]
+    fn drop_view() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)").unwrap();
+        db.execute("CREATE VIEW v AS SELECT * FROM t").unwrap();
+
+        // View exists
+        let r = db.query("SELECT * FROM v");
+        assert!(r.is_ok());
+
+        db.execute("DROP VIEW v").unwrap();
+
+        // View gone
+        let r = db.query("SELECT * FROM v");
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn drop_view_if_exists() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        // Should not error
+        db.execute("DROP VIEW IF EXISTS nonexistent").unwrap();
+    }
+
+    #[test]
+    fn view_duplicate_error() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)").unwrap();
+        db.execute("CREATE VIEW v AS SELECT * FROM t").unwrap();
+        let r = db.execute("CREATE VIEW v AS SELECT * FROM t");
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn view_with_join() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+        db.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, total REAL)").unwrap();
+        db.execute("INSERT INTO users VALUES (1, 'Alice')").unwrap();
+        db.execute("INSERT INTO users VALUES (2, 'Bob')").unwrap();
+        db.execute("INSERT INTO orders VALUES (1, 1, 50.0)").unwrap();
+        db.execute("INSERT INTO orders VALUES (2, 1, 75.0)").unwrap();
+        db.execute("INSERT INTO orders VALUES (3, 2, 100.0)").unwrap();
+
+        db.execute("CREATE VIEW user_orders AS SELECT u.name, o.total FROM users u JOIN orders o ON u.id = o.user_id").unwrap();
+
+        let r = db.query("SELECT * FROM user_orders ORDER BY total").unwrap();
+        assert_eq!(r.rows.len(), 3);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("Alice".to_string()));
+        assert_eq!(r.rows[0].values[1], crate::types::Value::Real(50.0));
+    }

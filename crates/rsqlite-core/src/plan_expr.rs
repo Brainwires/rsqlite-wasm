@@ -127,7 +127,12 @@ pub(super) fn plan_select_items(
         match item {
             SelectItem::UnnamedExpr(expr) => {
                 let planned = plan_expr(expr, columns, catalog)?;
-                let alias = expr.to_string();
+                let alias = match expr {
+                    Expr::CompoundIdentifier(parts) if !parts.is_empty() => {
+                        parts.last().unwrap().value.clone()
+                    }
+                    _ => expr.to_string(),
+                };
                 outputs.push(ProjectionItem {
                     expr: planned,
                     alias,

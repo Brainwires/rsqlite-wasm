@@ -160,6 +160,15 @@ pub enum Plan {
         old_name: String,
         new_name: String,
     },
+    CreateView {
+        name: String,
+        sql: String,
+        if_not_exists: bool,
+    },
+    DropView {
+        name: String,
+        if_exists: bool,
+    },
     Pragma {
         name: String,
         argument: Option<String>,
@@ -201,6 +210,10 @@ pub fn plan_statement(stmt: &Statement, catalog: &Catalog) -> Result<Plan> {
                     index_name: name,
                     if_exists: *if_exists,
                 }),
+                ast::ObjectType::View => Ok(Plan::DropView {
+                    name,
+                    if_exists: *if_exists,
+                }),
                 other => Err(Error::Other(format!("unsupported DROP {other}"))),
             }
         }
@@ -238,6 +251,27 @@ pub fn plan_statement(stmt: &Statement, catalog: &Catalog) -> Result<Plan> {
                 ))),
             }
         }
+        Statement::CreateView {
+            name,
+            query,
+            or_replace,
+            columns: _view_columns,
+            ..
+        } => {
+            let view_name = name.to_string();
+            if !or_replace {
+                if catalog.get_view(&view_name).is_some() {
+                    return Err(Error::Other(format!("view {view_name} already exists")));
+                }
+            }
+            plan_select(query, catalog)?;
+            let sql = format!("{stmt}");
+            Ok(Plan::CreateView {
+                name: view_name,
+                sql,
+                if_not_exists: false,
+            })
+        }
         Statement::Pragma { name, value, .. } => {
             let pragma_name = name.to_string().to_lowercase();
             let argument = value.as_ref().map(|v| match v {
@@ -270,37 +304,95 @@ fn resolve_table_factor(
     match relation {
         TableFactor::Table { name, alias, .. } => {
             let table_name = name.to_string();
-            let table_def = catalog.get_table(&table_name).ok_or_else(|| {
-                Error::Other(format!("table not found: {table_name}"))
-            })?;
 
-            let prefix = alias
-                .as_ref()
-                .map(|a| a.name.value.clone())
-                .unwrap_or_else(|| table_name.clone());
+            if let Some(table_def) = catalog.get_table(&table_name) {
+                let prefix = alias
+                    .as_ref()
+                    .map(|a| a.name.value.clone())
+                    .unwrap_or_else(|| table_name.clone());
 
-            let columns: Vec<ColumnRef> = table_def
-                .columns
-                .iter()
-                .map(|c| ColumnRef {
-                    name: c.name.clone(),
-                    column_index: c.column_index,
-                    is_rowid_alias: c.is_rowid_alias,
-                    table: Some(prefix.clone()),
-                })
-                .collect();
+                let columns: Vec<ColumnRef> = table_def
+                    .columns
+                    .iter()
+                    .map(|c| ColumnRef {
+                        name: c.name.clone(),
+                        column_index: c.column_index,
+                        is_rowid_alias: c.is_rowid_alias,
+                        table: Some(prefix.clone()),
+                    })
+                    .collect();
 
-            let plan = Plan::Scan {
-                table: table_name,
-                root_page: table_def.root_page,
-                columns: columns.clone(),
-            };
+                let plan = Plan::Scan {
+                    table: table_name,
+                    root_page: table_def.root_page,
+                    columns: columns.clone(),
+                };
 
-            Ok((plan, columns))
+                return Ok((plan, columns));
+            }
+
+            if let Some(view_def) = catalog.get_view(&table_name) {
+                return resolve_view(&view_def.sql, &table_name, alias, catalog);
+            }
+
+            Err(Error::Other(format!("table not found: {table_name}")))
         }
         _ => Err(Error::Other(
             "only simple table references are supported".to_string(),
         )),
+    }
+}
+
+fn resolve_view(
+    view_sql: &str,
+    view_name: &str,
+    alias: &Option<ast::TableAlias>,
+    catalog: &Catalog,
+) -> Result<(Plan, Vec<ColumnRef>)> {
+    let stmts = rsqlite_parser::parse::parse_sql(view_sql)
+        .map_err(|e| Error::Other(format!("failed to parse view SQL: {e}")))?;
+
+    match stmts.into_iter().next() {
+        Some(Statement::CreateView { query, columns: view_cols, .. }) => {
+            let prefix = alias
+                .as_ref()
+                .map(|a| a.name.value.clone())
+                .unwrap_or_else(|| view_name.to_string());
+
+            let plan = plan_select(&query, catalog)?;
+
+            let output_names = extract_plan_output_names(&plan, &view_cols);
+            let columns: Vec<ColumnRef> = output_names
+                .iter()
+                .enumerate()
+                .map(|(i, name)| ColumnRef {
+                    name: name.clone(),
+                    column_index: i,
+                    is_rowid_alias: false,
+                    table: Some(prefix.clone()),
+                })
+                .collect();
+
+            Ok((plan, columns))
+        }
+        _ => Err(Error::Other(format!("invalid view definition for {view_name}"))),
+    }
+}
+
+fn extract_plan_output_names(plan: &Plan, view_cols: &[ast::ViewColumnDef]) -> Vec<String> {
+    if !view_cols.is_empty() {
+        return view_cols.iter().map(|c| c.name.value.clone()).collect();
+    }
+
+    match plan {
+        Plan::Project { outputs, .. } => {
+            outputs.iter().map(|o| o.alias.clone()).collect()
+        }
+        Plan::Distinct { input } => extract_plan_output_names(input, view_cols),
+        Plan::Sort { input, .. } => extract_plan_output_names(input, view_cols),
+        Plan::Limit { input, .. } => extract_plan_output_names(input, view_cols),
+        Plan::Filter { input, .. } => extract_plan_output_names(input, view_cols),
+        _ => vec![],
     }
 }
 
