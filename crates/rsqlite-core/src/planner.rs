@@ -680,18 +680,35 @@ fn plan_select_body(
         }
     }
 
+    let outputs = plan_select_items(&select.projection, &all_columns, catalog)?;
+    let output_names: Vec<String> = outputs.iter().map(|o| o.alias.clone()).collect();
+
     let group_by_exprs = match &select.group_by {
         ast::GroupByExpr::Expressions(exprs, _) if !exprs.is_empty() => {
             let mut planned = Vec::new();
             for e in exprs {
+                if let Expr::Value(val) = e {
+                    if let ast::Value::Number(n, _) = &val.value {
+                        if let Ok(idx) = n.parse::<usize>() {
+                            if idx >= 1 && idx <= output_names.len() {
+                                let name = &output_names[idx - 1];
+                                if let Some(col) = all_columns
+                                    .iter()
+                                    .find(|c| c.name.eq_ignore_ascii_case(name))
+                                {
+                                    planned.push(PlanExpr::Column(col.clone()));
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                }
                 planned.push(plan_expr(e, &all_columns, catalog)?);
             }
             planned
         }
         _ => Vec::new(),
     };
-
-    let outputs = plan_select_items(&select.projection, &all_columns, catalog)?;
     let has_aggregates = outputs.iter().any(|o| contains_aggregate(&o.expr));
 
     if has_aggregates || !group_by_exprs.is_empty() {

@@ -553,6 +553,8 @@ fn plan_function_expr(func: &ast::Function, columns: &[ColumnRef], catalog: &Cat
         "PRINTF", "FORMAT",
         "LIKELY", "UNLIKELY",
         "MIN", "MAX",
+        "DATE", "TIME", "DATETIME", "JULIANDAY", "UNIXEPOCH", "STRFTIME",
+        "IIF",
     ];
 
     if KNOWN_SCALARS.contains(&name.as_str()) {

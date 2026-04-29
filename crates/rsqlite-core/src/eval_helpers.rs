@@ -339,6 +339,22 @@ pub(crate) fn eval_scalar_function(name: &str, args: &[Value]) -> Result<Value> 
             }
             Ok(args[0].clone())
         }
+        "DATE" => crate::datetime::eval_date(args),
+        "TIME" => crate::datetime::eval_time(args),
+        "DATETIME" => crate::datetime::eval_datetime(args),
+        "JULIANDAY" => crate::datetime::eval_julianday(args),
+        "UNIXEPOCH" => crate::datetime::eval_unixepoch(args),
+        "STRFTIME" => crate::datetime::eval_strftime(args),
+        "IIF" => {
+            if args.len() != 3 {
+                return Err(Error::Other("IIF requires 3 arguments".into()));
+            }
+            if is_truthy(&args[0]) {
+                Ok(args[1].clone())
+            } else {
+                Ok(args[2].clone())
+            }
+        }
         "MIN" => {
             if args.is_empty() {
                 return Ok(Value::Null);

@@ -3108,3 +3108,99 @@
         let r = db.query("SELECT * FROM t").unwrap();
         assert_eq!(r.rows.len(), 1);
     }
+
+    #[test]
+    fn date_function_literal() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db.query("SELECT DATE('2024-06-15')").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("2024-06-15".into()));
+    }
+
+    #[test]
+    fn date_function_with_modifier() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db.query("SELECT DATE('2024-01-31', '+1 month')").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("2024-02-29".into()));
+    }
+
+    #[test]
+    fn datetime_function() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db.query("SELECT DATETIME('2024-06-15 10:30:00', '+2 hours')").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("2024-06-15 12:30:00".into()));
+    }
+
+    #[test]
+    fn time_function() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db.query("SELECT TIME('2024-06-15 10:30:45')").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("10:30:45".into()));
+    }
+
+    #[test]
+    fn strftime_function() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db.query("SELECT STRFTIME('%Y/%m/%d', '2024-06-15')").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("2024/06/15".into()));
+    }
+
+    #[test]
+    fn date_start_of_year() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db.query("SELECT DATE('2024-06-15', 'start of year')").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("2024-01-01".into()));
+    }
+
+    #[test]
+    fn unixepoch_function() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db.query("SELECT UNIXEPOCH('1970-01-01 00:00:00')").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(0));
+    }
+
+    #[test]
+    fn iif_function() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db.query("SELECT IIF(1 > 0, 'yes', 'no')").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("yes".into()));
+        let r2 = db.query("SELECT IIF(1 < 0, 'yes', 'no')").unwrap();
+        assert_eq!(r2.rows[0].values[0], crate::types::Value::Text("no".into()));
+    }
+
+    #[test]
+    fn date_in_table_context() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, name TEXT, event_date TEXT)").unwrap();
+        db.execute("INSERT INTO events VALUES (1, 'start', '2024-01-15')").unwrap();
+        db.execute("INSERT INTO events VALUES (2, 'middle', '2024-06-15')").unwrap();
+        db.execute("INSERT INTO events VALUES (3, 'end', '2024-12-15')").unwrap();
+        let r = db.query("SELECT name FROM events WHERE event_date > DATE('2024-06-01') ORDER BY event_date").unwrap();
+        assert_eq!(r.rows.len(), 2);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("middle".into()));
+        assert_eq!(r.rows[1].values[0], crate::types::Value::Text("end".into()));
+    }
+
+    #[test]
+    fn group_by_column_number() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, grp TEXT, val INTEGER)").unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'a', 10)").unwrap();
+        db.execute("INSERT INTO t VALUES (2, 'b', 20)").unwrap();
+        db.execute("INSERT INTO t VALUES (3, 'a', 30)").unwrap();
+        let r = db.query("SELECT grp, SUM(val) FROM t GROUP BY 1 ORDER BY 1").unwrap();
+        assert_eq!(r.rows.len(), 2);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("a".into()));
+        assert_eq!(r.rows[0].values[1], crate::types::Value::Integer(40));
+        assert_eq!(r.rows[1].values[0], crate::types::Value::Text("b".into()));
+        assert_eq!(r.rows[1].values[1], crate::types::Value::Integer(20));
+    }
