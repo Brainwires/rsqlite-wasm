@@ -2608,3 +2608,72 @@
         assert_eq!(r.rows[0].values[0], crate::types::Value::Text("Alice".to_string()));
         assert_eq!(r.rows[0].values[1], crate::types::Value::Real(50.0));
     }
+
+    #[test]
+    fn cte_basic() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)").unwrap();
+        db.execute("INSERT INTO users VALUES (1, 'Alice', 30)").unwrap();
+        db.execute("INSERT INTO users VALUES (2, 'Bob', 25)").unwrap();
+        db.execute("INSERT INTO users VALUES (3, 'Charlie', 35)").unwrap();
+
+        let r = db.query("WITH adults AS (SELECT * FROM users WHERE age >= 30) SELECT name FROM adults ORDER BY name").unwrap();
+        assert_eq!(r.rows.len(), 2);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("Alice".to_string()));
+        assert_eq!(r.rows[1].values[0], crate::types::Value::Text("Charlie".to_string()));
+    }
+
+    #[test]
+    fn cte_with_column_names() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)").unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'hello')").unwrap();
+
+        let r = db.query("WITH renamed(x, y) AS (SELECT id, val FROM t) SELECT x, y FROM renamed").unwrap();
+        assert_eq!(r.rows.len(), 1);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(1));
+        assert_eq!(r.rows[0].values[1], crate::types::Value::Text("hello".to_string()));
+    }
+
+    #[test]
+    fn cte_multiple() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, price REAL)").unwrap();
+        db.execute("INSERT INTO items VALUES (1, 'A', 10.0)").unwrap();
+        db.execute("INSERT INTO items VALUES (2, 'B', 20.0)").unwrap();
+        db.execute("INSERT INTO items VALUES (3, 'C', 30.0)").unwrap();
+
+        let r = db.query(
+            "WITH cheap AS (SELECT * FROM items WHERE price <= 15.0), \
+             expensive AS (SELECT * FROM items WHERE price >= 25.0) \
+             SELECT name FROM cheap UNION ALL SELECT name FROM expensive ORDER BY name"
+        ).unwrap();
+        assert_eq!(r.rows.len(), 2);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("A".to_string()));
+        assert_eq!(r.rows[1].values[0], crate::types::Value::Text("C".to_string()));
+    }
+
+    #[test]
+    fn cte_with_aggregation() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE sales (id INTEGER PRIMARY KEY, region TEXT, amount REAL)").unwrap();
+        db.execute("INSERT INTO sales VALUES (1, 'North', 100.0)").unwrap();
+        db.execute("INSERT INTO sales VALUES (2, 'South', 200.0)").unwrap();
+        db.execute("INSERT INTO sales VALUES (3, 'North', 150.0)").unwrap();
+
+        let r = db.query(
+            "WITH totals AS (SELECT region, SUM(amount) AS total FROM sales GROUP BY region) \
+             SELECT * FROM totals WHERE total > 200.0"
+        ).unwrap();
+        assert_eq!(r.rows.len(), 1);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("North".to_string()));
+        assert_eq!(r.rows[0].values[1], crate::types::Value::Real(250.0));
+    }

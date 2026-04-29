@@ -381,7 +381,7 @@ pub(super) fn plan_expr(expr: &Expr, columns: &[ColumnRef], catalog: &Catalog) -
             negated,
         } => {
             let e = plan_expr(in_expr, columns, catalog)?;
-            let sub_plan = super::plan_select(subquery, catalog)?;
+            let sub_plan = super::plan_select(subquery, catalog, &std::collections::HashMap::new())?;
             Ok(PlanExpr::InSubquery {
                 expr: Box::new(e),
                 subquery: Box::new(sub_plan),
@@ -389,11 +389,11 @@ pub(super) fn plan_expr(expr: &Expr, columns: &[ColumnRef], catalog: &Catalog) -
             })
         }
         Expr::Subquery(query) => {
-            let sub_plan = super::plan_select(query, catalog)?;
+            let sub_plan = super::plan_select(query, catalog, &std::collections::HashMap::new())?;
             Ok(PlanExpr::Subquery(Box::new(sub_plan)))
         }
         Expr::Exists { subquery, negated } => {
-            let sub_plan = super::plan_select(subquery, catalog)?;
+            let sub_plan = super::plan_select(subquery, catalog, &std::collections::HashMap::new())?;
             Ok(PlanExpr::Exists {
                 subquery: Box::new(sub_plan),
                 negated: *negated,

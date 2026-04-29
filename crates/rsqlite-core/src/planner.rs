@@ -1,7 +1,17 @@
+use std::collections::HashMap;
+
 use sqlparser::ast::{self, Expr, SetExpr, Statement, TableFactor};
 
 use crate::catalog::Catalog;
 use crate::error::{Error, Result};
+
+type CteMap = HashMap<String, CteDef>;
+
+#[derive(Clone)]
+struct CteDef {
+    plan: Plan,
+    output_columns: Vec<String>,
+}
 
 #[path = "plan_expr.rs"]
 mod expr;
@@ -180,7 +190,7 @@ pub enum Plan {
 
 pub fn plan_statement(stmt: &Statement, catalog: &Catalog) -> Result<Plan> {
     match stmt {
-        Statement::Query(query) => plan_select(query, catalog),
+        Statement::Query(query) => plan_select(query, catalog, &HashMap::new()),
         Statement::CreateTable(ct) => plan_create_table(ct),
         Statement::CreateIndex(ci) => plan_create_index(ci),
         Statement::Insert(insert) => plan_insert(insert, catalog),
@@ -264,7 +274,7 @@ pub fn plan_statement(stmt: &Statement, catalog: &Catalog) -> Result<Plan> {
                     return Err(Error::Other(format!("view {view_name} already exists")));
                 }
             }
-            plan_select(query, catalog)?;
+            plan_select(query, catalog, &HashMap::new())?;
             let sql = format!("{stmt}");
             Ok(Plan::CreateView {
                 name: view_name,
@@ -300,10 +310,32 @@ pub fn plan_query(stmt: &Statement, catalog: &Catalog) -> Result<Plan> {
 fn resolve_table_factor(
     relation: &TableFactor,
     catalog: &Catalog,
+    ctes: &CteMap,
 ) -> Result<(Plan, Vec<ColumnRef>)> {
     match relation {
         TableFactor::Table { name, alias, .. } => {
             let table_name = name.to_string();
+
+            if let Some(cte_def) = ctes.get(&table_name.to_lowercase()) {
+                let prefix = alias
+                    .as_ref()
+                    .map(|a| a.name.value.clone())
+                    .unwrap_or_else(|| table_name.clone());
+
+                let columns: Vec<ColumnRef> = cte_def
+                    .output_columns
+                    .iter()
+                    .enumerate()
+                    .map(|(i, col_name)| ColumnRef {
+                        name: col_name.clone(),
+                        column_index: i,
+                        is_rowid_alias: false,
+                        table: Some(prefix.clone()),
+                    })
+                    .collect();
+
+                return Ok((cte_def.plan.clone(), columns));
+            }
 
             if let Some(table_def) = catalog.get_table(&table_name) {
                 let prefix = alias
@@ -359,7 +391,7 @@ fn resolve_view(
                 .map(|a| a.name.value.clone())
                 .unwrap_or_else(|| view_name.to_string());
 
-            let plan = plan_select(&query, catalog)?;
+            let plan = plan_select(&query, catalog, &HashMap::new())?;
 
             let output_names = extract_plan_output_names(&plan, &view_cols);
             let columns: Vec<ColumnRef> = output_names
@@ -396,9 +428,9 @@ fn extract_plan_output_names(plan: &Plan, view_cols: &[ast::ViewColumnDef]) -> V
     }
 }
 
-fn plan_set_expr(set_expr: &SetExpr, catalog: &Catalog) -> Result<Plan> {
+fn plan_set_expr(set_expr: &SetExpr, catalog: &Catalog, ctes: &CteMap) -> Result<Plan> {
     match set_expr {
-        SetExpr::Select(s) => plan_select_body(s, catalog).map(|(plan, _, _)| plan),
+        SetExpr::Select(s) => plan_select_body(s, catalog, ctes).map(|(plan, _, _)| plan),
         SetExpr::SetOperation {
             op,
             set_quantifier,
@@ -408,8 +440,8 @@ fn plan_set_expr(set_expr: &SetExpr, catalog: &Catalog) -> Result<Plan> {
             if *op != ast::SetOperator::Union {
                 return Err(Error::Other(format!("unsupported set operation: {op}")));
             }
-            let left_plan = plan_set_expr(left, catalog)?;
-            let right_plan = plan_set_expr(right, catalog)?;
+            let left_plan = plan_set_expr(left, catalog, ctes)?;
+            let right_plan = plan_set_expr(right, catalog, ctes)?;
             let all = matches!(set_quantifier, ast::SetQuantifier::All);
             Ok(Plan::Union {
                 left: Box::new(left_plan),
@@ -423,10 +455,48 @@ fn plan_set_expr(set_expr: &SetExpr, catalog: &Catalog) -> Result<Plan> {
     }
 }
 
-fn plan_select(query: &ast::Query, catalog: &Catalog) -> Result<Plan> {
+fn plan_select(query: &ast::Query, catalog: &Catalog, parent_ctes: &CteMap) -> Result<Plan> {
+    let mut ctes = parent_ctes.clone();
+
+    if let Some(with) = &query.with {
+        for cte in &with.cte_tables {
+            let name = cte.alias.name.value.to_lowercase();
+            let mut cte_plan = plan_select(&cte.query, catalog, &ctes)?;
+            let output_columns = if cte.alias.columns.is_empty() {
+                extract_plan_output_names(&cte_plan, &[])
+            } else {
+                let orig_names = extract_plan_output_names(&cte_plan, &[]);
+                let new_names: Vec<String> =
+                    cte.alias.columns.iter().map(|c| c.name.value.clone()).collect();
+                let outputs: Vec<ProjectionItem> = new_names
+                    .iter()
+                    .enumerate()
+                    .map(|(i, alias)| {
+                        let orig = orig_names.get(i).cloned().unwrap_or_default();
+                        ProjectionItem {
+                            expr: PlanExpr::Column(ColumnRef {
+                                name: orig,
+                                column_index: i,
+                                is_rowid_alias: false,
+                                table: None,
+                            }),
+                            alias: alias.clone(),
+                        }
+                    })
+                    .collect();
+                cte_plan = Plan::Project {
+                    input: Box::new(cte_plan),
+                    outputs,
+                };
+                new_names
+            };
+            ctes.insert(name, CteDef { plan: cte_plan, output_columns });
+        }
+    }
+
     match query.body.as_ref() {
-        SetExpr::SetOperation { .. } => plan_set_expr(query.body.as_ref(), catalog),
-        SetExpr::Select(s) => plan_simple_select(query, s, catalog),
+        SetExpr::SetOperation { .. } => plan_set_expr(query.body.as_ref(), catalog, &ctes),
+        SetExpr::Select(s) => plan_simple_select(query, s, catalog, &ctes),
         _ => Err(Error::Other("unsupported query form".to_string())),
     }
 }
@@ -435,8 +505,9 @@ fn plan_simple_select(
     query: &ast::Query,
     select: &ast::Select,
     catalog: &Catalog,
+    ctes: &CteMap,
 ) -> Result<Plan> {
-    let (mut plan, all_columns, output_names) = plan_select_body(select, catalog)?;
+    let (mut plan, all_columns, output_names) = plan_select_body(select, catalog, ctes)?;
 
     // ORDER BY
     if let Some(order_by) = &query.order_by {
@@ -483,6 +554,7 @@ fn plan_simple_select(
 fn plan_select_body(
     select: &ast::Select,
     catalog: &Catalog,
+    ctes: &CteMap,
 ) -> Result<(Plan, Vec<ColumnRef>, Vec<String>)> {
     if select.from.is_empty() {
         let plan = Plan::SingleRow;
@@ -497,10 +569,10 @@ fn plan_select_body(
     }
 
     let from = &select.from[0];
-    let (mut plan, mut all_columns) = resolve_table_factor(&from.relation, catalog)?;
+    let (mut plan, mut all_columns) = resolve_table_factor(&from.relation, catalog, ctes)?;
 
     for join in &from.joins {
-        let (right_plan, right_columns) = resolve_table_factor(&join.relation, catalog)?;
+        let (right_plan, right_columns) = resolve_table_factor(&join.relation, catalog, ctes)?;
         let combined_columns: Vec<ColumnRef> =
             all_columns.iter().chain(right_columns.iter()).cloned().collect();
 
@@ -531,7 +603,7 @@ fn plan_select_body(
     }
 
     for extra_from in &select.from[1..] {
-        let (right_plan, right_columns) = resolve_table_factor(&extra_from.relation, catalog)?;
+        let (right_plan, right_columns) = resolve_table_factor(&extra_from.relation, catalog, ctes)?;
         let combined_columns: Vec<ColumnRef> =
             all_columns.iter().chain(right_columns.iter()).cloned().collect();
 
@@ -544,7 +616,7 @@ fn plan_select_body(
         all_columns = combined_columns;
 
         for join in &extra_from.joins {
-            let (right_plan, right_cols) = resolve_table_factor(&join.relation, catalog)?;
+            let (right_plan, right_cols) = resolve_table_factor(&join.relation, catalog, ctes)?;
             let combined: Vec<ColumnRef> =
                 all_columns.iter().chain(right_cols.iter()).cloned().collect();
 
