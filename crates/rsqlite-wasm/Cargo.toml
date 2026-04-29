@@ -1,0 +1,24 @@
+[package]
+name = "rsqlite-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "WebAssembly bindings for rsqlite — SQLite in the browser"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rsqlite-core = { workspace = true }
+rsqlite-vfs = { workspace = true, default-features = false }
+thiserror = { workspace = true }
+
+# WASM dependencies — uncomment when building for wasm32
+# wasm-bindgen = "0.2"
+# wasm-bindgen-futures = "0.4"
+# web-sys = { version = "0.3", features = [] }
+# js-sys = "0.3"
+# serde = { version = "1", features = ["derive"] }
+# serde-wasm-bindgen = "0.6"
+# console_error_panic_hook = "0.1"

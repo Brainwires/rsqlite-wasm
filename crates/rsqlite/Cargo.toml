@@ -1,0 +1,13 @@
+[package]
+name = "rsqlite"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Pure Rust SQLite-compatible database engine"
+
+[dependencies]
+rsqlite-core = { workspace = true }
+rsqlite-vfs = { workspace = true, features = ["native"] }
+rsqlite-storage = { workspace = true }
+rsqlite-parser = { workspace = true }

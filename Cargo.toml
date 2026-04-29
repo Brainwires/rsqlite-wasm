@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rsqlite-parser",
+    "crates/rsqlite-vfs",
+    "crates/rsqlite-storage",
+    "crates/rsqlite-core",
+    "crates/rsqlite-wasm",
+    "crates/rsqlite",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.85"
+
+[workspace.dependencies]
+rsqlite-parser = { path = "crates/rsqlite-parser" }
+rsqlite-vfs = { path = "crates/rsqlite-vfs", default-features = false }
+rsqlite-storage = { path = "crates/rsqlite-storage" }
+rsqlite-core = { path = "crates/rsqlite-core" }
+
+sqlparser = { version = "0.55", features = ["visitor"] }
+thiserror = "2"
+log = "0.4"
+lru = "0.12"

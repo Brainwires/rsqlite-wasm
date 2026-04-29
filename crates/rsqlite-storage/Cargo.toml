@@ -1,0 +1,12 @@
+[package]
+name = "rsqlite-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "B-tree storage engine and SQLite file format codec for rsqlite-wasm"
+
+[dependencies]
+rsqlite-vfs = { workspace = true, features = ["native"] }
+thiserror = { workspace = true }
+lru = { workspace = true }

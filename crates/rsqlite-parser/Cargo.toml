@@ -1,0 +1,11 @@
+[package]
+name = "rsqlite-parser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "SQL parser for rsqlite-wasm — wraps sqlparser-rs with SQLite semantic validation"
+
+[dependencies]
+sqlparser = { workspace = true }
+thiserror = { workspace = true }
