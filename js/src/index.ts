@@ -1,4 +1,5 @@
 export type { SqlValue, BindParams, Row, DatabaseOptions } from "./types.js";
+export { WorkerDatabase } from "./worker-proxy.js";
 
 interface WasmModule {
   default: (input?: RequestInfo | URL) => Promise<unknown>;
@@ -18,6 +19,7 @@ interface WasmDatabaseInstance {
 interface WasmDatabaseConstructor {
   new (): WasmDatabaseInstance;
   openInMemory(): WasmDatabaseInstance;
+  openWithOpfs(name: string): Promise<WasmDatabaseInstance>;
   fromBuffer(data: Uint8Array): WasmDatabaseInstance;
 }
 
@@ -52,10 +54,17 @@ export class Database {
   }
 
   static async open(
-    _name?: string,
-    _options?: DatabaseOptions
+    name?: string,
+    options?: DatabaseOptions
   ): Promise<Database> {
     const mod = await loadWasm();
+    const backend = options?.backend ?? "memory";
+
+    if (backend === "opfs") {
+      const inner = await mod.WasmDatabase.openWithOpfs(name ?? "rsqlite");
+      return new Database(inner);
+    }
+
     const inner = new mod.WasmDatabase();
     return new Database(inner);
   }

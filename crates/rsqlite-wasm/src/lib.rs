@@ -1,3 +1,5 @@
+mod opfs;
+
 use wasm_bindgen::prelude::*;
 
 use rsqlite_core::database::Database;
@@ -10,10 +12,15 @@ pub fn init() {
     console_error_panic_hook::set_once();
 }
 
+enum VfsBackend {
+    Memory(MemoryVfs),
+    Opfs(opfs::OpfsVfs),
+}
+
 #[wasm_bindgen]
 pub struct WasmDatabase {
     db: Database,
-    vfs: MemoryVfs,
+    backend: VfsBackend,
     path: String,
 }
 
@@ -25,7 +32,7 @@ impl WasmDatabase {
         let db = Database::create(&vfs, "memory.db").map_err(to_js_error)?;
         Ok(WasmDatabase {
             db,
-            vfs,
+            backend: VfsBackend::Memory(vfs),
             path: "memory.db".to_string(),
         })
     }
@@ -33,6 +40,34 @@ impl WasmDatabase {
     #[wasm_bindgen(js_name = "openInMemory")]
     pub fn open_in_memory() -> Result<WasmDatabase, JsError> {
         WasmDatabase::new()
+    }
+
+    #[wasm_bindgen(js_name = "openWithOpfs")]
+    pub async fn open_with_opfs(name: &str) -> Result<WasmDatabase, JsError> {
+        let vfs = opfs::OpfsVfs::new().await.map_err(jsval_to_js_error)?;
+        let db_path = if name.ends_with(".db") {
+            name.to_string()
+        } else {
+            format!("{name}.db")
+        };
+
+        let exists = {
+            let result = vfs.open_file(&db_path, false).await;
+            result.is_ok()
+        };
+
+        let db = if exists {
+            Database::open(&vfs, &db_path).map_err(to_js_error)?
+        } else {
+            vfs.open_file(&db_path, true).await.map_err(jsval_to_js_error)?;
+            Database::create(&vfs, &db_path).map_err(to_js_error)?
+        };
+
+        Ok(WasmDatabase {
+            db,
+            backend: VfsBackend::Opfs(vfs),
+            path: db_path,
+        })
     }
 
     #[wasm_bindgen(js_name = "fromBuffer")]
@@ -53,7 +88,11 @@ impl WasmDatabase {
         }
 
         let db = Database::open(&vfs, &path).map_err(to_js_error)?;
-        Ok(WasmDatabase { db, vfs, path })
+        Ok(WasmDatabase {
+            db,
+            backend: VfsBackend::Memory(vfs),
+            path,
+        })
     }
 
     pub fn exec(&mut self, sql: &str) -> Result<u64, JsError> {
@@ -120,7 +159,11 @@ impl WasmDatabase {
             read_write: false,
             delete_on_close: false,
         };
-        let file = self.vfs.open(&self.path, flags).map_err(to_js_error)?;
+        let vfs: &dyn Vfs = match &self.backend {
+            VfsBackend::Memory(v) => v,
+            VfsBackend::Opfs(v) => v,
+        };
+        let file = vfs.open(&self.path, flags).map_err(to_js_error)?;
         let size = file.file_size().map_err(to_js_error)? as usize;
         let mut buf = vec![0u8; size];
         file.read(0, &mut buf).map_err(to_js_error)?;
@@ -146,4 +189,8 @@ fn value_to_js(val: &Value) -> JsValue {
 
 fn to_js_error(e: impl std::fmt::Display) -> JsError {
     JsError::new(&e.to_string())
+}
+
+fn jsval_to_js_error(e: JsValue) -> JsError {
+    JsError::new(&format!("{e:?}"))
 }
