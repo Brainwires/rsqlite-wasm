@@ -210,6 +210,16 @@ pub enum PlanExpr {
         expr: Box<PlanExpr>,
         type_name: String,
     },
+    Subquery(Box<Plan>),
+    InSubquery {
+        expr: Box<PlanExpr>,
+        subquery: Box<Plan>,
+        negated: bool,
+    },
+    Exists {
+        subquery: Box<Plan>,
+        negated: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -402,11 +412,11 @@ fn plan_select(query: &ast::Query, catalog: &Catalog) -> Result<Plan> {
 
         let (join_type, condition) = match &join.join_operator {
             ast::JoinOperator::Inner(constraint) | ast::JoinOperator::Join(constraint) => {
-                let cond = plan_join_constraint(constraint, &combined_columns)?;
+                let cond = plan_join_constraint(constraint, &combined_columns, catalog)?;
                 (JoinType::Inner, cond)
             }
             ast::JoinOperator::Left(constraint) | ast::JoinOperator::LeftOuter(constraint) => {
-                let cond = plan_join_constraint(constraint, &combined_columns)?;
+                let cond = plan_join_constraint(constraint, &combined_columns, catalog)?;
                 (JoinType::Left, cond)
             }
             ast::JoinOperator::CrossJoin => (JoinType::Cross, None),
@@ -447,11 +457,11 @@ fn plan_select(query: &ast::Query, catalog: &Catalog) -> Result<Plan> {
 
             let (join_type, condition) = match &join.join_operator {
                 ast::JoinOperator::Inner(c) | ast::JoinOperator::Join(c) => {
-                    let cond = plan_join_constraint(c, &combined)?;
+                    let cond = plan_join_constraint(c, &combined, catalog)?;
                     (JoinType::Inner, cond)
                 }
                 ast::JoinOperator::Left(c) | ast::JoinOperator::LeftOuter(c) => {
-                    let cond = plan_join_constraint(c, &combined)?;
+                    let cond = plan_join_constraint(c, &combined, catalog)?;
                     (JoinType::Left, cond)
                 }
                 ast::JoinOperator::CrossJoin => (JoinType::Cross, None),
@@ -474,7 +484,7 @@ fn plan_select(query: &ast::Query, catalog: &Catalog) -> Result<Plan> {
 
     // WHERE clause -> Filter (with index optimization)
     if let Some(selection) = &select.selection {
-        let predicate = plan_expr(selection, &all_columns)?;
+        let predicate = plan_expr(selection, &all_columns, catalog)?;
 
         if let Some(index_plan) =
             try_index_scan(&plan, &predicate, &all_columns, catalog)
@@ -493,14 +503,14 @@ fn plan_select(query: &ast::Query, catalog: &Catalog) -> Result<Plan> {
         ast::GroupByExpr::Expressions(exprs, _) if !exprs.is_empty() => {
             let mut planned = Vec::new();
             for e in exprs {
-                planned.push(plan_expr(e, &all_columns)?);
+                planned.push(plan_expr(e, &all_columns, catalog)?);
             }
             planned
         }
         _ => Vec::new(),
     };
 
-    let outputs = plan_select_items(&select.projection, &all_columns)?;
+    let outputs = plan_select_items(&select.projection, &all_columns, catalog)?;
     let has_aggregates = outputs.iter().any(|o| contains_aggregate(&o.expr));
 
     if has_aggregates || !group_by_exprs.is_empty() {
@@ -512,7 +522,7 @@ fn plan_select(query: &ast::Query, catalog: &Catalog) -> Result<Plan> {
         let having = select
             .having
             .as_ref()
-            .map(|e| plan_expr(e, &all_columns))
+            .map(|e| plan_expr(e, &all_columns, catalog))
             .transpose()?;
 
         if let Some(ref having_expr) = having {
@@ -546,7 +556,7 @@ fn plan_select(query: &ast::Query, catalog: &Catalog) -> Result<Plan> {
         if let ast::OrderByKind::Expressions(exprs) = &order_by.kind {
             let mut keys = Vec::new();
             for ob in exprs {
-                let expr = plan_order_expr(&ob.expr, &all_columns, &output_names)?;
+                let expr = plan_order_expr(&ob.expr, &all_columns, &output_names, catalog)?;
                 let descending = ob.options.asc == Some(false);
                 keys.push(SortKey {
                     expr,
@@ -586,13 +596,14 @@ fn plan_select(query: &ast::Query, catalog: &Catalog) -> Result<Plan> {
 fn plan_select_items(
     items: &[SelectItem],
     columns: &[ColumnRef],
+    catalog: &Catalog,
 ) -> Result<Vec<ProjectionItem>> {
     let mut outputs = Vec::new();
 
     for item in items {
         match item {
             SelectItem::UnnamedExpr(expr) => {
-                let plan_expr = plan_expr(expr, columns)?;
+                let plan_expr = plan_expr(expr, columns, catalog)?;
                 let alias = expr.to_string();
                 outputs.push(ProjectionItem {
                     expr: plan_expr,
@@ -600,7 +611,7 @@ fn plan_select_items(
                 });
             }
             SelectItem::ExprWithAlias { expr, alias } => {
-                let plan_expr = plan_expr(expr, columns)?;
+                let plan_expr = plan_expr(expr, columns, catalog)?;
                 outputs.push(ProjectionItem {
                     expr: plan_expr,
                     alias: alias.value.clone(),
@@ -628,7 +639,7 @@ fn plan_select_items(
     Ok(outputs)
 }
 
-fn plan_expr(expr: &Expr, columns: &[ColumnRef]) -> Result<PlanExpr> {
+fn plan_expr(expr: &Expr, columns: &[ColumnRef], catalog: &Catalog) -> Result<PlanExpr> {
     match expr {
         Expr::Identifier(ident) => {
             let name = &ident.value;
@@ -664,8 +675,8 @@ fn plan_expr(expr: &Expr, columns: &[ColumnRef]) -> Result<PlanExpr> {
         }
         Expr::Value(val) => Ok(PlanExpr::Literal(plan_value(&val.value)?)),
         Expr::BinaryOp { left, op, right } => {
-            let left = plan_expr(left, columns)?;
-            let right = plan_expr(right, columns)?;
+            let left = plan_expr(left, columns, catalog)?;
+            let right = plan_expr(right, columns, catalog)?;
             let op = plan_binop(op)?;
             Ok(PlanExpr::BinaryOp {
                 left: Box::new(left),
@@ -674,7 +685,7 @@ fn plan_expr(expr: &Expr, columns: &[ColumnRef]) -> Result<PlanExpr> {
             })
         }
         Expr::UnaryOp { op, expr } => {
-            let operand = plan_expr(expr, columns)?;
+            let operand = plan_expr(expr, columns, catalog)?;
             let op = match op {
                 ast::UnaryOperator::Not => UnaryOp::Not,
                 ast::UnaryOperator::Minus => UnaryOp::Neg,
@@ -690,22 +701,22 @@ fn plan_expr(expr: &Expr, columns: &[ColumnRef]) -> Result<PlanExpr> {
             })
         }
         Expr::IsNull(e) => {
-            let inner = plan_expr(e, columns)?;
+            let inner = plan_expr(e, columns, catalog)?;
             Ok(PlanExpr::IsNull(Box::new(inner)))
         }
         Expr::IsNotNull(e) => {
-            let inner = plan_expr(e, columns)?;
+            let inner = plan_expr(e, columns, catalog)?;
             Ok(PlanExpr::IsNotNull(Box::new(inner)))
         }
-        Expr::Nested(e) => plan_expr(e, columns),
-        Expr::Function(func) => plan_function_expr(func, columns),
+        Expr::Nested(e) => plan_expr(e, columns, catalog),
+        Expr::Function(func) => plan_function_expr(func, columns, catalog),
         Expr::Trim {
             expr,
             trim_where,
             trim_what,
             ..
         } => {
-            let inner = plan_expr(expr, columns)?;
+            let inner = plan_expr(expr, columns, catalog)?;
             let func_name = match trim_where {
                 Some(ast::TrimWhereField::Leading) => "LTRIM",
                 Some(ast::TrimWhereField::Trailing) => "RTRIM",
@@ -713,7 +724,7 @@ fn plan_expr(expr: &Expr, columns: &[ColumnRef]) -> Result<PlanExpr> {
             };
             let mut args = vec![inner];
             if let Some(what) = trim_what {
-                args.push(plan_expr(what, columns)?);
+                args.push(plan_expr(what, columns, catalog)?);
             }
             Ok(PlanExpr::Function {
                 name: func_name.to_string(),
@@ -726,8 +737,8 @@ fn plan_expr(expr: &Expr, columns: &[ColumnRef]) -> Result<PlanExpr> {
             pattern,
             ..
         } => {
-            let e = plan_expr(like_expr, columns)?;
-            let p = plan_expr(pattern, columns)?;
+            let e = plan_expr(like_expr, columns, catalog)?;
+            let p = plan_expr(pattern, columns, catalog)?;
             Ok(PlanExpr::Like {
                 expr: Box::new(e),
                 pattern: Box::new(p),
@@ -740,8 +751,8 @@ fn plan_expr(expr: &Expr, columns: &[ColumnRef]) -> Result<PlanExpr> {
             pattern,
             ..
         } => {
-            let e = plan_expr(like_expr, columns)?;
-            let p = plan_expr(pattern, columns)?;
+            let e = plan_expr(like_expr, columns, catalog)?;
+            let p = plan_expr(pattern, columns, catalog)?;
             Ok(PlanExpr::Like {
                 expr: Box::new(e),
                 pattern: Box::new(p),
@@ -754,9 +765,9 @@ fn plan_expr(expr: &Expr, columns: &[ColumnRef]) -> Result<PlanExpr> {
             low,
             high,
         } => {
-            let e = plan_expr(between_expr, columns)?;
-            let lo = plan_expr(low, columns)?;
-            let hi = plan_expr(high, columns)?;
+            let e = plan_expr(between_expr, columns, catalog)?;
+            let lo = plan_expr(low, columns, catalog)?;
+            let hi = plan_expr(high, columns, catalog)?;
             let gte = PlanExpr::BinaryOp {
                 left: Box::new(e.clone()),
                 op: BinOp::GtEq,
@@ -786,10 +797,10 @@ fn plan_expr(expr: &Expr, columns: &[ColumnRef]) -> Result<PlanExpr> {
             list,
             negated,
         } => {
-            let e = plan_expr(in_expr, columns)?;
+            let e = plan_expr(in_expr, columns, catalog)?;
             let items = list
                 .iter()
-                .map(|item| plan_expr(item, columns))
+                .map(|item| plan_expr(item, columns, catalog))
                 .collect::<Result<Vec<_>>>()?;
             Ok(PlanExpr::InList {
                 expr: Box::new(e),
@@ -804,19 +815,19 @@ fn plan_expr(expr: &Expr, columns: &[ColumnRef]) -> Result<PlanExpr> {
         } => {
             let op = operand
                 .as_ref()
-                .map(|e| plan_expr(e, columns))
+                .map(|e| plan_expr(e, columns, catalog))
                 .transpose()?;
             let when_clauses = conditions
                 .iter()
                 .map(|cw| {
-                    let cond = plan_expr(&cw.condition, columns)?;
-                    let result = plan_expr(&cw.result, columns)?;
+                    let cond = plan_expr(&cw.condition, columns, catalog)?;
+                    let result = plan_expr(&cw.result, columns, catalog)?;
                     Ok((cond, result))
                 })
                 .collect::<Result<Vec<_>>>()?;
             let else_r = else_result
                 .as_ref()
-                .map(|e| plan_expr(e, columns))
+                .map(|e| plan_expr(e, columns, catalog))
                 .transpose()?;
             Ok(PlanExpr::Case {
                 operand: op.map(Box::new),
@@ -829,11 +840,35 @@ fn plan_expr(expr: &Expr, columns: &[ColumnRef]) -> Result<PlanExpr> {
             data_type,
             ..
         } => {
-            let e = plan_expr(cast_expr, columns)?;
+            let e = plan_expr(cast_expr, columns, catalog)?;
             let type_name = data_type.to_string().to_uppercase();
             Ok(PlanExpr::Cast {
                 expr: Box::new(e),
                 type_name,
+            })
+        }
+        Expr::InSubquery {
+            expr: in_expr,
+            subquery,
+            negated,
+        } => {
+            let e = plan_expr(in_expr, columns, catalog)?;
+            let sub_plan = plan_select(subquery, catalog)?;
+            Ok(PlanExpr::InSubquery {
+                expr: Box::new(e),
+                subquery: Box::new(sub_plan),
+                negated: *negated,
+            })
+        }
+        Expr::Subquery(query) => {
+            let sub_plan = plan_select(query, catalog)?;
+            Ok(PlanExpr::Subquery(Box::new(sub_plan)))
+        }
+        Expr::Exists { subquery, negated } => {
+            let sub_plan = plan_select(subquery, catalog)?;
+            Ok(PlanExpr::Exists {
+                subquery: Box::new(sub_plan),
+                negated: *negated,
             })
         }
         _ => Err(Error::Other(format!(
@@ -842,7 +877,7 @@ fn plan_expr(expr: &Expr, columns: &[ColumnRef]) -> Result<PlanExpr> {
     }
 }
 
-fn plan_function_expr(func: &ast::Function, columns: &[ColumnRef]) -> Result<PlanExpr> {
+fn plan_function_expr(func: &ast::Function, columns: &[ColumnRef], catalog: &Catalog) -> Result<PlanExpr> {
     let name = func.name.to_string().to_uppercase();
 
     let agg_func = match name.as_str() {
@@ -867,7 +902,7 @@ fn plan_function_expr(func: &ast::Function, columns: &[ColumnRef]) -> Result<Pla
                             (PlanExpr::Wildcard, distinct)
                         }
                         ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(e)) => {
-                            (plan_expr(e, columns)?, distinct)
+                            (plan_expr(e, columns, catalog)?, distinct)
                         }
                         _ => {
                             return Err(Error::Other(format!(
@@ -900,7 +935,7 @@ fn plan_function_expr(func: &ast::Function, columns: &[ColumnRef]) -> Result<Pla
             for a in &list.args {
                 match a {
                     ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(e)) => {
-                        args.push(plan_expr(e, columns)?);
+                        args.push(plan_expr(e, columns, catalog)?);
                     }
                     _ => {
                         return Err(Error::Other(format!(
@@ -977,6 +1012,7 @@ fn plan_order_expr(
     expr: &Expr,
     table_columns: &[ColumnRef],
     output_names: &[String],
+    catalog: &Catalog,
 ) -> Result<PlanExpr> {
     if let Expr::Identifier(ident) = expr {
         let name = &ident.value;
@@ -999,7 +1035,7 @@ fn plan_order_expr(
             return Ok(PlanExpr::Column(col_ref));
         }
     }
-    plan_expr(expr, table_columns)
+    plan_expr(expr, table_columns, catalog)
 }
 
 fn plan_limit_expr(expr: &Expr) -> Result<u64> {
@@ -1021,10 +1057,11 @@ fn plan_limit_expr(expr: &Expr) -> Result<u64> {
 fn plan_join_constraint(
     constraint: &ast::JoinConstraint,
     columns: &[ColumnRef],
+    catalog: &Catalog,
 ) -> Result<Option<PlanExpr>> {
     match constraint {
         ast::JoinConstraint::On(expr) => {
-            let planned = plan_expr(expr, columns)?;
+            let planned = plan_expr(expr, columns, catalog)?;
             Ok(Some(planned))
         }
         ast::JoinConstraint::None | ast::JoinConstraint::Natural => Ok(None),
@@ -1063,7 +1100,13 @@ fn contains_aggregate(expr: &PlanExpr) -> bool {
                     .is_some_and(|e| contains_aggregate(e))
         }
         PlanExpr::Cast { expr, .. } => contains_aggregate(expr),
-        PlanExpr::Column(_) | PlanExpr::Rowid | PlanExpr::Literal(_) | PlanExpr::Wildcard => false,
+        PlanExpr::InSubquery { expr, .. } => contains_aggregate(expr),
+        PlanExpr::Column(_)
+        | PlanExpr::Rowid
+        | PlanExpr::Literal(_)
+        | PlanExpr::Wildcard
+        | PlanExpr::Subquery(_)
+        | PlanExpr::Exists { .. } => false,
     }
 }
 
@@ -1395,7 +1438,7 @@ fn plan_insert(insert: &ast::Insert, catalog: &Catalog) -> Result<Plan> {
                 for row in &values.rows {
                     let mut exprs = Vec::new();
                     for expr in row {
-                        exprs.push(plan_expr(expr, &all_columns)?);
+                        exprs.push(plan_expr(expr, &all_columns, catalog)?);
                     }
                     planned_rows.push(exprs);
                 }
@@ -1458,12 +1501,12 @@ fn plan_update(
                 ))
             }
         };
-        let expr = plan_expr(&assignment.value, &all_columns)?;
+        let expr = plan_expr(&assignment.value, &all_columns, catalog)?;
         planned_assignments.push((col_name, expr));
     }
 
     let predicate = selection
-        .map(|s| plan_expr(s, &all_columns))
+        .map(|s| plan_expr(s, &all_columns, catalog))
         .transpose()?;
 
     Ok(Plan::Update(UpdatePlan {
@@ -1513,7 +1556,7 @@ fn plan_delete(delete: &ast::Delete, catalog: &Catalog) -> Result<Plan> {
     let predicate = delete
         .selection
         .as_ref()
-        .map(|s| plan_expr(s, &all_columns))
+        .map(|s| plan_expr(s, &all_columns, catalog))
         .transpose()?;
 
     Ok(Plan::Delete(DeletePlan {

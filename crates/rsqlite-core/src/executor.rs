@@ -20,15 +20,15 @@ pub struct ExecResult {
     pub rows_affected: u64,
 }
 
-pub fn execute(plan: &Plan, pager: &mut Pager) -> Result<QueryResult> {
+pub fn execute(plan: &Plan, pager: &mut Pager, catalog: &Catalog) -> Result<QueryResult> {
     match plan {
-        Plan::Project { input, outputs } => execute_project(input, outputs, pager),
+        Plan::Project { input, outputs } => execute_project(input, outputs, pager, catalog),
         Plan::Filter { input, predicate } => {
-            let inner = execute(input, pager)?;
+            let inner = execute(input, pager, catalog)?;
             let input_columns = &inner.columns;
             let mut filtered_rows = Vec::new();
             for row in &inner.rows {
-                let val = eval_expr(predicate, row, input_columns)?;
+                let val = eval_expr(predicate, row, input_columns, pager, catalog)?;
                 if is_truthy(&val) {
                     filtered_rows.push(row.clone());
                 }
@@ -57,12 +57,13 @@ pub fn execute(plan: &Plan, pager: &mut Pager) -> Result<QueryResult> {
             index_columns,
             lookup_values,
             pager,
+            catalog,
         ),
         Plan::Sort { input, keys } => {
-            let mut inner = execute(input, pager)?;
+            let mut inner = execute(input, pager, catalog)?;
             let columns = inner.columns.clone();
             inner.rows.sort_by(|a, b| {
-                compare_rows_by_keys(a, b, keys, &columns)
+                compare_rows_by_keys(a, b, keys, &columns, pager, catalog)
             });
             Ok(inner)
         }
@@ -71,7 +72,7 @@ pub fn execute(plan: &Plan, pager: &mut Pager) -> Result<QueryResult> {
             limit,
             offset,
         } => {
-            let inner = execute(input, pager)?;
+            let inner = execute(input, pager, catalog)?;
             let offset = *offset as usize;
             let rows: Vec<Row> = match limit {
                 Some(n) => inner.rows.into_iter().skip(offset).take(*n as usize).collect(),
@@ -83,7 +84,7 @@ pub fn execute(plan: &Plan, pager: &mut Pager) -> Result<QueryResult> {
             })
         }
         Plan::Distinct { input } => {
-            let inner = execute(input, pager)?;
+            let inner = execute(input, pager, catalog)?;
             let mut seen = std::collections::HashSet::new();
             let mut unique_rows = Vec::new();
             for row in inner.rows {
@@ -102,13 +103,13 @@ pub fn execute(plan: &Plan, pager: &mut Pager) -> Result<QueryResult> {
             right,
             condition,
             join_type,
-        } => execute_join(left, right, condition.as_ref(), *join_type, pager),
+        } => execute_join(left, right, condition.as_ref(), *join_type, pager, catalog),
         Plan::Aggregate {
             input,
             group_by,
             aggregates,
             having,
-        } => execute_aggregate(input, group_by, aggregates, having.as_ref(), pager),
+        } => execute_aggregate(input, group_by, aggregates, having.as_ref(), pager, catalog),
         Plan::Pragma { .. } => Err(Error::Other(
             "pragmas must be routed through execute_pragma".to_string(),
         )),
@@ -772,10 +773,12 @@ fn compare_rows_by_keys(
     b: &Row,
     keys: &[SortKey],
     columns: &[String],
+    pager: &mut Pager,
+    catalog: &Catalog,
 ) -> std::cmp::Ordering {
     for key in keys {
-        let va = eval_expr(&key.expr, a, columns).unwrap_or(Value::Null);
-        let vb = eval_expr(&key.expr, b, columns).unwrap_or(Value::Null);
+        let va = eval_expr(&key.expr, a, columns, pager, catalog).unwrap_or(Value::Null);
+        let vb = eval_expr(&key.expr, b, columns, pager, catalog).unwrap_or(Value::Null);
 
         let cmp_val = compare(&va, &vb);
         let ordering = if cmp_val < 0 {
@@ -880,7 +883,7 @@ fn execute_update(plan: &UpdatePlan, pager: &mut Pager, catalog: &Catalog) -> Re
 
         let matches = match &plan.predicate {
             Some(pred) => {
-                let val = eval_expr(pred, &row, &column_names)?;
+                let val = eval_expr(pred, &row, &column_names, pager, catalog)?;
                 is_truthy(&val)
             }
             None => true,
@@ -895,7 +898,7 @@ fn execute_update(plan: &UpdatePlan, pager: &mut Pager, catalog: &Catalog) -> Re
                     .ok_or_else(|| {
                         Error::Other(format!("unknown column: {col_name}"))
                     })?;
-                new_values[col_idx] = eval_expr(expr, &row, &column_names)?;
+                new_values[col_idx] = eval_expr(expr, &row, &column_names, pager, catalog)?;
             }
             to_update.push((btree_row.rowid, new_values));
         }
@@ -967,7 +970,7 @@ fn execute_delete(plan: &DeletePlan, pager: &mut Pager, catalog: &Catalog) -> Re
 
         let matches = match &plan.predicate {
             Some(pred) => {
-                let val = eval_expr(pred, &row, &column_names)?;
+                let val = eval_expr(pred, &row, &column_names, pager, catalog)?;
                 is_truthy(&val)
             }
             None => true,
@@ -1052,6 +1055,7 @@ fn execute_index_scan(
     index_columns: &[String],
     lookup_values: &[PlanExpr],
     pager: &mut Pager,
+    catalog: &Catalog,
 ) -> Result<QueryResult> {
     let column_names: Vec<String> = columns
         .iter()
@@ -1066,7 +1070,7 @@ fn execute_index_scan(
 
     let eval_values: Vec<Value> = lookup_values
         .iter()
-        .map(|expr| eval_expr(expr, &Row { values: vec![] }, &[]))
+        .map(|expr| eval_expr(expr, &Row { values: vec![] }, &[], pager, catalog))
         .collect::<Result<_>>()?;
 
     let mut index_cursor = IndexCursor::new(pager, index_root_page);
@@ -1141,8 +1145,9 @@ fn execute_project(
     input: &Plan,
     outputs: &[ProjectionItem],
     pager: &mut Pager,
+    catalog: &Catalog,
 ) -> Result<QueryResult> {
-    let inner = execute(input, pager)?;
+    let inner = execute(input, pager, catalog)?;
     let input_columns = &inner.columns;
 
     let output_names: Vec<String> = outputs.iter().map(|o| o.alias.clone()).collect();
@@ -1151,7 +1156,7 @@ fn execute_project(
     for row in &inner.rows {
         let mut values = Vec::with_capacity(outputs.len());
         for output in outputs {
-            let val = eval_expr(&output.expr, row, input_columns)?;
+            let val = eval_expr(&output.expr, row, input_columns, pager, catalog)?;
             values.push(val);
         }
         rows.push(Row { values });
@@ -1169,9 +1174,10 @@ fn execute_join(
     condition: Option<&PlanExpr>,
     join_type: JoinType,
     pager: &mut Pager,
+    catalog: &Catalog,
 ) -> Result<QueryResult> {
-    let left_result = execute(left, pager)?;
-    let right_result = execute(right, pager)?;
+    let left_result = execute(left, pager, catalog)?;
+    let right_result = execute(right, pager, catalog)?;
 
     let combined_columns: Vec<String> = left_result
         .columns
@@ -1197,7 +1203,7 @@ fn execute_join(
 
             let passes = match condition {
                 Some(cond) => {
-                    let val = eval_expr(cond, &combined_row, &combined_columns)?;
+                    let val = eval_expr(cond, &combined_row, &combined_columns, pager, catalog)?;
                     is_truthy(&val)
                 }
                 None => true,
@@ -1230,8 +1236,9 @@ fn execute_aggregate(
     aggregates: &[(AggFunc, PlanExpr, bool)],
     having: Option<&PlanExpr>,
     pager: &mut Pager,
+    catalog: &Catalog,
 ) -> Result<QueryResult> {
-    let inner = execute(input, pager)?;
+    let inner = execute(input, pager, catalog)?;
     let input_columns = &inner.columns;
 
     let mut groups: Vec<(Vec<Value>, Vec<usize>)> = Vec::new();
@@ -1239,7 +1246,7 @@ fn execute_aggregate(
     for (row_idx, row) in inner.rows.iter().enumerate() {
         let key: Vec<Value> = group_by
             .iter()
-            .map(|expr| eval_expr(expr, row, input_columns))
+            .map(|expr| eval_expr(expr, row, input_columns, pager, catalog))
             .collect::<Result<Vec<_>>>()?;
 
         let found = groups.iter_mut().find(|(k, _)| {
@@ -1285,7 +1292,7 @@ fn execute_aggregate(
 
         for (func, arg, distinct) in aggregates {
             let agg_val =
-                compute_aggregate(func, arg, *distinct, &group_rows, input_columns)?;
+                compute_aggregate(func, arg, *distinct, &group_rows, input_columns, pager, catalog)?;
             row_values.push(agg_val);
         }
 
@@ -1294,7 +1301,7 @@ fn execute_aggregate(
         };
 
         if let Some(having_expr) = having {
-            let val = eval_expr(having_expr, &row, &output_columns)?;
+            let val = eval_expr(having_expr, &row, &output_columns, pager, catalog)?;
             if !is_truthy(&val) {
                 continue;
             }
@@ -1315,6 +1322,8 @@ fn compute_aggregate(
     distinct: bool,
     rows: &[&Row],
     columns: &[String],
+    pager: &mut Pager,
+    catalog: &Catalog,
 ) -> Result<Value> {
     match func {
         AggFunc::Count => {
@@ -1324,7 +1333,7 @@ fn compute_aggregate(
                 let mut count = 0i64;
                 let mut seen = std::collections::HashSet::new();
                 for row in rows {
-                    let val = eval_expr(arg, row, columns)?;
+                    let val = eval_expr(arg, row, columns, pager, catalog)?;
                     if !matches!(val, Value::Null) {
                         if distinct {
                             if seen.insert(value_hash_key(&val)) {
@@ -1346,7 +1355,7 @@ fn compute_aggregate(
             let mut seen = std::collections::HashSet::new();
 
             for row in rows {
-                let val = eval_expr(arg, row, columns)?;
+                let val = eval_expr(arg, row, columns, pager, catalog)?;
                 if matches!(val, Value::Null) {
                     continue;
                 }
@@ -1378,7 +1387,7 @@ fn compute_aggregate(
             let mut seen = std::collections::HashSet::new();
 
             for row in rows {
-                let val = eval_expr(arg, row, columns)?;
+                let val = eval_expr(arg, row, columns, pager, catalog)?;
                 if matches!(val, Value::Null) {
                     continue;
                 }
@@ -1402,7 +1411,7 @@ fn compute_aggregate(
         AggFunc::Min => {
             let mut min: Option<Value> = None;
             for row in rows {
-                let val = eval_expr(arg, row, columns)?;
+                let val = eval_expr(arg, row, columns, pager, catalog)?;
                 if matches!(val, Value::Null) {
                     continue;
                 }
@@ -1417,7 +1426,7 @@ fn compute_aggregate(
         AggFunc::Max => {
             let mut max: Option<Value> = None;
             for row in rows {
-                let val = eval_expr(arg, row, columns)?;
+                let val = eval_expr(arg, row, columns, pager, catalog)?;
                 if matches!(val, Value::Null) {
                     continue;
                 }
@@ -1456,7 +1465,7 @@ fn value_hash_key(val: &Value) -> Vec<u8> {
     key
 }
 
-fn eval_expr(expr: &PlanExpr, row: &Row, columns: &[String]) -> Result<Value> {
+fn eval_expr(expr: &PlanExpr, row: &Row, columns: &[String], pager: &mut Pager, catalog: &Catalog) -> Result<Value> {
     match expr {
         PlanExpr::Column(col_ref) => {
             let qualified = col_ref
@@ -1499,16 +1508,16 @@ fn eval_expr(expr: &PlanExpr, row: &Row, columns: &[String]) -> Result<Value> {
         }
         PlanExpr::Literal(lit) => Ok(literal_to_value(lit)),
         PlanExpr::BinaryOp { left, op, right } => {
-            let l = eval_expr(left, row, columns)?;
-            let r = eval_expr(right, row, columns)?;
+            let l = eval_expr(left, row, columns, pager, catalog)?;
+            let r = eval_expr(right, row, columns, pager, catalog)?;
             eval_binop(*op, &l, &r)
         }
         PlanExpr::UnaryOp { op, operand } => {
-            let v = eval_expr(operand, row, columns)?;
+            let v = eval_expr(operand, row, columns, pager, catalog)?;
             eval_unaryop(*op, &v)
         }
         PlanExpr::IsNull(inner) => {
-            let v = eval_expr(inner, row, columns)?;
+            let v = eval_expr(inner, row, columns, pager, catalog)?;
             Ok(Value::Integer(if matches!(v, Value::Null) {
                 1
             } else {
@@ -1516,7 +1525,7 @@ fn eval_expr(expr: &PlanExpr, row: &Row, columns: &[String]) -> Result<Value> {
             }))
         }
         PlanExpr::IsNotNull(inner) => {
-            let v = eval_expr(inner, row, columns)?;
+            let v = eval_expr(inner, row, columns, pager, catalog)?;
             Ok(Value::Integer(if matches!(v, Value::Null) {
                 0
             } else {
@@ -1537,7 +1546,7 @@ fn eval_expr(expr: &PlanExpr, row: &Row, columns: &[String]) -> Result<Value> {
         PlanExpr::Function { name, args } => {
             let vals: Vec<Value> = args
                 .iter()
-                .map(|a| eval_expr(a, row, columns))
+                .map(|a| eval_expr(a, row, columns, pager, catalog))
                 .collect::<Result<Vec<_>>>()?;
             eval_scalar_function(name, &vals)
         }
@@ -1546,8 +1555,8 @@ fn eval_expr(expr: &PlanExpr, row: &Row, columns: &[String]) -> Result<Value> {
             pattern,
             negated,
         } => {
-            let val = eval_expr(expr, row, columns)?;
-            let pat = eval_expr(pattern, row, columns)?;
+            let val = eval_expr(expr, row, columns, pager, catalog)?;
+            let pat = eval_expr(pattern, row, columns, pager, catalog)?;
             if matches!(val, Value::Null) || matches!(pat, Value::Null) {
                 return Ok(Value::Null);
             }
@@ -1562,13 +1571,13 @@ fn eval_expr(expr: &PlanExpr, row: &Row, columns: &[String]) -> Result<Value> {
             list,
             negated,
         } => {
-            let val = eval_expr(expr, row, columns)?;
+            let val = eval_expr(expr, row, columns, pager, catalog)?;
             if matches!(val, Value::Null) {
                 return Ok(Value::Null);
             }
             let mut found = false;
             for item in list {
-                let item_val = eval_expr(item, row, columns)?;
+                let item_val = eval_expr(item, row, columns, pager, catalog)?;
                 if values_equal(&val, &item_val) {
                     found = true;
                     break;
@@ -1584,28 +1593,64 @@ fn eval_expr(expr: &PlanExpr, row: &Row, columns: &[String]) -> Result<Value> {
         } => {
             let op_val = operand
                 .as_ref()
-                .map(|e| eval_expr(e, row, columns))
+                .map(|e| eval_expr(e, row, columns, pager, catalog))
                 .transpose()?;
             for (condition, result) in when_clauses {
-                let cond_val = eval_expr(condition, row, columns)?;
+                let cond_val = eval_expr(condition, row, columns, pager, catalog)?;
                 let matched = if let Some(ref ov) = op_val {
                     values_equal(ov, &cond_val)
                 } else {
                     is_truthy(&cond_val)
                 };
                 if matched {
-                    return eval_expr(result, row, columns);
+                    return eval_expr(result, row, columns, pager, catalog);
                 }
             }
             if let Some(else_expr) = else_result {
-                eval_expr(else_expr, row, columns)
+                eval_expr(else_expr, row, columns, pager, catalog)
             } else {
                 Ok(Value::Null)
             }
         }
         PlanExpr::Cast { expr, type_name } => {
-            let val = eval_expr(expr, row, columns)?;
+            let val = eval_expr(expr, row, columns, pager, catalog)?;
             eval_cast(val, type_name)
+        }
+        PlanExpr::Subquery(sub_plan) => {
+            let result = execute(sub_plan, pager, catalog)?;
+            Ok(result
+                .rows
+                .first()
+                .and_then(|r| r.values.first().cloned())
+                .unwrap_or(Value::Null))
+        }
+        PlanExpr::InSubquery {
+            expr,
+            subquery,
+            negated,
+        } => {
+            let val = eval_expr(expr, row, columns, pager, catalog)?;
+            if matches!(val, Value::Null) {
+                return Ok(Value::Null);
+            }
+            let result = execute(subquery, pager, catalog)?;
+            let mut found = false;
+            for sub_row in &result.rows {
+                if let Some(sub_val) = sub_row.values.first() {
+                    if values_equal(&val, sub_val) {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            let result = if *negated { !found } else { found };
+            Ok(Value::Integer(if result { 1 } else { 0 }))
+        }
+        PlanExpr::Exists { subquery, negated } => {
+            let result = execute(subquery, pager, catalog)?;
+            let exists = !result.rows.is_empty();
+            let result = if *negated { !exists } else { exists };
+            Ok(Value::Integer(if result { 1 } else { 0 }))
         }
     }
 }

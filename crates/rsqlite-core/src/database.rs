@@ -39,7 +39,7 @@ impl Database {
         if let planner::Plan::Pragma { ref name, ref argument } = plan {
             return executor::execute_pragma(name, argument.as_deref(), &self.pager, &self.catalog);
         }
-        executor::execute(&plan, &mut self.pager)
+        executor::execute(&plan, &mut self.pager, &self.catalog)
     }
 
     pub fn execute(&mut self, sql: &str) -> Result<ExecResult> {
@@ -74,6 +74,7 @@ impl Database {
             Ok(SqlResult::Query(executor::execute(
                 &plan,
                 &mut self.pager,
+                &self.catalog,
             )?))
         } else {
             Ok(SqlResult::Execute(executor::execute_mut(
@@ -2291,5 +2292,99 @@ mod tests {
         assert_eq!(r.rows.len(), 1);
         assert_eq!(r.rows[0].values[1], crate::types::Value::Text("Alice".to_string()));
         assert_eq!(r.rows[0].values[2], crate::types::Value::Null);
+    }
+
+    #[test]
+    fn subquery_in_select() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
+            .unwrap();
+        db.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL)")
+            .unwrap();
+        db.execute("INSERT INTO users VALUES (1, 'Alice')").unwrap();
+        db.execute("INSERT INTO users VALUES (2, 'Bob')").unwrap();
+        db.execute("INSERT INTO users VALUES (3, 'Charlie')").unwrap();
+        db.execute("INSERT INTO orders VALUES (1, 1, 10.0)").unwrap();
+        db.execute("INSERT INTO orders VALUES (2, 1, 20.0)").unwrap();
+        db.execute("INSERT INTO orders VALUES (3, 2, 30.0)").unwrap();
+
+        let r = db.query("SELECT name FROM users WHERE id IN (SELECT user_id FROM orders)").unwrap();
+        assert_eq!(r.rows.len(), 2);
+        let names: Vec<String> = r.rows.iter().map(|row| {
+            if let crate::types::Value::Text(s) = &row.values[0] { s.clone() } else { String::new() }
+        }).collect();
+        assert!(names.contains(&"Alice".to_string()));
+        assert!(names.contains(&"Bob".to_string()));
+    }
+
+    #[test]
+    fn subquery_not_in() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
+            .unwrap();
+        db.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER)")
+            .unwrap();
+        db.execute("INSERT INTO users VALUES (1, 'Alice')").unwrap();
+        db.execute("INSERT INTO users VALUES (2, 'Bob')").unwrap();
+        db.execute("INSERT INTO users VALUES (3, 'Charlie')").unwrap();
+        db.execute("INSERT INTO orders VALUES (1, 1)").unwrap();
+        db.execute("INSERT INTO orders VALUES (2, 2)").unwrap();
+
+        let r = db.query("SELECT name FROM users WHERE id NOT IN (SELECT user_id FROM orders)").unwrap();
+        assert_eq!(r.rows.len(), 1);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("Charlie".to_string()));
+    }
+
+    #[test]
+    fn subquery_exists() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE t1 (id INTEGER PRIMARY KEY, val TEXT)")
+            .unwrap();
+        db.execute("CREATE TABLE t2 (id INTEGER PRIMARY KEY, ref_id INTEGER)")
+            .unwrap();
+        db.execute("INSERT INTO t1 VALUES (1, 'a')").unwrap();
+        db.execute("INSERT INTO t1 VALUES (2, 'b')").unwrap();
+        db.execute("INSERT INTO t2 VALUES (1, 1)").unwrap();
+
+        let r = db.query("SELECT val FROM t1 WHERE EXISTS (SELECT 1 FROM t2)").unwrap();
+        assert_eq!(r.rows.len(), 2);
+    }
+
+    #[test]
+    fn subquery_not_exists() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE t1 (id INTEGER PRIMARY KEY, val TEXT)")
+            .unwrap();
+        db.execute("CREATE TABLE t2 (id INTEGER PRIMARY KEY)")
+            .unwrap();
+        db.execute("INSERT INTO t1 VALUES (1, 'a')").unwrap();
+
+        let r = db.query("SELECT val FROM t1 WHERE NOT EXISTS (SELECT 1 FROM t2)").unwrap();
+        assert_eq!(r.rows.len(), 1);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("a".to_string()));
+    }
+
+    #[test]
+    fn subquery_scalar() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)")
+            .unwrap();
+        db.execute("INSERT INTO t VALUES (1, 10)").unwrap();
+        db.execute("INSERT INTO t VALUES (2, 20)").unwrap();
+        db.execute("INSERT INTO t VALUES (3, 30)").unwrap();
+
+        let r = db.query("SELECT (SELECT COUNT(*) FROM t) AS cnt FROM t LIMIT 1").unwrap();
+        assert_eq!(r.rows.len(), 1);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(3));
     }
 }
