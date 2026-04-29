@@ -25,3 +25,10 @@ sqlparser = { version = "0.55", features = ["visitor"] }
 thiserror = "2"
 log = "0.4"
 lru = "0.12"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

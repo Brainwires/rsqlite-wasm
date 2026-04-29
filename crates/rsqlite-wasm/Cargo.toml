@@ -6,6 +6,9 @@ license.workspace = true
 rust-version.workspace = true
 description = "WebAssembly bindings for rsqlite — SQLite in the browser"
 
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 
