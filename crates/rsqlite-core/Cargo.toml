@@ -10,4 +10,5 @@ description = "Query planner, execution engine, and transaction manager for rsql
 rsqlite-parser = { workspace = true }
 rsqlite-storage = { workspace = true }
 rsqlite-vfs = { workspace = true, features = ["native"] }
+sqlparser = { workspace = true }
 thiserror = { workspace = true }
