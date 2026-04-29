@@ -116,6 +116,15 @@ pub enum Plan {
         index_columns: Vec<String>,
         lookup_values: Vec<PlanExpr>,
     },
+    IndexRangeScan {
+        table: String,
+        table_root_page: u32,
+        index_root_page: u32,
+        columns: Vec<ColumnRef>,
+        index_column: String,
+        lower_bound: Option<(PlanExpr, bool)>,
+        upper_bound: Option<(PlanExpr, bool)>,
+    },
     Filter {
         input: Box<Plan>,
         predicate: PlanExpr,
@@ -854,7 +863,181 @@ fn try_index_scan(
         }
     }
 
+    if let Some(range_plan) = try_range_scan(table_name, table_root, columns, predicate, catalog) {
+        return Some(range_plan);
+    }
+
     None
+}
+
+fn try_range_scan(
+    table_name: &str,
+    table_root: u32,
+    columns: &[ColumnRef],
+    predicate: &PlanExpr,
+    catalog: &Catalog,
+) -> Option<Plan> {
+    let bounds = extract_range_bounds(predicate);
+    if bounds.is_empty() {
+        return None;
+    }
+
+    for idx_def in catalog.indexes.values() {
+        if !idx_def.table_name.eq_ignore_ascii_case(table_name) {
+            continue;
+        }
+        if idx_def.columns.len() != 1 {
+            continue;
+        }
+
+        let idx_col = &idx_def.columns[0];
+        let col_bounds: Vec<_> = bounds
+            .iter()
+            .filter(|(col, _, _, _)| col.eq_ignore_ascii_case(idx_col))
+            .collect();
+
+        if col_bounds.is_empty() {
+            continue;
+        }
+
+        let mut lower: Option<(PlanExpr, bool)> = None;
+        let mut upper: Option<(PlanExpr, bool)> = None;
+
+        for (_, val, is_lower, inclusive) in &col_bounds {
+            if *is_lower {
+                lower = Some((val.clone(), *inclusive));
+            } else {
+                upper = Some((val.clone(), *inclusive));
+            }
+        }
+
+        let remaining = build_remaining_range_predicate(predicate, idx_col);
+
+        let range_scan = Plan::IndexRangeScan {
+            table: table_name.to_string(),
+            table_root_page: table_root,
+            index_root_page: idx_def.root_page,
+            columns: columns.to_vec(),
+            index_column: idx_col.clone(),
+            lower_bound: lower,
+            upper_bound: upper,
+        };
+
+        return if let Some(remaining) = remaining {
+            Some(Plan::Filter {
+                input: Box::new(range_scan),
+                predicate: remaining,
+            })
+        } else {
+            Some(range_scan)
+        };
+    }
+
+    None
+}
+
+fn extract_range_bounds(predicate: &PlanExpr) -> Vec<(String, PlanExpr, bool, bool)> {
+    let mut bounds = Vec::new();
+    collect_range_parts(predicate, &mut bounds);
+    bounds
+}
+
+fn collect_range_parts(
+    expr: &PlanExpr,
+    out: &mut Vec<(String, PlanExpr, bool, bool)>,
+) {
+    match expr {
+        PlanExpr::BinaryOp {
+            left,
+            op: BinOp::And,
+            right,
+        } => {
+            collect_range_parts(left, out);
+            collect_range_parts(right, out);
+        }
+        PlanExpr::BinaryOp { left, op, right } => {
+            let bound = if let PlanExpr::Column(col) = left.as_ref() {
+                if matches!(right.as_ref(), PlanExpr::Column(_)) {
+                    None
+                } else {
+                    match op {
+                        BinOp::Gt => Some((col.name.clone(), *right.clone(), true, false)),
+                        BinOp::GtEq => Some((col.name.clone(), *right.clone(), true, true)),
+                        BinOp::Lt => Some((col.name.clone(), *right.clone(), false, false)),
+                        BinOp::LtEq => Some((col.name.clone(), *right.clone(), false, true)),
+                        _ => None,
+                    }
+                }
+            } else if let PlanExpr::Column(col) = right.as_ref() {
+                if matches!(left.as_ref(), PlanExpr::Column(_)) {
+                    None
+                } else {
+                    match op {
+                        BinOp::Gt => Some((col.name.clone(), *left.clone(), false, false)),
+                        BinOp::GtEq => Some((col.name.clone(), *left.clone(), false, true)),
+                        BinOp::Lt => Some((col.name.clone(), *left.clone(), true, false)),
+                        BinOp::LtEq => Some((col.name.clone(), *left.clone(), true, true)),
+                        _ => None,
+                    }
+                }
+            } else {
+                None
+            };
+
+            if let Some(b) = bound {
+                out.push(b);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn build_remaining_range_predicate(
+    predicate: &PlanExpr,
+    index_column: &str,
+) -> Option<PlanExpr> {
+    match predicate {
+        PlanExpr::BinaryOp {
+            left,
+            op: BinOp::And,
+            right,
+        } => {
+            let l = build_remaining_range_predicate(left, index_column);
+            let r = build_remaining_range_predicate(right, index_column);
+            match (l, r) {
+                (Some(l), Some(r)) => Some(PlanExpr::BinaryOp {
+                    left: Box::new(l),
+                    op: BinOp::And,
+                    right: Box::new(r),
+                }),
+                (Some(l), None) => Some(l),
+                (None, Some(r)) => Some(r),
+                (None, None) => None,
+            }
+        }
+        PlanExpr::BinaryOp { left, op, right } => {
+            let is_range_on_idx = match op {
+                BinOp::Gt | BinOp::GtEq | BinOp::Lt | BinOp::LtEq => {
+                    if let PlanExpr::Column(col) = left.as_ref() {
+                        col.name.eq_ignore_ascii_case(index_column)
+                            && !matches!(right.as_ref(), PlanExpr::Column(_))
+                    } else if let PlanExpr::Column(col) = right.as_ref() {
+                        col.name.eq_ignore_ascii_case(index_column)
+                            && !matches!(left.as_ref(), PlanExpr::Column(_))
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            };
+            if is_range_on_idx {
+                None
+            } else {
+                Some(predicate.clone())
+            }
+        }
+        _ => Some(predicate.clone()),
+    }
 }
 
 fn extract_equality_parts(predicate: &PlanExpr) -> Option<Vec<(String, PlanExpr)>> {

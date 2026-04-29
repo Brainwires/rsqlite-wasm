@@ -2732,3 +2732,90 @@
         assert_eq!(r.rows[1].values[0], crate::types::Value::Text("b2".to_string()));
         assert_eq!(r.rows[2].values[0], crate::types::Value::Text("c3".to_string()));
     }
+
+    // ── Index range scan tests ─────────────────────────────
+
+    fn setup_range_scan_db() -> Database {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, price INTEGER, name TEXT)").unwrap();
+        db.execute("CREATE INDEX idx_price ON items(price)").unwrap();
+        db.execute("INSERT INTO items VALUES (1, 10, 'apple')").unwrap();
+        db.execute("INSERT INTO items VALUES (2, 20, 'banana')").unwrap();
+        db.execute("INSERT INTO items VALUES (3, 30, 'cherry')").unwrap();
+        db.execute("INSERT INTO items VALUES (4, 40, 'date')").unwrap();
+        db.execute("INSERT INTO items VALUES (5, 50, 'elderberry')").unwrap();
+        db
+    }
+
+    #[test]
+    fn index_range_scan_greater_than() {
+        let mut db = setup_range_scan_db();
+        let r = db.query("SELECT name FROM items WHERE price > 30 ORDER BY price").unwrap();
+        assert_eq!(r.rows.len(), 2);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("date".to_string()));
+        assert_eq!(r.rows[1].values[0], crate::types::Value::Text("elderberry".to_string()));
+    }
+
+    #[test]
+    fn index_range_scan_greater_equal() {
+        let mut db = setup_range_scan_db();
+        let r = db.query("SELECT name FROM items WHERE price >= 30 ORDER BY price").unwrap();
+        assert_eq!(r.rows.len(), 3);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("cherry".to_string()));
+        assert_eq!(r.rows[1].values[0], crate::types::Value::Text("date".to_string()));
+        assert_eq!(r.rows[2].values[0], crate::types::Value::Text("elderberry".to_string()));
+    }
+
+    #[test]
+    fn index_range_scan_less_than() {
+        let mut db = setup_range_scan_db();
+        let r = db.query("SELECT name FROM items WHERE price < 30 ORDER BY price").unwrap();
+        assert_eq!(r.rows.len(), 2);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("apple".to_string()));
+        assert_eq!(r.rows[1].values[0], crate::types::Value::Text("banana".to_string()));
+    }
+
+    #[test]
+    fn index_range_scan_less_equal() {
+        let mut db = setup_range_scan_db();
+        let r = db.query("SELECT name FROM items WHERE price <= 30 ORDER BY price").unwrap();
+        assert_eq!(r.rows.len(), 3);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("apple".to_string()));
+        assert_eq!(r.rows[1].values[0], crate::types::Value::Text("banana".to_string()));
+        assert_eq!(r.rows[2].values[0], crate::types::Value::Text("cherry".to_string()));
+    }
+
+    #[test]
+    fn index_range_scan_both_bounds() {
+        let mut db = setup_range_scan_db();
+        let r = db.query("SELECT name FROM items WHERE price > 10 AND price < 50 ORDER BY price").unwrap();
+        assert_eq!(r.rows.len(), 3);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("banana".to_string()));
+        assert_eq!(r.rows[1].values[0], crate::types::Value::Text("cherry".to_string()));
+        assert_eq!(r.rows[2].values[0], crate::types::Value::Text("date".to_string()));
+    }
+
+    #[test]
+    fn index_range_scan_between() {
+        let mut db = setup_range_scan_db();
+        let r = db.query("SELECT name FROM items WHERE price BETWEEN 20 AND 40 ORDER BY price").unwrap();
+        assert_eq!(r.rows.len(), 3);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("banana".to_string()));
+        assert_eq!(r.rows[1].values[0], crate::types::Value::Text("cherry".to_string()));
+        assert_eq!(r.rows[2].values[0], crate::types::Value::Text("date".to_string()));
+    }
+
+    #[test]
+    fn index_range_scan_no_matches() {
+        let mut db = setup_range_scan_db();
+        let r = db.query("SELECT name FROM items WHERE price > 100").unwrap();
+        assert_eq!(r.rows.len(), 0);
+    }
+
+    #[test]
+    fn index_range_scan_all_match() {
+        let mut db = setup_range_scan_db();
+        let r = db.query("SELECT name FROM items WHERE price >= 10 AND price <= 50 ORDER BY price").unwrap();
+        assert_eq!(r.rows.len(), 5);
+    }
