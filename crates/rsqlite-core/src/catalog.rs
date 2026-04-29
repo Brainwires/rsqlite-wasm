@@ -76,6 +76,32 @@ impl TableDef {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TriggerTiming {
+    Before,
+    After,
+    InsteadOf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TriggerEvent {
+    Insert,
+    Update,
+    Delete,
+}
+
+#[derive(Debug, Clone)]
+pub struct TriggerDef {
+    pub name: String,
+    pub table_name: String,
+    pub timing: TriggerTiming,
+    pub event: TriggerEvent,
+    pub when_condition: Option<String>,
+    pub body_sql: String,
+    pub for_each_row: bool,
+    pub sql: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct IndexDef {
     pub name: String,
@@ -91,11 +117,12 @@ pub struct ViewDef {
     pub sql: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Catalog {
     pub tables: HashMap<String, TableDef>,
     pub indexes: HashMap<String, IndexDef>,
     pub views: HashMap<String, ViewDef>,
+    pub triggers: HashMap<String, TriggerDef>,
 }
 
 impl Catalog {
@@ -104,6 +131,7 @@ impl Catalog {
         let mut tables = HashMap::new();
         let mut indexes = HashMap::new();
         let mut views = HashMap::new();
+        let mut triggers = HashMap::new();
 
         for entry in &schema_entries {
             match entry.entry_type.as_str() {
@@ -128,11 +156,18 @@ impl Catalog {
                         );
                     }
                 }
+                "trigger" => {
+                    if let Some(sql) = &entry.sql {
+                        if let Some(tdef) = parse_trigger_def(&entry.name, &entry.tbl_name, sql) {
+                            triggers.insert(tdef.name.to_lowercase(), tdef);
+                        }
+                    }
+                }
                 _ => {}
             }
         }
 
-        Ok(Catalog { tables, indexes, views })
+        Ok(Catalog { tables, indexes, views, triggers })
     }
 
     pub fn get_table(&self, name: &str) -> Option<&TableDef> {
@@ -147,11 +182,25 @@ impl Catalog {
         self.views.get(&name.to_lowercase())
     }
 
+    pub fn triggers_for_table(
+        &self,
+        table: &str,
+        timing: &TriggerTiming,
+        event: &TriggerEvent,
+    ) -> Vec<&TriggerDef> {
+        let lower = table.to_lowercase();
+        self.triggers
+            .values()
+            .filter(|t| t.table_name.to_lowercase() == lower && t.timing == *timing && t.event == *event)
+            .collect()
+    }
+
     pub fn reload(&mut self, pager: &mut Pager) -> Result<()> {
         let fresh = Self::load(pager)?;
         self.tables = fresh.tables;
         self.indexes = fresh.indexes;
         self.views = fresh.views;
+        self.triggers = fresh.triggers;
         Ok(())
     }
 }
@@ -354,6 +403,77 @@ fn parse_index_def(entry: &SchemaEntry) -> Result<Option<IndexDef>> {
     } else {
         Ok(None)
     }
+}
+
+fn parse_trigger_def(name: &str, tbl_name: &str, sql: &str) -> Option<TriggerDef> {
+    let upper = sql.to_uppercase();
+    let tokens: Vec<&str> = upper.split_whitespace().collect();
+
+    let mut pos = 2; // skip CREATE TRIGGER
+    if tokens.get(pos) == Some(&"IF")
+        && tokens.get(pos + 1) == Some(&"NOT")
+        && tokens.get(pos + 2) == Some(&"EXISTS")
+    {
+        pos += 3;
+    }
+    pos += 1; // skip trigger name
+
+    let timing = match tokens.get(pos).copied()? {
+        "BEFORE" => { pos += 1; TriggerTiming::Before }
+        "AFTER" => { pos += 1; TriggerTiming::After }
+        "INSTEAD" => {
+            if tokens.get(pos + 1) == Some(&"OF") {
+                pos += 2;
+                TriggerTiming::InsteadOf
+            } else {
+                return None;
+            }
+        }
+        _ => return None,
+    };
+
+    let event = match tokens.get(pos).copied()? {
+        "INSERT" => { pos += 1; TriggerEvent::Insert }
+        "UPDATE" => { pos += 1; TriggerEvent::Update }
+        "DELETE" => { pos += 1; TriggerEvent::Delete }
+        _ => return None,
+    };
+
+    if tokens.get(pos) != Some(&"ON") {
+        return None;
+    }
+    pos += 1;
+    pos += 1; // skip table name
+
+    if tokens.get(pos) == Some(&"FOR") {
+        if tokens.get(pos + 1) == Some(&"EACH") && tokens.get(pos + 2) == Some(&"ROW") {
+            pos += 3;
+        }
+    }
+
+    let begin_idx = upper.find("BEGIN")?;
+    let end_idx = upper.rfind("END")?;
+
+    let when_condition = if tokens.get(pos) == Some(&"WHEN") {
+        let when_start = upper.find("WHEN")? + 4;
+        let cond = sql[when_start..begin_idx].trim().to_string();
+        if cond.is_empty() { None } else { Some(cond) }
+    } else {
+        None
+    };
+
+    let body_sql = sql[begin_idx + 5..end_idx].trim().to_string();
+
+    Some(TriggerDef {
+        name: name.to_string(),
+        table_name: tbl_name.to_string(),
+        timing,
+        event,
+        when_condition,
+        body_sql,
+        for_each_row: true,
+        sql: sql.to_string(),
+    })
 }
 
 #[cfg(test)]

@@ -214,6 +214,24 @@ pub enum Plan {
         name: String,
         argument: Option<String>,
     },
+    Vacuum,
+    CreateTrigger {
+        name: String,
+        table_name: String,
+        sql: String,
+        if_not_exists: bool,
+    },
+    DropTrigger {
+        name: String,
+        if_exists: bool,
+    },
+    AttachDatabase {
+        schema_name: String,
+        file_path: String,
+    },
+    DetachDatabase {
+        schema_name: String,
+    },
     Begin,
     Commit,
     Rollback,
@@ -319,6 +337,56 @@ pub fn plan_statement(stmt: &Statement, catalog: &Catalog) -> Result<Plan> {
         }
         Statement::Pragma { name, value, .. } => {
             let pragma_name = name.to_string().to_lowercase();
+            if pragma_name == "__vacuum" {
+                return Ok(Plan::Vacuum);
+            }
+            if pragma_name == "__create_trigger" {
+                if let Some(val) = &value {
+                    let encoded = match val {
+                        ast::Value::SingleQuotedString(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    let parts: Vec<&str> = encoded.splitn(7, '|').collect();
+                    if parts.len() == 7 {
+                        let trigger_name = parts[0].to_string();
+                        let trigger_table = parts[1].to_string();
+                        let trigger_if_not_exists = parts[4] == "1";
+                        return Ok(Plan::CreateTrigger {
+                            name: trigger_name,
+                            table_name: trigger_table,
+                            sql: encoded,
+                            if_not_exists: trigger_if_not_exists,
+                        });
+                    }
+                }
+                return Err(Error::Other("invalid CREATE TRIGGER syntax".to_string()));
+            }
+            if pragma_name == "__drop_trigger" {
+                if let Some(val) = &value {
+                    let encoded = match val {
+                        ast::Value::SingleQuotedString(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    let parts: Vec<&str> = encoded.splitn(2, '|').collect();
+                    if parts.len() == 2 {
+                        return Ok(Plan::DropTrigger {
+                            name: parts[0].to_string(),
+                            if_exists: parts[1] == "1",
+                        });
+                    }
+                }
+                return Err(Error::Other("invalid DROP TRIGGER syntax".to_string()));
+            }
+            if pragma_name == "__detach" {
+                if let Some(val) = &value {
+                    let schema_name = match val {
+                        ast::Value::SingleQuotedString(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    return Ok(Plan::DetachDatabase { schema_name });
+                }
+                return Err(Error::Other("DETACH requires a schema name".to_string()));
+            }
             let argument = value.as_ref().map(|v| match v {
                 ast::Value::SingleQuotedString(s) => s.clone(),
                 ast::Value::Number(n, _) => n.clone(),
@@ -335,6 +403,13 @@ pub fn plan_statement(stmt: &Statement, catalog: &Catalog) -> Result<Plan> {
         Statement::Rollback { .. } => Ok(Plan::Rollback),
         Statement::Savepoint { name } => Ok(Plan::Savepoint(name.value.clone())),
         Statement::ReleaseSavepoint { name } => Ok(Plan::Release(name.value.clone())),
+        Statement::AttachDatabase { schema_name, database_file_name, .. } => {
+            let file_path = database_file_name.to_string().trim_matches('\'').to_string();
+            Ok(Plan::AttachDatabase {
+                schema_name: schema_name.value.clone(),
+                file_path,
+            })
+        }
         _ => Err(Error::Other(format!(
             "unsupported statement type: {stmt}"
         ))),

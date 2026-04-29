@@ -52,6 +52,10 @@ impl Vfs for MemoryVfs {
         let store = self.files.lock().unwrap();
         Ok(store.contains_key(path))
     }
+
+    fn clone_box(&self) -> Box<dyn Vfs> {
+        Box::new(self.clone())
+    }
 }
 
 pub struct MemoryFile {

@@ -135,6 +135,13 @@ impl Vfs for IdbVfs {
     fn exists(&self, path: &str) -> rsqlite_vfs::Result<bool> {
         Ok(self.buffers.borrow().contains_key(path))
     }
+
+    fn clone_box(&self) -> Box<dyn Vfs> {
+        Box::new(IdbVfs {
+            idb: self.idb.clone(),
+            buffers: self.buffers.clone(),
+        })
+    }
 }
 
 impl Drop for IdbVfs {

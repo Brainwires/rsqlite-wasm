@@ -82,6 +82,13 @@ impl Vfs for OpfsVfs {
     fn exists(&self, path: &str) -> rsqlite_vfs::Result<bool> {
         Ok(self.handles.borrow().contains_key(path))
     }
+
+    fn clone_box(&self) -> Box<dyn Vfs> {
+        Box::new(OpfsVfs {
+            root_dir: self.root_dir.clone(),
+            handles: self.handles.clone(),
+        })
+    }
 }
 
 pub struct OpfsFile {

@@ -303,6 +303,26 @@ impl Pager {
         Ok(())
     }
 
+    pub fn replace_content(&mut self, data: &[u8]) -> Result<()> {
+        self.file.truncate(0)?;
+        self.file.write(0, data)?;
+        self.file.sync(SyncFlags { full: true })?;
+
+        let mut header_buf = [0u8; HEADER_SIZE];
+        header_buf.copy_from_slice(&data[..HEADER_SIZE]);
+        self.header = DatabaseHeader::parse(&header_buf)?;
+        self.page_count = if self.header.database_size > 0 {
+            self.header.database_size
+        } else {
+            (data.len() as u64 / self.header.page_size as u64) as u32
+        };
+        self.cache.clear();
+        self.dirty.clear();
+        self.journal.clear();
+        self.saved_page_count = self.page_count;
+        Ok(())
+    }
+
     fn read_page_from_disk(&self, page_num: u32) -> Result<Page> {
         let page_size = self.header.page_size as usize;
         let offset = (page_num as u64 - 1) * page_size as u64;

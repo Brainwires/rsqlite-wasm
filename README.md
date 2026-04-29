@@ -31,8 +31,12 @@ Databases created by rsqlite-wasm are **file-format compatible** with SQLite —
 - **Indexes:** B-tree indexes with equality and range scan optimization
 - **Constraints:** NOT NULL, UNIQUE, CHECK, FOREIGN KEY enforcement; AUTOINCREMENT via sqlite_sequence
 - **UPSERT:** INSERT ... ON CONFLICT DO UPDATE/NOTHING, INSERT OR REPLACE/IGNORE
-- **PRAGMA:** table_info, table_list, index_list, index_info, page_size, page_count, integrity_check, foreign_keys
+- **PRAGMA:** table_info, table_list, index_list, index_info, page_size, page_count, integrity_check, foreign_keys, database_list, journal_mode
 - **EXPLAIN QUERY PLAN:** human-readable query plan output
+- **Triggers:** CREATE/DROP TRIGGER with BEFORE/AFTER timing, OLD/NEW row references, WHEN conditions
+- **VACUUM:** rebuild database to reclaim unused space
+- **ATTACH DATABASE / DETACH:** open and query multiple database files
+- **WAL mode stub:** accepts `PRAGMA journal_mode = WAL` gracefully (operates in rollback journal mode)
 - **Window functions:** ROW_NUMBER, RANK, DENSE_RANK, NTILE, LAG, LEAD, FIRST_VALUE, LAST_VALUE, SUM/COUNT/AVG/MIN/MAX OVER
 - **Vector search:** `vec_distance_cosine`, `vec_distance_l2`, `vec_distance_dot`, `vec_from_json`, `vec_to_json`, `vec_normalize`, `vec_length`
 - **JSON functions:** `json`, `json_extract`, `json_type`, `json_valid`, `json_array`, `json_object`, `json_array_length`, `json_insert`, `json_replace`, `json_set`, `json_remove`, `json_patch`, `json_quote`
@@ -40,12 +44,6 @@ Databases created by rsqlite-wasm are **file-format compatible** with SQLite —
 - **50+ scalar functions:** LENGTH, SUBSTR, UPPER, LOWER, TRIM, REPLACE, COALESCE, IFNULL, TYPEOF, HEX, ROUND, ABS, RANDOM, DATE, TIME, DATETIME, STRFTIME, JULIANDAY, UNIXEPOCH, IIF, PRINTF, and more
 - **Parameter binding:** `?` placeholders with bound values
 - **Prepared statement cache:** LRU cache (64 entries) with DDL-triggered invalidation
-
-### Not yet supported
-
-- Triggers
-- WAL mode
-- VACUUM, ATTACH DATABASE
 
 ## Quick Start — Rust
 

@@ -4560,3 +4560,244 @@
         assert_eq!(r.rows.len(), 10);
         assert_eq!(r.rows[9].values[0], Value::Integer(10));
     }
+
+    #[test]
+    fn pragma_journal_mode_read() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db.query("PRAGMA journal_mode").unwrap();
+        assert_eq!(r.columns, vec!["journal_mode"]);
+        assert_eq!(r.rows.len(), 1);
+        assert_eq!(r.rows[0].values[0], Value::Text("delete".to_string()));
+    }
+
+    #[test]
+    fn pragma_journal_mode_set_wal() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db.query("PRAGMA journal_mode = WAL").unwrap();
+        assert_eq!(r.rows[0].values[0], Value::Text("delete".to_string()));
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)").unwrap();
+        db.execute("INSERT INTO t VALUES (1)").unwrap();
+        let r2 = db.query("SELECT * FROM t").unwrap();
+        assert_eq!(r2.rows.len(), 1);
+    }
+
+    #[test]
+    fn vacuum_basic() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, data TEXT)").unwrap();
+        for i in 1..=500 {
+            db.execute(&format!("INSERT INTO t VALUES ({i}, '{}')", "x".repeat(100))).unwrap();
+        }
+        let pages_before = db.page_count();
+        db.execute("DELETE FROM t WHERE id > 10").unwrap();
+        db.execute("VACUUM").unwrap();
+        let pages_after = db.page_count();
+        assert!(pages_after < pages_before, "VACUUM should reduce page count: before={pages_before}, after={pages_after}");
+        let r = db.query("SELECT COUNT(*) FROM t").unwrap();
+        assert_eq!(r.rows[0].values[0], Value::Integer(10));
+        let r = db.query("SELECT * FROM t WHERE id = 5").unwrap();
+        assert_eq!(r.rows.len(), 1);
+    }
+
+    #[test]
+    fn vacuum_empty_db() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("VACUUM").unwrap();
+    }
+
+    #[test]
+    fn vacuum_preserves_indexes() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+        db.execute("CREATE INDEX idx_name ON t(name)").unwrap();
+        for i in 1..=50 {
+            db.execute(&format!("INSERT INTO t VALUES ({i}, 'name_{i}')")).unwrap();
+        }
+        db.execute("DELETE FROM t WHERE id > 5").unwrap();
+        db.execute("VACUUM").unwrap();
+        let r = db.query("SELECT * FROM t WHERE name = 'name_3'").unwrap();
+        assert_eq!(r.rows.len(), 1);
+        let r = db.query("SELECT COUNT(*) FROM t").unwrap();
+        assert_eq!(r.rows[0].values[0], Value::Integer(5));
+    }
+
+    #[test]
+    fn vacuum_fails_in_transaction() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("BEGIN").unwrap();
+        let result = db.execute("VACUUM");
+        assert!(result.is_err());
+        db.execute("ROLLBACK").unwrap();
+    }
+
+    #[test]
+    fn trigger_create_drop() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+        db.execute("CREATE TABLE log (msg TEXT)").unwrap();
+        db.execute("CREATE TRIGGER t_ins AFTER INSERT ON t FOR EACH ROW BEGIN INSERT INTO log VALUES ('inserted'); END;").unwrap();
+        db.execute("DROP TRIGGER t_ins").unwrap();
+    }
+
+    #[test]
+    fn trigger_after_insert() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+        db.execute("CREATE TABLE log (msg TEXT)").unwrap();
+        db.execute("CREATE TRIGGER t_ins AFTER INSERT ON t FOR EACH ROW BEGIN INSERT INTO log VALUES ('row inserted'); END;").unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'Alice')").unwrap();
+        db.execute("INSERT INTO t VALUES (2, 'Bob')").unwrap();
+        let r = db.query("SELECT * FROM log").unwrap();
+        assert_eq!(r.rows.len(), 2);
+        assert_eq!(r.rows[0].values[0], Value::Text("row inserted".to_string()));
+    }
+
+    #[test]
+    fn trigger_after_insert_with_new() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+        db.execute("CREATE TABLE log (tid INTEGER, tname TEXT)").unwrap();
+        db.execute("CREATE TRIGGER t_ins AFTER INSERT ON t FOR EACH ROW BEGIN INSERT INTO log VALUES (NEW.id, NEW.name); END;").unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'Alice')").unwrap();
+        let r = db.query("SELECT * FROM log").unwrap();
+        assert_eq!(r.rows.len(), 1);
+        assert_eq!(r.rows[0].values[0], Value::Integer(1));
+        assert_eq!(r.rows[0].values[1], Value::Text("Alice".to_string()));
+    }
+
+    #[test]
+    fn trigger_after_delete_with_old() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+        db.execute("CREATE TABLE log (tid INTEGER, tname TEXT)").unwrap();
+        db.execute("CREATE TRIGGER t_del AFTER DELETE ON t FOR EACH ROW BEGIN INSERT INTO log VALUES (OLD.id, OLD.name); END;").unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'Alice')").unwrap();
+        db.execute("DELETE FROM t WHERE id = 1").unwrap();
+        let r = db.query("SELECT * FROM log").unwrap();
+        assert_eq!(r.rows.len(), 1);
+        assert_eq!(r.rows[0].values[0], Value::Integer(1));
+        assert_eq!(r.rows[0].values[1], Value::Text("Alice".to_string()));
+    }
+
+    #[test]
+    fn trigger_after_update_old_new() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+        db.execute("CREATE TABLE log (old_name TEXT, new_name TEXT)").unwrap();
+        db.execute("CREATE TRIGGER t_upd AFTER UPDATE ON t FOR EACH ROW BEGIN INSERT INTO log VALUES (OLD.name, NEW.name); END;").unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'Alice')").unwrap();
+        db.execute("UPDATE t SET name = 'Bob' WHERE id = 1").unwrap();
+        let r = db.query("SELECT * FROM log").unwrap();
+        assert_eq!(r.rows.len(), 1);
+        assert_eq!(r.rows[0].values[0], Value::Text("Alice".to_string()));
+        assert_eq!(r.rows[0].values[1], Value::Text("Bob".to_string()));
+    }
+
+    #[test]
+    fn trigger_when_condition() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val INTEGER)").unwrap();
+        db.execute("CREATE TABLE log (msg TEXT)").unwrap();
+        db.execute("CREATE TRIGGER t_ins AFTER INSERT ON t FOR EACH ROW WHEN NEW.val > 10 BEGIN INSERT INTO log VALUES ('big value'); END;").unwrap();
+        db.execute("INSERT INTO t VALUES (1, 5)").unwrap();
+        db.execute("INSERT INTO t VALUES (2, 15)").unwrap();
+        let r = db.query("SELECT * FROM log").unwrap();
+        assert_eq!(r.rows.len(), 1);
+    }
+
+    #[test]
+    fn trigger_persistence() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        {
+            let mut db = Database::create(&vfs, "test.db").unwrap();
+            db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+            db.execute("CREATE TABLE log (msg TEXT)").unwrap();
+            db.execute("CREATE TRIGGER t_ins AFTER INSERT ON t FOR EACH ROW BEGIN INSERT INTO log VALUES ('inserted'); END;").unwrap();
+        }
+        {
+            let mut db = Database::open(&vfs, "test.db").unwrap();
+            db.execute("INSERT INTO t VALUES (1, 'Alice')").unwrap();
+            let r = db.query("SELECT * FROM log").unwrap();
+            assert_eq!(r.rows.len(), 1);
+        }
+    }
+
+    #[test]
+    fn trigger_drop_if_exists() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("DROP TRIGGER IF EXISTS nonexistent").unwrap();
+    }
+
+    #[test]
+    fn attach_and_query() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        {
+            let mut other = Database::create(&vfs, "other.db").unwrap();
+            other.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+            other.execute("INSERT INTO items VALUES (1, 'Widget')").unwrap();
+            other.execute("INSERT INTO items VALUES (2, 'Gadget')").unwrap();
+        }
+        let mut db = Database::create(&vfs, "main.db").unwrap();
+        db.execute("ATTACH DATABASE 'other.db' AS aux").unwrap();
+        let r = db.query("PRAGMA database_list").unwrap();
+        let names: Vec<String> = r.rows.iter().map(|row| {
+            if let Value::Text(s) = &row.values[1] { s.clone() } else { String::new() }
+        }).collect();
+        assert!(names.contains(&"main".to_string()));
+        assert!(names.contains(&"aux".to_string()));
+    }
+
+    #[test]
+    fn attach_detach_roundtrip() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        {
+            let mut other = Database::create(&vfs, "other.db").unwrap();
+            other.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)").unwrap();
+        }
+        let mut db = Database::create(&vfs, "main.db").unwrap();
+        db.execute("ATTACH DATABASE 'other.db' AS aux").unwrap();
+        let r = db.query("PRAGMA database_list").unwrap();
+        assert_eq!(r.rows.len(), 2);
+        db.execute("DETACH aux").unwrap();
+        let r = db.query("PRAGMA database_list").unwrap();
+        assert_eq!(r.rows.len(), 1);
+    }
+
+    #[test]
+    fn detach_nonexistent_error() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "main.db").unwrap();
+        assert!(db.execute("DETACH nonexistent").is_err());
+    }
+
+    #[test]
+    fn attach_reserved_name_error() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "main.db").unwrap();
+        assert!(db.execute("ATTACH DATABASE 'other.db' AS main").is_err());
+    }
+
+    #[test]
+    fn attach_duplicate_error() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        {
+            let mut other = Database::create(&vfs, "other.db").unwrap();
+            other.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)").unwrap();
+        }
+        let mut db = Database::create(&vfs, "main.db").unwrap();
+        db.execute("ATTACH DATABASE 'other.db' AS aux").unwrap();
+        assert!(db.execute("ATTACH DATABASE 'other.db' AS aux").is_err());
+    }

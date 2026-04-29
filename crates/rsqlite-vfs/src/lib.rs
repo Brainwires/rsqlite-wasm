@@ -42,6 +42,7 @@ pub trait Vfs: Send {
     fn open(&self, path: &str, flags: OpenFlags) -> Result<Box<dyn VfsFile>>;
     fn delete(&self, path: &str) -> Result<()>;
     fn exists(&self, path: &str) -> Result<bool>;
+    fn clone_box(&self) -> Box<dyn Vfs>;
 }
 
 pub trait VfsFile: Send {

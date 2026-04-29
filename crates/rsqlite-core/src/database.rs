@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::num::NonZero;
 
 use lru::LruCache;
@@ -14,10 +15,17 @@ use crate::types::QueryResult;
 
 const PLAN_CACHE_SIZE: usize = 64;
 
+pub struct AttachedDb {
+    pub pager: Pager,
+    pub catalog: Catalog,
+}
+
 pub struct Database {
     pager: Pager,
     catalog: Catalog,
     plan_cache: LruCache<String, Plan>,
+    vfs: Box<dyn Vfs>,
+    attached: HashMap<String, AttachedDb>,
 }
 
 impl Database {
@@ -28,6 +36,8 @@ impl Database {
             pager,
             catalog,
             plan_cache: LruCache::new(NonZero::new(PLAN_CACHE_SIZE).unwrap()),
+            vfs: vfs.clone_box(),
+            attached: HashMap::new(),
         })
     }
 
@@ -38,6 +48,8 @@ impl Database {
             pager,
             catalog,
             plan_cache: LruCache::new(NonZero::new(PLAN_CACHE_SIZE).unwrap()),
+            vfs: vfs.clone_box(),
+            attached: HashMap::new(),
         })
     }
 
@@ -61,6 +73,9 @@ impl Database {
         }
         let plan = self.get_or_plan(sql)?;
         if let Plan::Pragma { ref name, ref argument } = plan {
+            if name == "database_list" {
+                return Ok(self.pragma_database_list());
+            }
             return executor::execute_pragma(name, argument.as_deref(), &self.pager, &self.catalog);
         }
         executor::execute(&plan, &mut self.pager, &self.catalog)
@@ -69,8 +84,17 @@ impl Database {
     pub fn execute(&mut self, sql: &str) -> Result<ExecResult> {
         let plan = self.get_or_plan(sql)?;
         if let Plan::Pragma { ref name, ref argument } = plan {
+            if name == "database_list" {
+                return Ok(ExecResult { rows_affected: 0 });
+            }
             let _ = executor::execute_pragma(name, argument.as_deref(), &self.pager, &self.catalog)?;
             return Ok(ExecResult { rows_affected: 0 });
+        }
+        if let Plan::AttachDatabase { ref schema_name, ref file_path } = plan {
+            return self.execute_attach(schema_name, file_path);
+        }
+        if let Plan::DetachDatabase { ref schema_name } = plan {
+            return self.execute_detach(schema_name);
         }
         let is_ddl = matches!(
             plan,
@@ -83,12 +107,19 @@ impl Database {
                 | Plan::CreateView { .. }
                 | Plan::DropView { .. }
                 | Plan::CreateTableAsSelect { .. }
+                | Plan::Vacuum
+                | Plan::CreateTrigger { .. }
+                | Plan::DropTrigger { .. }
         );
         let result = executor::execute_mut(&plan, &mut self.pager, &mut self.catalog)?;
         if is_ddl {
             self.plan_cache.clear();
         }
         Ok(result)
+    }
+
+    pub fn page_count(&self) -> u32 {
+        self.pager.page_count()
     }
 
     fn try_explain_query_plan(&mut self, sql: &str) -> Result<Option<QueryResult>> {
@@ -127,12 +158,22 @@ impl Database {
         let plan = self.get_or_plan(sql)?;
 
         if let Plan::Pragma { ref name, ref argument } = plan {
+            if name == "database_list" {
+                return Ok(SqlResult::Query(self.pragma_database_list()));
+            }
             return Ok(SqlResult::Query(executor::execute_pragma(
                 name,
                 argument.as_deref(),
                 &self.pager,
                 &self.catalog,
             )?));
+        }
+
+        if let Plan::AttachDatabase { ref schema_name, ref file_path } = plan {
+            return Ok(SqlResult::Execute(self.execute_attach(schema_name, file_path)?));
+        }
+        if let Plan::DetachDatabase { ref schema_name } = plan {
+            return Ok(SqlResult::Execute(self.execute_detach(schema_name)?));
         }
 
         if is_query {
@@ -153,6 +194,9 @@ impl Database {
                     | Plan::CreateView { .. }
                     | Plan::DropView { .. }
                     | Plan::CreateTableAsSelect { .. }
+                    | Plan::Vacuum
+                    | Plan::CreateTrigger { .. }
+                    | Plan::DropTrigger { .. }
             );
             let result = executor::execute_mut(
                 &plan,
@@ -168,6 +212,56 @@ impl Database {
 
     pub fn catalog(&self) -> &Catalog {
         &self.catalog
+    }
+
+    fn pragma_database_list(&self) -> QueryResult {
+        use crate::types::Row;
+        let mut rows = vec![Row {
+            values: vec![
+                Value::Integer(0),
+                Value::Text("main".to_string()),
+                Value::Text(String::new()),
+            ],
+        }];
+        for (i, name) in self.attached.keys().enumerate() {
+            rows.push(Row {
+                values: vec![
+                    Value::Integer((i + 1) as i64),
+                    Value::Text(name.clone()),
+                    Value::Text(String::new()),
+                ],
+            });
+        }
+        QueryResult {
+            columns: vec!["seq".to_string(), "name".to_string(), "file".to_string()],
+            rows,
+        }
+    }
+
+    fn execute_attach(&mut self, schema_name: &str, file_path: &str) -> Result<ExecResult> {
+        if schema_name.eq_ignore_ascii_case("main") || schema_name.eq_ignore_ascii_case("temp") {
+            return Err(crate::error::Error::Other(format!(
+                "cannot ATTACH database as '{schema_name}': reserved name"
+            )));
+        }
+        if self.attached.contains_key(schema_name) {
+            return Err(crate::error::Error::Other(format!(
+                "database '{schema_name}' is already attached"
+            )));
+        }
+        let mut pager = Pager::open(&*self.vfs, file_path)?;
+        let catalog = Catalog::load(&mut pager)?;
+        self.attached.insert(schema_name.to_string(), AttachedDb { pager, catalog });
+        Ok(ExecResult { rows_affected: 0 })
+    }
+
+    fn execute_detach(&mut self, schema_name: &str) -> Result<ExecResult> {
+        if self.attached.remove(schema_name).is_none() {
+            return Err(crate::error::Error::Other(format!(
+                "no such database: {schema_name}"
+            )));
+        }
+        Ok(ExecResult { rows_affected: 0 })
     }
 }
 

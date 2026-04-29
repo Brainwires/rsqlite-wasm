@@ -1,9 +1,10 @@
 use std::cell::RefCell;
 
+use rsqlite_vfs::Vfs;
 use rsqlite_storage::btree::{
     btree_create_index, btree_create_table, btree_delete, btree_index_delete, btree_index_insert,
     btree_insert, btree_max_rowid, btree_row_exists, delete_schema_entries, insert_schema_entry,
-    BTreeCursor, CursorRow, IndexCursor,
+    read_schema, BTreeCursor, CursorRow, IndexCursor,
 };
 use rsqlite_storage::codec::{Record, Value};
 use rsqlite_storage::pager::Pager;
@@ -27,6 +28,7 @@ thread_local! {
     static TOTAL_CHANGES_COUNT: RefCell<i64> = RefCell::new(0);
     static FOREIGN_KEYS_ENABLED: RefCell<bool> = RefCell::new(false);
     static RECURSIVE_CTE_WORKING: RefCell<HashMap<String, QueryResult>> = RefCell::new(HashMap::new());
+    static TRIGGER_DEPTH: RefCell<u32> = RefCell::new(0);
 }
 
 use std::collections::HashMap;
@@ -290,7 +292,12 @@ pub fn execute(plan: &Plan, pager: &mut Pager, catalog: &Catalog) -> Result<Quer
         | Plan::Rollback
         | Plan::Savepoint(_)
         | Plan::Release(_)
-        | Plan::RollbackTo(_) => Err(Error::Other(
+        | Plan::RollbackTo(_)
+        | Plan::Vacuum
+        | Plan::CreateTrigger { .. }
+        | Plan::DropTrigger { .. }
+        | Plan::AttachDatabase { .. }
+        | Plan::DetachDatabase { .. } => Err(Error::Other(
             "use execute_mut for DDL/DML statements".to_string(),
         )),
     }
@@ -336,6 +343,13 @@ pub fn execute_mut(
             if_not_exists,
             query,
         } => execute_create_table_as_select(table_name, *if_not_exists, query, pager, catalog),
+        Plan::Vacuum => execute_vacuum(pager, catalog),
+        Plan::CreateTrigger { name, table_name, sql, if_not_exists } => {
+            execute_create_trigger(name, table_name, sql, *if_not_exists, pager, catalog)
+        }
+        Plan::DropTrigger { name, if_exists } => {
+            execute_drop_trigger(name, *if_exists, pager, catalog)
+        }
         Plan::Begin => {
             pager.begin_transaction()?;
             Ok(ExecResult { rows_affected: 0 })
@@ -515,6 +529,12 @@ pub fn execute_pragma(
                     Value::Text("main".to_string()),
                     Value::Text(String::new()),
                 ],
+            }],
+        }),
+        "journal_mode" => Ok(QueryResult {
+            columns: vec!["journal_mode".to_string()],
+            rows: vec![Row {
+                values: vec![Value::Text("delete".to_string())],
             }],
         }),
         "foreign_keys" | "foreign_key_list" if name == "foreign_keys" => {
@@ -1158,6 +1178,21 @@ fn execute_insert(plan: &InsertPlan, pager: &mut Pager, catalog: &Catalog) -> Re
         check_unique_constraints(&values, &plan.table_columns, &plan.table_name, pager, current_root, None)?;
         check_check_constraints(&values, &plan.table_columns, &plan.table_name, pager, catalog)?;
         check_foreign_key_insert(&values, &plan.table_columns, &plan.table_name, pager, catalog)?;
+
+        let new_named: Vec<(String, Value)> = plan.table_columns.iter()
+            .zip(values.iter())
+            .map(|(c, v)| (c.name.clone(), v.clone()))
+            .collect();
+        fire_triggers(
+            &plan.table_name,
+            &crate::catalog::TriggerTiming::Before,
+            &crate::catalog::TriggerEvent::Insert,
+            None,
+            Some(&new_named),
+            pager,
+            catalog,
+        )?;
+
         let record = Record {
             values: values.clone(),
         };
@@ -1172,6 +1207,16 @@ fn execute_insert(plan: &InsertPlan, pager: &mut Pager, catalog: &Catalog) -> Re
             btree_index_insert(pager, *idx_root, &key)
                 .map_err(|e| Error::Other(e.to_string()))?;
         }
+
+        fire_triggers(
+            &plan.table_name,
+            &crate::catalog::TriggerTiming::After,
+            &crate::catalog::TriggerEvent::Insert,
+            None,
+            Some(&new_named),
+            pager,
+            catalog,
+        )?;
 
         rows_affected += 1;
     }
@@ -1847,10 +1892,29 @@ fn execute_update(plan: &UpdatePlan, pager: &mut Pager, catalog: &Catalog) -> Re
 
     let mut current_root = plan.root_page;
     for (rowid, new_values) in to_update {
-        // Remove old index entries and add new ones
+        let old_values = row_values_for_rowid(&btree_rows, rowid, &plan.table_columns);
+        let old_named: Vec<(String, Value)> = plan.table_columns.iter()
+            .zip(old_values.iter())
+            .map(|(c, v)| (c.name.clone(), v.clone()))
+            .collect();
+        let new_named: Vec<(String, Value)> = plan.table_columns.iter()
+            .zip(new_values.iter())
+            .map(|(c, v)| (c.name.clone(), v.clone()))
+            .collect();
+
+        fire_triggers(
+            &plan.table_name,
+            &crate::catalog::TriggerTiming::Before,
+            &crate::catalog::TriggerEvent::Update,
+            Some(&old_named),
+            Some(&new_named),
+            pager,
+            catalog,
+        )?;
+
         for (idx_root, idx_col_indices) in &table_indexes {
             let old_key = build_index_key(
-                &row_values_for_rowid(&btree_rows, rowid, &plan.table_columns),
+                &old_values,
                 idx_col_indices,
                 &plan.table_columns,
                 rowid,
@@ -1864,9 +1928,19 @@ fn execute_update(plan: &UpdatePlan, pager: &mut Pager, catalog: &Catalog) -> Re
 
         btree_delete(pager, current_root, rowid)?;
         let record = Record {
-            values: new_values,
+            values: new_values.clone(),
         };
         current_root = btree_insert(pager, current_root, rowid, &record)?;
+
+        fire_triggers(
+            &plan.table_name,
+            &crate::catalog::TriggerTiming::After,
+            &crate::catalog::TriggerEvent::Update,
+            Some(&old_named),
+            Some(&new_named),
+            pager,
+            catalog,
+        )?;
     }
 
     if !pager.in_transaction() {
@@ -1932,13 +2006,38 @@ fn execute_delete(plan: &DeletePlan, pager: &mut Pager, catalog: &Catalog) -> Re
     }
 
     for rowid in to_delete {
+        let old_values = row_values_for_rowid(&btree_rows, rowid, &plan.table_columns);
+        let old_named: Vec<(String, Value)> = plan.table_columns.iter()
+            .zip(old_values.iter())
+            .map(|(c, v)| (c.name.clone(), v.clone()))
+            .collect();
+
+        fire_triggers(
+            &plan.table_name,
+            &crate::catalog::TriggerTiming::Before,
+            &crate::catalog::TriggerEvent::Delete,
+            Some(&old_named),
+            None,
+            pager,
+            catalog,
+        )?;
+
         for (idx_root, idx_col_indices) in &table_indexes {
-            let old_values = row_values_for_rowid(&btree_rows, rowid, &plan.table_columns);
             let old_key =
                 build_index_key(&old_values, idx_col_indices, &plan.table_columns, rowid);
             let _ = btree_index_delete(pager, *idx_root, &old_key);
         }
         btree_delete(pager, plan.root_page, rowid)?;
+
+        fire_triggers(
+            &plan.table_name,
+            &crate::catalog::TriggerTiming::After,
+            &crate::catalog::TriggerEvent::Delete,
+            Some(&old_named),
+            None,
+            pager,
+            catalog,
+        )?;
     }
 
     if !pager.in_transaction() {
@@ -3136,5 +3235,283 @@ fn compute_window_for_partition(
         }
     }
     Ok(())
+}
+
+fn execute_create_trigger(
+    name: &str,
+    table_name: &str,
+    encoded: &str,
+    if_not_exists: bool,
+    pager: &mut Pager,
+    catalog: &mut Catalog,
+) -> Result<ExecResult> {
+    if catalog.triggers.contains_key(&name.to_lowercase()) {
+        if if_not_exists {
+            return Ok(ExecResult { rows_affected: 0 });
+        }
+        return Err(Error::Other(format!("trigger {name} already exists")));
+    }
+    if catalog.get_table(table_name).is_none() {
+        return Err(Error::Other(format!("no such table: {table_name}")));
+    }
+
+    let parts: Vec<&str> = encoded.splitn(7, '|').collect();
+    if parts.len() != 7 {
+        return Err(Error::Other("invalid trigger encoding".to_string()));
+    }
+    let timing_str = parts[2];
+    let event_str = parts[3];
+    let when_str = parts[5];
+    let body_str = parts[6];
+
+    let sql = format!(
+        "CREATE TRIGGER {name} {timing_str} {event_str} ON {table_name} FOR EACH ROW{when} BEGIN {body_str} END",
+        when = if when_str.is_empty() { String::new() } else { format!(" WHEN {when_str}") },
+    );
+
+    let was_in_txn = pager.in_transaction();
+    if !was_in_txn {
+        pager.begin_transaction()?;
+    }
+    insert_schema_entry(pager, "trigger", name, table_name, 0, &sql)?;
+    if !was_in_txn {
+        pager.commit()?;
+    }
+    catalog.reload(pager)?;
+    Ok(ExecResult { rows_affected: 0 })
+}
+
+fn execute_drop_trigger(
+    name: &str,
+    if_exists: bool,
+    pager: &mut Pager,
+    catalog: &mut Catalog,
+) -> Result<ExecResult> {
+    if !catalog.triggers.contains_key(&name.to_lowercase()) {
+        if if_exists {
+            return Ok(ExecResult { rows_affected: 0 });
+        }
+        return Err(Error::Other(format!("no such trigger: {name}")));
+    }
+
+    let was_in_txn = pager.in_transaction();
+    if !was_in_txn {
+        pager.begin_transaction()?;
+    }
+    delete_schema_entries(pager, name)?;
+    if !was_in_txn {
+        pager.commit()?;
+    }
+    catalog.reload(pager)?;
+    Ok(ExecResult { rows_affected: 0 })
+}
+
+fn fire_triggers(
+    table_name: &str,
+    timing: &crate::catalog::TriggerTiming,
+    event: &crate::catalog::TriggerEvent,
+    old_row: Option<&[(String, Value)]>,
+    new_row: Option<&[(String, Value)]>,
+    pager: &mut Pager,
+    catalog: &Catalog,
+) -> Result<()> {
+    let triggers: Vec<_> = catalog.triggers_for_table(table_name, timing, event)
+        .into_iter().cloned().collect();
+    if triggers.is_empty() {
+        return Ok(());
+    }
+
+    let depth = TRIGGER_DEPTH.with(|d| *d.borrow());
+    if depth >= 32 {
+        return Err(Error::Other("too many levels of trigger recursion".to_string()));
+    }
+
+    for trigger in &triggers {
+        if let Some(ref cond) = trigger.when_condition {
+            let resolved_cond = resolve_trigger_references(cond, old_row, new_row);
+            let cond_sql = format!("SELECT ({resolved_cond})");
+            let stmts = match rsqlite_parser::parse::parse_sql(&cond_sql) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let cond_plan = match crate::planner::plan_statement(&stmts[0], catalog) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            match execute(&cond_plan, pager, catalog) {
+                Ok(qr) => {
+                    if qr.rows.is_empty() || !is_truthy(&qr.rows[0].values[0]) {
+                        continue;
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+
+        TRIGGER_DEPTH.with(|d| *d.borrow_mut() += 1);
+
+        let body_stmts: Vec<&str> = trigger.body_sql.split(';')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        for body_sql in body_stmts {
+            let resolved = resolve_trigger_references(body_sql, old_row, new_row);
+            match rsqlite_parser::parse::parse_sql(&resolved) {
+                Ok(stmts) => {
+                    for stmt in &stmts {
+                        let plan = crate::planner::plan_statement(stmt, catalog)?;
+                        if matches!(plan, Plan::Insert(_) | Plan::Update(_) | Plan::Delete(_)) {
+                            let mut cat_clone = catalog.clone();
+                            execute_mut(&plan, pager, &mut cat_clone)?;
+                        } else {
+                            let _ = execute(&plan, pager, catalog);
+                        }
+                    }
+                }
+                Err(e) => {
+                    TRIGGER_DEPTH.with(|d| *d.borrow_mut() -= 1);
+                    return Err(Error::Other(format!("trigger body parse error: {e}")));
+                }
+            }
+        }
+
+        TRIGGER_DEPTH.with(|d| *d.borrow_mut() -= 1);
+    }
+    Ok(())
+}
+
+fn resolve_trigger_references(
+    sql: &str,
+    old_row: Option<&[(String, Value)]>,
+    new_row: Option<&[(String, Value)]>,
+) -> String {
+    let mut result = sql.to_string();
+    if let Some(new_vals) = new_row {
+        for (col, val) in new_vals {
+            let patterns = [
+                format!("NEW.{col}"),
+                format!("new.{col}"),
+                format!("New.{col}"),
+                format!("NEW.{}", col.to_lowercase()),
+                format!("new.{}", col.to_lowercase()),
+            ];
+            let replacement = value_to_sql_literal(val);
+            for pat in &patterns {
+                result = result.replace(pat, &replacement);
+            }
+        }
+    }
+    if let Some(old_vals) = old_row {
+        for (col, val) in old_vals {
+            let patterns = [
+                format!("OLD.{col}"),
+                format!("old.{col}"),
+                format!("Old.{col}"),
+                format!("OLD.{}", col.to_lowercase()),
+                format!("old.{}", col.to_lowercase()),
+            ];
+            let replacement = value_to_sql_literal(val);
+            for pat in &patterns {
+                result = result.replace(pat, &replacement);
+            }
+        }
+    }
+    result
+}
+
+fn value_to_sql_literal(val: &Value) -> String {
+    match val {
+        Value::Null => "NULL".to_string(),
+        Value::Integer(i) => i.to_string(),
+        Value::Real(f) => f.to_string(),
+        Value::Text(s) => format!("'{}'", s.replace('\'', "''")),
+        Value::Blob(b) => format!("X'{}'", b.iter().map(|byte| format!("{byte:02x}")).collect::<String>()),
+    }
+}
+
+fn execute_vacuum(pager: &mut Pager, catalog: &mut Catalog) -> Result<ExecResult> {
+    if pager.in_transaction() {
+        return Err(Error::Other(
+            "cannot VACUUM from within a transaction".to_string(),
+        ));
+    }
+
+    let schema_entries = read_schema(pager)?;
+    if schema_entries.is_empty() {
+        return Ok(ExecResult { rows_affected: 0 });
+    }
+
+    let temp_vfs = rsqlite_vfs::memory::MemoryVfs::new();
+    let mut temp_pager = Pager::create(&temp_vfs, "__vacuum_temp.db")?;
+
+    let mut root_page_map: HashMap<u32, u32> = HashMap::new();
+
+    for entry in &schema_entries {
+        match entry.entry_type.as_str() {
+            "table" => {
+                let new_root = btree_create_table(&mut temp_pager)?;
+                root_page_map.insert(entry.rootpage, new_root);
+
+                let mut cursor = BTreeCursor::new(pager, entry.rootpage);
+                let rows = cursor.collect_all()?;
+                for row in &rows {
+                    btree_insert(&mut temp_pager, new_root, row.rowid, &row.record)?;
+                }
+            }
+            "index" => {
+                let new_root = btree_create_index(&mut temp_pager)?;
+                root_page_map.insert(entry.rootpage, new_root);
+
+                let mut cursor = IndexCursor::new(pager, entry.rootpage);
+                let records = cursor.collect_all()?;
+                for rec in &records {
+                    rsqlite_storage::btree::btree_index_insert(
+                        &mut temp_pager,
+                        new_root,
+                        rec,
+                    )?;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    for entry in &schema_entries {
+        let new_rootpage = root_page_map.get(&entry.rootpage).copied().unwrap_or(0);
+        let sql_str = entry.sql.as_deref().unwrap_or("");
+        insert_schema_entry(
+            &mut temp_pager,
+            &entry.entry_type,
+            &entry.name,
+            &entry.tbl_name,
+            new_rootpage,
+            sql_str,
+        )?;
+    }
+
+    temp_pager.flush()?;
+
+    let temp_file = temp_vfs.open(
+        "__vacuum_temp.db",
+        rsqlite_vfs::OpenFlags {
+            create: false,
+            read_write: false,
+            delete_on_close: false,
+        },
+    ).map_err(|e| Error::Other(format!("vacuum: failed to read temp db: {e}")))?;
+
+    let size = temp_file
+        .file_size()
+        .map_err(|e| Error::Other(format!("vacuum: {e}")))?;
+    let mut buf = vec![0u8; size as usize];
+    temp_file
+        .read(0, &mut buf)
+        .map_err(|e| Error::Other(format!("vacuum: {e}")))?;
+
+    pager.replace_content(&buf)?;
+    catalog.reload(pager)?;
+
+    Ok(ExecResult { rows_affected: 0 })
 }
 

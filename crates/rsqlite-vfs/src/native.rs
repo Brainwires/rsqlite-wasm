@@ -41,6 +41,10 @@ impl Vfs for NativeVfs {
     fn exists(&self, path: &str) -> Result<bool> {
         Ok(std::path::Path::new(path).exists())
     }
+
+    fn clone_box(&self) -> Box<dyn Vfs> {
+        Box::new(NativeVfs)
+    }
 }
 
 pub struct NativeFile {
