@@ -177,7 +177,6 @@ fn is_query_statement(stmt: &Statement) -> bool {
 }
 
 fn describe_plan(plan: &Plan) -> QueryResult {
-    use crate::types::Row;
     let columns = vec![
         "id".to_string(),
         "parent".to_string(),

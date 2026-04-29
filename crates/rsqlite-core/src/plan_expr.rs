@@ -99,6 +99,10 @@ pub enum PlanExpr {
         partition_by: Vec<PlanExpr>,
         order_by: Vec<(PlanExpr, bool)>,
     },
+    Collate {
+        expr: Box<PlanExpr>,
+        collation: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -264,6 +268,13 @@ pub fn plan_expr(expr: &Expr, columns: &[ColumnRef], catalog: &Catalog) -> Resul
             Ok(PlanExpr::IsNotNull(Box::new(inner)))
         }
         Expr::Nested(e) => plan_expr(e, columns, catalog),
+        Expr::Collate { expr, collation } => {
+            let inner = plan_expr(expr, columns, catalog)?;
+            Ok(PlanExpr::Collate {
+                expr: Box::new(inner),
+                collation: collation.to_string().to_uppercase(),
+            })
+        }
         Expr::Function(func) => plan_function_expr(func, columns, catalog),
         Expr::Trim {
             expr,
@@ -752,6 +763,7 @@ pub(super) fn contains_aggregate(expr: &PlanExpr) -> bool {
         | PlanExpr::Exists { .. }
         | PlanExpr::Param(_)
         | PlanExpr::WindowFunction { .. } => false,
+        PlanExpr::Collate { expr, .. } => contains_aggregate(expr),
     }
 }
 
@@ -774,6 +786,9 @@ pub(super) fn collect_aggregates(expr: &PlanExpr, out: &mut Vec<(AggFunc, PlanEx
             for a in args {
                 collect_aggregates(a, out);
             }
+        }
+        PlanExpr::Collate { expr, .. } => {
+            collect_aggregates(expr, out);
         }
         _ => {}
     }
@@ -889,7 +904,7 @@ pub(super) fn collect_window_functions(expr: &PlanExpr, out: &mut Vec<PlanExpr>)
                 collect_window_functions(a, out);
             }
         }
-        PlanExpr::Cast { expr, .. } => {
+        PlanExpr::Cast { expr, .. } | PlanExpr::Collate { expr, .. } => {
             collect_window_functions(expr, out);
         }
         _ => {}

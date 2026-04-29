@@ -500,6 +500,16 @@ fn execute_create_table(
 
     catalog.reload(pager)?;
 
+    if let Some(table_def) = catalog.get_table(&plan.table_name) {
+        if table_def.has_autoincrement {
+            ensure_sqlite_sequence(pager, catalog)?;
+            update_autoincrement_seq(pager, catalog, &plan.table_name, 0)?;
+            if !pager.in_transaction() {
+                pager.flush()?;
+            }
+        }
+    }
+
     Ok(ExecResult { rows_affected: 0 })
 }
 
@@ -924,6 +934,10 @@ fn execute_insert(plan: &InsertPlan, pager: &mut Pager, catalog: &Catalog) -> Re
     let table_indexes = get_table_indexes(catalog, &plan.table_name);
     let mut rows_affected = 0u64;
     let mut current_root = plan.root_page;
+    let is_autoincrement = catalog
+        .get_table(&plan.table_name)
+        .is_some_and(|t| t.has_autoincrement);
+    let mut max_rowid_inserted = 0i64;
 
     if let Some(source) = &plan.source_query {
         let query_result = execute(source, pager, catalog)?;
@@ -944,6 +958,7 @@ fn execute_insert(plan: &InsertPlan, pager: &mut Pager, catalog: &Catalog) -> Re
             }
             let rowid = match rowid {
                 Some(id) => id,
+                None if is_autoincrement => compute_autoincrement_rowid(pager, catalog, &plan.table_name, current_root)?,
                 None => btree_max_rowid(pager, current_root)? + 1,
             };
 
@@ -952,12 +967,19 @@ fn execute_insert(plan: &InsertPlan, pager: &mut Pager, catalog: &Catalog) -> Re
             check_check_constraints(&values, &plan.table_columns, &plan.table_name, pager, catalog)?;
             let record = Record { values: values.clone() };
             current_root = btree_insert(pager, current_root, rowid, &record)?;
+            if rowid > max_rowid_inserted {
+                max_rowid_inserted = rowid;
+            }
             for (idx_root, idx_col_indices) in &table_indexes {
                 let key = build_index_key(&values, idx_col_indices, &plan.table_columns, rowid);
                 btree_index_insert(pager, *idx_root, &key)
                     .map_err(|e| Error::Other(e.to_string()))?;
             }
             rows_affected += 1;
+        }
+
+        if is_autoincrement && max_rowid_inserted > 0 {
+            update_autoincrement_seq(pager, catalog, &plan.table_name, max_rowid_inserted)?;
         }
 
         if !pager.in_transaction() {
@@ -982,6 +1004,7 @@ fn execute_insert(plan: &InsertPlan, pager: &mut Pager, catalog: &Catalog) -> Re
 
         let rowid = match rowid {
             Some(id) => id,
+            None if is_autoincrement => compute_autoincrement_rowid(pager, catalog, &plan.table_name, current_root)?,
             None => btree_max_rowid(pager, current_root)? + 1,
         };
 
@@ -1064,6 +1087,9 @@ fn execute_insert(plan: &InsertPlan, pager: &mut Pager, catalog: &Catalog) -> Re
         };
         current_root = btree_insert(pager, current_root, rowid, &record)?;
         last_rowid = rowid;
+        if rowid > max_rowid_inserted {
+            max_rowid_inserted = rowid;
+        }
 
         for (idx_root, idx_col_indices) in &table_indexes {
             let key = build_index_key(&values, idx_col_indices, &plan.table_columns, rowid);
@@ -1074,6 +1100,10 @@ fn execute_insert(plan: &InsertPlan, pager: &mut Pager, catalog: &Catalog) -> Re
         rows_affected += 1;
     }
 
+    if is_autoincrement && max_rowid_inserted > 0 {
+        update_autoincrement_seq(pager, catalog, &plan.table_name, max_rowid_inserted)?;
+    }
+
     if !pager.in_transaction() {
         pager.flush()?;
     }
@@ -1081,6 +1111,87 @@ fn execute_insert(plan: &InsertPlan, pager: &mut Pager, catalog: &Catalog) -> Re
     set_last_insert_rowid(last_rowid);
     set_changes(rows_affected as i64);
     Ok(ExecResult { rows_affected })
+}
+
+fn ensure_sqlite_sequence(pager: &mut Pager, catalog: &mut Catalog) -> Result<()> {
+    if catalog.get_table("sqlite_sequence").is_some() {
+        return Ok(());
+    }
+    let root_page = btree_create_table(pager)?;
+    insert_schema_entry(
+        pager,
+        "table",
+        "sqlite_sequence",
+        "sqlite_sequence",
+        root_page,
+        "CREATE TABLE sqlite_sequence(name,seq)",
+    )?;
+    catalog.reload(pager)?;
+    Ok(())
+}
+
+fn read_autoincrement_seq(pager: &mut Pager, catalog: &Catalog, table_name: &str) -> Result<i64> {
+    let seq_table = match catalog.get_table("sqlite_sequence") {
+        Some(t) => t,
+        None => return Ok(0),
+    };
+    let mut cursor = BTreeCursor::new(pager, seq_table.root_page);
+    let rows = cursor.collect_all().map_err(|e| Error::Other(e.to_string()))?;
+    for row in &rows {
+        if let Some(Value::Text(name)) = row.record.values.first() {
+            if name.eq_ignore_ascii_case(table_name) {
+                if let Some(Value::Integer(seq)) = row.record.values.get(1) {
+                    return Ok(*seq);
+                }
+            }
+        }
+    }
+    Ok(0)
+}
+
+fn update_autoincrement_seq(
+    pager: &mut Pager,
+    catalog: &Catalog,
+    table_name: &str,
+    new_seq: i64,
+) -> Result<()> {
+    let seq_table = match catalog.get_table("sqlite_sequence") {
+        Some(t) => t,
+        None => return Ok(()),
+    };
+    let mut cursor = BTreeCursor::new(pager, seq_table.root_page);
+    let rows = cursor.collect_all().map_err(|e| Error::Other(e.to_string()))?;
+    let mut existing_rowid = None;
+    for row in &rows {
+        if let Some(Value::Text(name)) = row.record.values.first() {
+            if name.eq_ignore_ascii_case(table_name) {
+                existing_rowid = Some(row.rowid);
+                break;
+            }
+        }
+    }
+
+    let record = Record {
+        values: vec![Value::Text(table_name.to_string()), Value::Integer(new_seq)],
+    };
+    let root = seq_table.root_page;
+    match existing_rowid {
+        Some(rowid) => {
+            btree_delete(pager, root, rowid).map_err(|e| Error::Other(e.to_string()))?;
+            btree_insert(pager, root, rowid, &record)?;
+        }
+        None => {
+            let rowid = btree_max_rowid(pager, root)? + 1;
+            btree_insert(pager, root, rowid, &record)?;
+        }
+    }
+    Ok(())
+}
+
+fn compute_autoincrement_rowid(pager: &mut Pager, catalog: &Catalog, table_name: &str, current_root: u32) -> Result<i64> {
+    let seq = read_autoincrement_seq(pager, catalog, table_name)?;
+    let max_rowid = btree_max_rowid(pager, current_root)?;
+    Ok(std::cmp::max(seq, max_rowid) + 1)
 }
 
 fn check_check_constraints(
@@ -1400,7 +1511,12 @@ fn compare_rows_by_keys(
         let va = eval_expr(&key.expr, a, columns, pager, catalog).unwrap_or(Value::Null);
         let vb = eval_expr(&key.expr, b, columns, pager, catalog).unwrap_or(Value::Null);
 
-        let cmp_val = compare(&va, &vb);
+        let nocase = has_nocase_collation(&key.expr);
+        let cmp_val = if nocase {
+            compare(&fold_nocase(&va), &fold_nocase(&vb))
+        } else {
+            compare(&va, &vb)
+        };
         let ordering = if cmp_val < 0 {
             std::cmp::Ordering::Less
         } else if cmp_val > 0 {
@@ -2279,7 +2395,14 @@ fn eval_expr(expr: &PlanExpr, row: &Row, columns: &[String], pager: &mut Pager, 
         PlanExpr::BinaryOp { left, op, right } => {
             let l = eval_expr(left, row, columns, pager, catalog)?;
             let r = eval_expr(right, row, columns, pager, catalog)?;
-            eval_binop(*op, &l, &r)
+            let nocase = has_nocase_collation(left) || has_nocase_collation(right);
+            if nocase {
+                let l = fold_nocase(&l);
+                let r = fold_nocase(&r);
+                eval_binop(*op, &l, &r)
+            } else {
+                eval_binop(*op, &l, &r)
+            }
         }
         PlanExpr::UnaryOp { op, operand } => {
             let v = eval_expr(operand, row, columns, pager, catalog)?;
@@ -2344,10 +2467,13 @@ fn eval_expr(expr: &PlanExpr, row: &Row, columns: &[String], pager: &mut Pager, 
             if matches!(val, Value::Null) {
                 return Ok(Value::Null);
             }
+            let nocase = has_nocase_collation(expr);
+            let val_cmp = if nocase { fold_nocase(&val) } else { val.clone() };
             let mut found = false;
             for item in list {
                 let item_val = eval_expr(item, row, columns, pager, catalog)?;
-                if values_equal(&val, &item_val) {
+                let item_cmp = if nocase { fold_nocase(&item_val) } else { item_val };
+                if values_equal(&val_cmp, &item_cmp) {
                     found = true;
                     break;
                 }
@@ -2425,6 +2551,20 @@ fn eval_expr(expr: &PlanExpr, row: &Row, columns: &[String], pager: &mut Pager, 
         PlanExpr::WindowFunction { .. } => {
             Err(Error::Other("window function should not be evaluated directly".into()))
         }
+        PlanExpr::Collate { expr, .. } => {
+            eval_expr(expr, row, columns, pager, catalog)
+        }
+    }
+}
+
+fn has_nocase_collation(expr: &PlanExpr) -> bool {
+    matches!(expr, PlanExpr::Collate { collation, .. } if collation == "NOCASE")
+}
+
+fn fold_nocase(val: &Value) -> Value {
+    match val {
+        Value::Text(s) => Value::Text(s.to_lowercase()),
+        other => other.clone(),
     }
 }
 

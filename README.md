@@ -12,7 +12,7 @@ Databases created by rsqlite-wasm are **file-format compatible** with SQLite —
 - **Web Worker architecture** — all I/O runs off the main thread
 - **Vector search** — built-in `vec_distance_cosine`, `vec_distance_l2`, and `vec_distance_dot` functions for embedding similarity search
 - **Small binary** — ~1.6 MB WASM with LTO + `opt-level=z`
-- **305+ tests** — comprehensive coverage across all crates
+- **315+ tests** — comprehensive coverage across all crates
 
 ## SQL Support
 
@@ -29,13 +29,14 @@ Databases created by rsqlite-wasm are **file-format compatible** with SQLite —
 - **DDL:** CREATE TABLE, CREATE INDEX, DROP TABLE/INDEX/VIEW, ALTER TABLE (ADD COLUMN, RENAME)
 - **Transactions:** BEGIN, COMMIT, ROLLBACK with rollback journal; SAVEPOINT, RELEASE, ROLLBACK TO
 - **Indexes:** B-tree indexes with equality and range scan optimization
-- **Constraints:** NOT NULL, UNIQUE, and CHECK enforcement on INSERT/UPDATE
+- **Constraints:** NOT NULL, UNIQUE, CHECK enforcement; AUTOINCREMENT via sqlite_sequence
 - **UPSERT:** INSERT ... ON CONFLICT DO UPDATE/NOTHING, INSERT OR REPLACE/IGNORE
 - **PRAGMA:** table_info, table_list, index_list, index_info, page_size, page_count, integrity_check
 - **EXPLAIN QUERY PLAN:** human-readable query plan output
 - **Window functions:** ROW_NUMBER, RANK, DENSE_RANK, NTILE, LAG, LEAD, FIRST_VALUE, LAST_VALUE, SUM/COUNT/AVG/MIN/MAX OVER
 - **Vector search:** `vec_distance_cosine`, `vec_distance_l2`, `vec_distance_dot`, `vec_from_json`, `vec_to_json`, `vec_normalize`, `vec_length`
 - **JSON functions:** `json`, `json_extract`, `json_type`, `json_valid`, `json_array`, `json_object`, `json_array_length`, `json_insert`, `json_replace`, `json_set`, `json_remove`, `json_patch`, `json_quote`
+- **Collation:** COLLATE NOCASE for case-insensitive comparisons and ordering
 - **50+ scalar functions:** LENGTH, SUBSTR, UPPER, LOWER, TRIM, REPLACE, COALESCE, IFNULL, TYPEOF, HEX, ROUND, ABS, RANDOM, DATE, TIME, DATETIME, STRFTIME, JULIANDAY, UNIXEPOCH, IIF, PRINTF, and more
 - **Parameter binding:** `?` placeholders with bound values
 - **Prepared statement cache:** LRU cache (64 entries) with DDL-triggered invalidation

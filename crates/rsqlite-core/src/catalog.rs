@@ -4,6 +4,7 @@ use rsqlite_parser::parse::parse_sql;
 use rsqlite_storage::btree::{read_schema, SchemaEntry};
 use rsqlite_storage::pager::Pager;
 use sqlparser::ast::{self, ColumnOption, Statement};
+use sqlparser::tokenizer::Token;
 
 use crate::error::Result;
 
@@ -46,6 +47,7 @@ pub struct ColumnDef {
     pub is_rowid_alias: bool,
     pub nullable: bool,
     pub is_unique: bool,
+    pub autoincrement: bool,
     pub column_index: usize,
 }
 
@@ -56,6 +58,7 @@ pub struct TableDef {
     pub root_page: u32,
     pub sql: Option<String>,
     pub check_constraints: Vec<String>,
+    pub has_autoincrement: bool,
 }
 
 impl TableDef {
@@ -157,6 +160,7 @@ fn parse_table_def(entry: &SchemaEntry) -> Result<Option<TableDef>> {
                 root_page: entry.rootpage,
                 sql: Some(sql.clone()),
                 check_constraints: vec![],
+                has_autoincrement: false,
             }));
         }
     };
@@ -211,6 +215,14 @@ fn parse_table_def(entry: &SchemaEntry) -> Result<Option<TableDef>> {
                 matches!(opt.option, ColumnOption::Unique { is_primary: false, .. })
             }) || is_primary_key;
 
+            let autoincrement = col.options.iter().any(|opt| {
+                if let ColumnOption::DialectSpecific(tokens) = &opt.option {
+                    tokens.iter().any(|t| matches!(t, Token::Word(w) if w.value.eq_ignore_ascii_case("AUTOINCREMENT")))
+                } else {
+                    false
+                }
+            });
+
             columns.push(ColumnDef {
                 name: col.name.value.clone(),
                 type_name: type_name.clone(),
@@ -219,6 +231,7 @@ fn parse_table_def(entry: &SchemaEntry) -> Result<Option<TableDef>> {
                 is_rowid_alias,
                 nullable,
                 is_unique,
+                autoincrement,
                 column_index: i,
             });
         }
@@ -240,12 +253,15 @@ fn parse_table_def(entry: &SchemaEntry) -> Result<Option<TableDef>> {
             }
         }
 
+        let has_autoincrement = columns.iter().any(|c| c.autoincrement);
+
         Ok(Some(TableDef {
             name: entry.name.clone(),
             columns,
             root_page: entry.rootpage,
             sql: Some(sql.clone()),
             check_constraints,
+            has_autoincrement,
         }))
     } else {
         Ok(None)

@@ -4286,3 +4286,128 @@
         let r = db.query("SELECT COUNT(*) FROM t").unwrap();
         assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(1));
     }
+
+    // ── COLLATE NOCASE tests ──
+
+    #[test]
+    fn collate_nocase_where_eq() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'Alice')").unwrap();
+        db.execute("INSERT INTO t VALUES (2, 'BOB')").unwrap();
+        db.execute("INSERT INTO t VALUES (3, 'charlie')").unwrap();
+
+        let r = db.query("SELECT id FROM t WHERE name = 'alice' COLLATE NOCASE").unwrap();
+        assert_eq!(r.rows.len(), 1);
+        assert_eq!(r.rows[0].values[0], Value::Integer(1));
+
+        let r = db.query("SELECT id FROM t WHERE name COLLATE NOCASE = 'bob'").unwrap();
+        assert_eq!(r.rows.len(), 1);
+        assert_eq!(r.rows[0].values[0], Value::Integer(2));
+    }
+
+    #[test]
+    fn collate_nocase_order_by() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'banana')").unwrap();
+        db.execute("INSERT INTO t VALUES (2, 'Apple')").unwrap();
+        db.execute("INSERT INTO t VALUES (3, 'CHERRY')").unwrap();
+
+        let r = db.query("SELECT name FROM t ORDER BY name COLLATE NOCASE").unwrap();
+        assert_eq!(r.rows.len(), 3);
+        assert_eq!(r.rows[0].values[0], Value::Text("Apple".into()));
+        assert_eq!(r.rows[1].values[0], Value::Text("banana".into()));
+        assert_eq!(r.rows[2].values[0], Value::Text("CHERRY".into()));
+    }
+
+    #[test]
+    fn collate_nocase_comparison_operators() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'Alpha')").unwrap();
+        db.execute("INSERT INTO t VALUES (2, 'beta')").unwrap();
+        db.execute("INSERT INTO t VALUES (3, 'GAMMA')").unwrap();
+
+        let r = db.query("SELECT id FROM t WHERE name < 'beta' COLLATE NOCASE ORDER BY id").unwrap();
+        assert_eq!(r.rows.len(), 1);
+        assert_eq!(r.rows[0].values[0], Value::Integer(1));
+
+        let r = db.query("SELECT id FROM t WHERE name >= 'beta' COLLATE NOCASE ORDER BY id").unwrap();
+        assert_eq!(r.rows.len(), 2);
+        assert_eq!(r.rows[0].values[0], Value::Integer(2));
+        assert_eq!(r.rows[1].values[0], Value::Integer(3));
+    }
+
+    #[test]
+    fn collate_nocase_in_list() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'Alice')").unwrap();
+        db.execute("INSERT INTO t VALUES (2, 'Bob')").unwrap();
+
+        let r = db.query("SELECT id FROM t WHERE name COLLATE NOCASE IN ('alice', 'bob') ORDER BY id").unwrap();
+        assert_eq!(r.rows.len(), 2);
+    }
+
+    // ── AUTOINCREMENT tests ──
+
+    #[test]
+    fn autoincrement_basic() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)").unwrap();
+        db.execute("INSERT INTO t (name) VALUES ('Alice')").unwrap();
+        db.execute("INSERT INTO t (name) VALUES ('Bob')").unwrap();
+
+        let r = db.query("SELECT id, name FROM t ORDER BY id").unwrap();
+        assert_eq!(r.rows.len(), 2);
+        assert_eq!(r.rows[0].values[0], Value::Integer(1));
+        assert_eq!(r.rows[1].values[0], Value::Integer(2));
+    }
+
+    #[test]
+    fn autoincrement_no_reuse_after_delete() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, val TEXT)").unwrap();
+        db.execute("INSERT INTO t (val) VALUES ('a')").unwrap();
+        db.execute("INSERT INTO t (val) VALUES ('b')").unwrap();
+        db.execute("INSERT INTO t (val) VALUES ('c')").unwrap();
+        db.execute("DELETE FROM t WHERE id = 3").unwrap();
+        db.execute("INSERT INTO t (val) VALUES ('d')").unwrap();
+
+        let r = db.query("SELECT id FROM t ORDER BY id").unwrap();
+        assert_eq!(r.rows[2].values[0], Value::Integer(4));
+    }
+
+    #[test]
+    fn autoincrement_explicit_id() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, val TEXT)").unwrap();
+        db.execute("INSERT INTO t (id, val) VALUES (100, 'a')").unwrap();
+        db.execute("INSERT INTO t (val) VALUES ('b')").unwrap();
+
+        let r = db.query("SELECT id FROM t ORDER BY id").unwrap();
+        assert_eq!(r.rows[0].values[0], Value::Integer(100));
+        assert_eq!(r.rows[1].values[0], Value::Integer(101));
+    }
+
+    #[test]
+    fn autoincrement_sqlite_sequence_table() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, val TEXT)").unwrap();
+        db.execute("INSERT INTO t (val) VALUES ('a')").unwrap();
+        db.execute("INSERT INTO t (val) VALUES ('b')").unwrap();
+
+        let r = db.query("SELECT name, seq FROM sqlite_sequence WHERE name = 't'").unwrap();
+        assert_eq!(r.rows.len(), 1);
+        assert_eq!(r.rows[0].values[0], Value::Text("t".into()));
+        assert_eq!(r.rows[0].values[1], Value::Integer(2));
+    }
