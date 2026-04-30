@@ -115,8 +115,12 @@ export class Database {
     return this.inner.query(sql) as T[];
   }
 
-  queryOne<T extends Row = Row>(sql: string): T | null {
+  queryOne<T extends Row = Row>(sql: string, params?: SqlValue[]): T | null {
     this.ensureOpen();
+    if (params && params.length > 0) {
+      const rows = this.inner.queryParams(sql, params) as T[];
+      return rows[0] ?? null;
+    }
     return this.inner.queryOne(sql) as T | null;
   }
 

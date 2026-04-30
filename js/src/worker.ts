@@ -13,10 +13,13 @@ interface WasmModule {
 
 interface WasmDatabaseInstance {
   exec(sql: string): bigint;
+  execParams(sql: string, params: SqlValue[]): bigint;
   query(sql: string): unknown[];
+  queryParams(sql: string, params: SqlValue[]): unknown[];
   queryOne(sql: string): unknown | null;
   execMany(sql: string): void;
   toBuffer(): Uint8Array;
+  flush(): void;
   close(): void;
   free(): void;
 }
@@ -25,11 +28,12 @@ type WorkerRequest =
   | { id: number; type: "open"; name?: string; backend?: string }
   | { id: number; type: "openInMemory" }
   | { id: number; type: "fromBuffer"; data: Uint8Array }
-  | { id: number; type: "exec"; sql: string }
-  | { id: number; type: "query"; sql: string }
-  | { id: number; type: "queryOne"; sql: string }
+  | { id: number; type: "exec"; sql: string; params?: SqlValue[] }
+  | { id: number; type: "query"; sql: string; params?: SqlValue[] }
+  | { id: number; type: "queryOne"; sql: string; params?: SqlValue[] }
   | { id: number; type: "execMany"; sql: string }
   | { id: number; type: "toBuffer" }
+  | { id: number; type: "flush" }
   | { id: number; type: "close" };
 
 type WorkerResponse =
@@ -76,17 +80,24 @@ async function handleMessage(msg: WorkerRequest): Promise<WorkerResponse> {
       }
       case "exec": {
         if (!db) throw new Error("Database not open");
-        const result = Number(db.exec(msg.sql));
+        const result = msg.params?.length
+          ? Number(db.execParams(msg.sql, msg.params))
+          : Number(db.exec(msg.sql));
         return { id: msg.id, ok: true, result };
       }
       case "query": {
         if (!db) throw new Error("Database not open");
-        const rows = db.query(msg.sql);
+        const rows = msg.params?.length
+          ? db.queryParams(msg.sql, msg.params)
+          : db.query(msg.sql);
         return { id: msg.id, ok: true, result: rows };
       }
       case "queryOne": {
         if (!db) throw new Error("Database not open");
-        const row = db.queryOne(msg.sql);
+        const allRows = msg.params?.length
+          ? db.queryParams(msg.sql, msg.params)
+          : db.query(msg.sql);
+        const row = (allRows as unknown[])[0] ?? null;
         return { id: msg.id, ok: true, result: row };
       }
       case "execMany": {
@@ -98,6 +109,11 @@ async function handleMessage(msg: WorkerRequest): Promise<WorkerResponse> {
         if (!db) throw new Error("Database not open");
         const buf = db.toBuffer();
         return { id: msg.id, ok: true, result: buf };
+      }
+      case "flush": {
+        if (!db) throw new Error("Database not open");
+        db.flush();
+        return { id: msg.id, ok: true };
       }
       case "close": {
         if (db) {

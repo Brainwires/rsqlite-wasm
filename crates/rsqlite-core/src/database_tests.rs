@@ -3049,6 +3049,52 @@
     }
 
     #[test]
+    fn insert_or_replace_text_pk() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)").unwrap();
+        db.execute("INSERT INTO settings VALUES ('theme', 'light')").unwrap();
+        db.execute("INSERT OR REPLACE INTO settings VALUES ('theme', 'dark')").unwrap();
+        let r = db.query("SELECT value FROM settings WHERE key = 'theme'").unwrap();
+        assert_eq!(r.rows.len(), 1);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("dark".into()));
+        let count = db.query("SELECT COUNT(*) FROM settings").unwrap();
+        assert_eq!(count.rows[0].values[0], crate::types::Value::Integer(1));
+    }
+
+    #[test]
+    fn replace_into_text_pk() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT)").unwrap();
+        db.execute("INSERT INTO kv VALUES ('a', 'one')").unwrap();
+        db.execute("INSERT INTO kv VALUES ('b', 'two')").unwrap();
+        db.execute("REPLACE INTO kv VALUES ('a', 'updated')").unwrap();
+        db.execute("REPLACE INTO kv VALUES ('c', 'three')").unwrap();
+        let r = db.query("SELECT k, v FROM kv ORDER BY k").unwrap();
+        assert_eq!(r.rows.len(), 3);
+        assert_eq!(r.rows[0].values[1], crate::types::Value::Text("updated".into()));
+        assert_eq!(r.rows[1].values[1], crate::types::Value::Text("two".into()));
+        assert_eq!(r.rows[2].values[1], crate::types::Value::Text("three".into()));
+    }
+
+    #[test]
+    fn insert_or_replace_text_pk_with_index() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE items (id TEXT PRIMARY KEY, name TEXT, score INTEGER)").unwrap();
+        db.execute("CREATE INDEX idx_score ON items(score)").unwrap();
+        db.execute("INSERT INTO items VALUES ('x1', 'alpha', 10)").unwrap();
+        db.execute("INSERT OR REPLACE INTO items VALUES ('x1', 'beta', 20)").unwrap();
+        let r = db.query("SELECT name, score FROM items WHERE id = 'x1'").unwrap();
+        assert_eq!(r.rows.len(), 1);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Text("beta".into()));
+        assert_eq!(r.rows[0].values[1], crate::types::Value::Integer(20));
+        let count = db.query("SELECT COUNT(*) FROM items").unwrap();
+        assert_eq!(count.rows[0].values[0], crate::types::Value::Integer(1));
+    }
+
+    #[test]
     fn printf_function() {
         let vfs = rsqlite_vfs::memory::MemoryVfs::new();
         let mut db = Database::create(&vfs, "test.db").unwrap();

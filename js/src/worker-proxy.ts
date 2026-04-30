@@ -1,4 +1,4 @@
-import type { Row, DatabaseOptions } from "./types.js";
+import type { SqlValue, Row, DatabaseOptions } from "./types.js";
 
 type WorkerResponse =
   | { id: number; ok: true; result?: unknown }
@@ -63,16 +63,16 @@ export class WorkerDatabase {
     return db;
   }
 
-  async exec(sql: string): Promise<number> {
-    return (await this.send({ type: "exec", sql })) as number;
+  async exec(sql: string, params?: SqlValue[]): Promise<number> {
+    return (await this.send({ type: "exec", sql, params })) as number;
   }
 
-  async query<T extends Row = Row>(sql: string): Promise<T[]> {
-    return (await this.send({ type: "query", sql })) as T[];
+  async query<T extends Row = Row>(sql: string, params?: SqlValue[]): Promise<T[]> {
+    return (await this.send({ type: "query", sql, params })) as T[];
   }
 
-  async queryOne<T extends Row = Row>(sql: string): Promise<T | null> {
-    return (await this.send({ type: "queryOne", sql })) as T | null;
+  async queryOne<T extends Row = Row>(sql: string, params?: SqlValue[]): Promise<T | null> {
+    return (await this.send({ type: "queryOne", sql, params })) as T | null;
   }
 
   async execMany(sql: string): Promise<void> {
@@ -81,6 +81,10 @@ export class WorkerDatabase {
 
   async toBuffer(): Promise<Uint8Array> {
     return (await this.send({ type: "toBuffer" })) as Uint8Array;
+  }
+
+  async flush(): Promise<void> {
+    await this.send({ type: "flush" });
   }
 
   async close(): Promise<void> {

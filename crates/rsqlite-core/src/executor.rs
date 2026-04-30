@@ -1117,6 +1117,31 @@ fn execute_insert(plan: &InsertPlan, pager: &mut Pager, catalog: &Catalog) -> Re
             }
             btree_delete(pager, current_root, rowid)
                 .map_err(|e| Error::Other(e.to_string()))?;
+        } else if plan.or_replace {
+            // The rowid is new (TEXT PK or no rowid alias), but a row
+            // with the same UNIQUE column value may already exist.
+            // Scan for conflicts and delete the existing row if found.
+            let conflict_rowid = find_unique_conflict_rowid(
+                &values,
+                &plan.table_columns,
+                pager,
+                current_root,
+            )?;
+            if let Some(existing_rowid) = conflict_rowid {
+                let old_values =
+                    read_row_by_rowid(pager, current_root, existing_rowid, &plan.table_columns)?;
+                for (idx_root, idx_col_indices) in &table_indexes {
+                    let old_key = build_index_key(
+                        &old_values,
+                        idx_col_indices,
+                        &plan.table_columns,
+                        existing_rowid,
+                    );
+                    let _ = btree_index_delete(pager, *idx_root, &old_key);
+                }
+                btree_delete(pager, current_root, existing_rowid)
+                    .map_err(|e| Error::Other(e.to_string()))?;
+            }
         } else if let Some(on_conflict) = &plan.on_conflict {
             if btree_row_exists(pager, current_root, rowid)? {
                 match on_conflict {
@@ -1423,6 +1448,42 @@ fn check_unique_constraints(
         }
     }
     Ok(())
+}
+
+fn find_unique_conflict_rowid(
+    values: &[Value],
+    columns: &[ColumnRef],
+    pager: &mut Pager,
+    root_page: u32,
+) -> Result<Option<i64>> {
+    let unique_cols: Vec<usize> = columns
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| (c.is_unique || c.is_primary_key) && !c.is_rowid_alias)
+        .map(|(i, _)| i)
+        .collect();
+
+    if unique_cols.is_empty() {
+        return Ok(None);
+    }
+
+    let mut cursor = BTreeCursor::new(pager, root_page);
+    let rows = cursor.collect_all().map_err(|e| Error::Other(e.to_string()))?;
+
+    for col_idx in &unique_cols {
+        let new_val = &values[*col_idx];
+        if matches!(new_val, Value::Null) {
+            continue;
+        }
+        for row in &rows {
+            if let Some(existing) = row.record.values.get(*col_idx) {
+                if compare(existing, new_val) == 0 {
+                    return Ok(Some(row.rowid));
+                }
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn check_foreign_key_insert(
