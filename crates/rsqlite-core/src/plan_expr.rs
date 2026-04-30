@@ -26,7 +26,7 @@ pub struct ProjectionItem {
     pub alias: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum AggFunc {
     Count,
     Sum,
@@ -35,6 +35,8 @@ pub enum AggFunc {
     Max,
     Total,
     GroupConcat { separator: Option<String> },
+    JsonGroupArray,
+    JsonGroupObject { key: Box<PlanExpr> },
 }
 
 #[derive(Debug, Clone)]
@@ -137,6 +139,8 @@ pub enum BinOp {
     ShiftRight,
     Is,
     IsNot,
+    JsonArrow,
+    JsonLongArrow,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -526,6 +530,53 @@ fn plan_function_expr(func: &ast::Function, columns: &[ColumnRef], catalog: &Cat
         });
     }
 
+    if name == "JSON_GROUP_ARRAY" {
+        let arg = match &func.args {
+            ast::FunctionArguments::List(list) => match list.args.first() {
+                Some(ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(e))) => {
+                    plan_expr(e, columns, catalog)?
+                }
+                _ => return Err(Error::Other(
+                    "json_group_array requires 1 argument".into(),
+                )),
+            },
+            _ => return Err(Error::Other(
+                "json_group_array requires 1 argument".into(),
+            )),
+        };
+        return Ok(PlanExpr::Aggregate {
+            func: AggFunc::JsonGroupArray,
+            arg: Box::new(arg),
+            distinct: false,
+        });
+    }
+
+    if name == "JSON_GROUP_OBJECT" {
+        let (key, value) = match &func.args {
+            ast::FunctionArguments::List(list) if list.args.len() == 2 => {
+                let parse_at = |idx: usize| -> Result<PlanExpr> {
+                    match &list.args[idx] {
+                        ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(e)) => {
+                            plan_expr(e, columns, catalog)
+                        }
+                        _ => Err(Error::Other(
+                            "json_group_object arguments must be expressions".into(),
+                        )),
+                    }
+                };
+                (parse_at(0)?, parse_at(1)?)
+            }
+            _ => return Err(Error::Other(
+                "json_group_object requires 2 arguments (key, value)".into(),
+            )),
+        };
+        return Ok(PlanExpr::Aggregate {
+            func: AggFunc::JsonGroupObject { key: Box::new(key) },
+            arg: Box::new(value),
+            distinct: false,
+        });
+    }
+
     let arg_count = match &func.args {
         ast::FunctionArguments::List(list) => list.args.len(),
         _ => 0,
@@ -689,6 +740,8 @@ fn plan_binop(op: &ast::BinaryOperator) -> Result<BinOp> {
         ast::BinaryOperator::BitwiseOr => Ok(BinOp::BitOr),
         ast::BinaryOperator::PGBitwiseShiftLeft => Ok(BinOp::ShiftLeft),
         ast::BinaryOperator::PGBitwiseShiftRight => Ok(BinOp::ShiftRight),
+        ast::BinaryOperator::Arrow => Ok(BinOp::JsonArrow),
+        ast::BinaryOperator::LongArrow => Ok(BinOp::JsonLongArrow),
         _ => Err(Error::Other(format!("unsupported operator: {op}"))),
     }
 }
@@ -961,6 +1014,8 @@ pub fn agg_column_name(func: &AggFunc, arg: &PlanExpr, distinct: bool) -> String
         AggFunc::Max => "MAX",
         AggFunc::Total => "TOTAL",
         AggFunc::GroupConcat { .. } => "GROUP_CONCAT",
+        AggFunc::JsonGroupArray => "json_group_array",
+        AggFunc::JsonGroupObject { .. } => "json_group_object",
     };
     let arg_str = match arg {
         PlanExpr::Wildcard => "*".to_string(),

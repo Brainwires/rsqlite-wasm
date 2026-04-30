@@ -819,6 +819,42 @@ pub(crate) fn eval_binop(op: BinOp, left: &Value, right: &Value) -> Result<Value
             let result = match op { BinOp::Is => eq, _ => !eq };
             Ok(Value::Integer(if result { 1 } else { 0 }))
         }
+        BinOp::JsonArrow | BinOp::JsonLongArrow => {
+            let json_text = value_to_text(left);
+            let parsed = match crate::json::parse_json(&json_text) {
+                Ok(v) => v,
+                Err(_) => return Ok(Value::Null),
+            };
+            let extracted = match right {
+                Value::Text(key) => match &parsed {
+                    crate::json::JsonValue::Object(obj) => {
+                        obj.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
+                    }
+                    _ => None,
+                },
+                Value::Integer(idx) => match &parsed {
+                    crate::json::JsonValue::Array(arr) => {
+                        let len = arr.len() as i64;
+                        let i = if *idx < 0 { len + *idx } else { *idx };
+                        if i >= 0 && i < len {
+                            Some(arr[i as usize].clone())
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
+            match extracted {
+                None => Ok(Value::Null),
+                Some(jv) => match op {
+                    BinOp::JsonArrow => Ok(Value::Text(jv.to_string_repr())),
+                    BinOp::JsonLongArrow => Ok(crate::json::json_value_to_sql(&jv)),
+                    _ => unreachable!(),
+                },
+            }
+        }
     }
 }
 

@@ -257,6 +257,37 @@ fn compute_aggregate(
                 Ok(Value::Text(parts.join(sep)))
             }
         }
+        AggFunc::JsonGroupArray => {
+            let mut elements: Vec<crate::json::JsonValue> = Vec::new();
+            for row in rows {
+                let val = super::eval::eval_expr(arg, row, columns, pager, catalog)?;
+                elements.push(value_to_json(&val));
+            }
+            Ok(Value::Text(crate::json::JsonValue::Array(elements).to_string_repr()))
+        }
+        AggFunc::JsonGroupObject { key } => {
+            let mut entries: Vec<(String, crate::json::JsonValue)> = Vec::new();
+            for row in rows {
+                let k = super::eval::eval_expr(key, row, columns, pager, catalog)?;
+                let v = super::eval::eval_expr(arg, row, columns, pager, catalog)?;
+                let key_text = value_to_text(&k);
+                entries.push((key_text, value_to_json(&v)));
+            }
+            Ok(Value::Text(crate::json::JsonValue::Object(entries).to_string_repr()))
+        }
+    }
+}
+
+/// Convert a SQL Value into a JsonValue for use in JSON aggregate output.
+/// Strings that already look like JSON are NOT re-parsed — they're embedded
+/// as JSON strings (matches SQLite's behavior; use json() to inject raw JSON).
+fn value_to_json(val: &Value) -> crate::json::JsonValue {
+    match val {
+        Value::Null => crate::json::JsonValue::Null,
+        Value::Integer(n) => crate::json::JsonValue::Number(*n as f64),
+        Value::Real(f) => crate::json::JsonValue::Number(*f),
+        Value::Text(s) => crate::json::JsonValue::String(s.clone()),
+        Value::Blob(_) => crate::json::JsonValue::Null,
     }
 }
 

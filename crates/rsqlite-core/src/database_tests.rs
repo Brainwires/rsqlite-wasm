@@ -5522,6 +5522,142 @@
     }
 
     #[test]
+    fn json_arrow_object_key() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db
+            .query(r#"SELECT '{"a":1,"b":"hello"}' -> 'b'"#)
+            .unwrap();
+        // -> returns JSON text (string with quotes preserved)
+        assert_eq!(
+            r.rows[0].values[0],
+            crate::types::Value::Text(r#""hello""#.to_string())
+        );
+    }
+
+    #[test]
+    fn json_long_arrow_object_key() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db
+            .query(r#"SELECT '{"a":1,"b":"hello"}' ->> 'b'"#)
+            .unwrap();
+        // ->> returns SQL scalar text (unwrapped)
+        assert_eq!(
+            r.rows[0].values[0],
+            crate::types::Value::Text("hello".to_string())
+        );
+    }
+
+    #[test]
+    fn json_long_arrow_returns_integer() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db
+            .query(r#"SELECT '{"n":42}' ->> 'n'"#)
+            .unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(42));
+    }
+
+    #[test]
+    fn json_arrow_array_index() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db
+            .query("SELECT '[10,20,30]' ->> 1")
+            .unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(20));
+    }
+
+    #[test]
+    fn json_arrow_missing_key_returns_null() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db
+            .query(r#"SELECT '{"a":1}' ->> 'nope'"#)
+            .unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Null);
+    }
+
+    #[test]
+    fn json_arrow_invalid_json_returns_null() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db
+            .query(r#"SELECT 'not json' ->> 'a'"#)
+            .unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Null);
+    }
+
+    #[test]
+    fn json_group_array_integers() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (n INTEGER)").unwrap();
+        db.execute("INSERT INTO t VALUES (1), (2), (3)").unwrap();
+        let r = db
+            .query("SELECT json_group_array(n) FROM t")
+            .unwrap();
+        assert_eq!(
+            r.rows[0].values[0],
+            crate::types::Value::Text("[1,2,3]".to_string())
+        );
+    }
+
+    #[test]
+    fn json_group_array_with_nulls() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (v TEXT)").unwrap();
+        db.execute("INSERT INTO t VALUES ('a'), (NULL), ('b')").unwrap();
+        let r = db
+            .query("SELECT json_group_array(v) FROM t")
+            .unwrap();
+        assert_eq!(
+            r.rows[0].values[0],
+            crate::types::Value::Text(r#"["a",null,"b"]"#.to_string())
+        );
+    }
+
+    #[test]
+    fn json_group_object_basic() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (k TEXT, v INTEGER)").unwrap();
+        db.execute("INSERT INTO t VALUES ('a', 1), ('b', 2)").unwrap();
+        let r = db
+            .query("SELECT json_group_object(k, v) FROM t")
+            .unwrap();
+        // Order of keys is insertion order
+        let text = match &r.rows[0].values[0] {
+            crate::types::Value::Text(s) => s.clone(),
+            _ => panic!("expected text"),
+        };
+        assert!(text.contains(r#""a":1"#));
+        assert!(text.contains(r#""b":2"#));
+    }
+
+    #[test]
+    fn json_group_array_with_group_by() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (cat TEXT, n INTEGER)").unwrap();
+        db.execute("INSERT INTO t VALUES ('a', 1), ('a', 2), ('b', 3)").unwrap();
+        let r = db
+            .query("SELECT cat, json_group_array(n) FROM t GROUP BY cat ORDER BY cat")
+            .unwrap();
+        assert_eq!(r.rows.len(), 2);
+        assert_eq!(
+            r.rows[0].values[1],
+            crate::types::Value::Text("[1,2]".to_string())
+        );
+        assert_eq!(
+            r.rows[1].values[1],
+            crate::types::Value::Text("[3]".to_string())
+        );
+    }
+
+    #[test]
     fn default_persists_across_reopen() {
         let db_path = "/tmp/rsqlite_db_default_persist.db";
         let _ = std::fs::remove_file(db_path);

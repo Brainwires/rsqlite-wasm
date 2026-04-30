@@ -295,7 +295,7 @@ fn parse_number(s: &str) -> Result<(JsonValue, &str)> {
     Ok((JsonValue::Number(n), &s[end..]))
 }
 
-fn json_value_to_sql(jv: &JsonValue) -> Value {
+pub(crate) fn json_value_to_sql(jv: &JsonValue) -> Value {
     match jv {
         JsonValue::Null => Value::Null,
         JsonValue::Bool(b) => Value::Integer(if *b { 1 } else { 0 }),
