@@ -76,7 +76,7 @@ impl Database {
             if name == "database_list" {
                 return Ok(self.pragma_database_list());
             }
-            return executor::execute_pragma(name, argument.as_deref(), &self.pager, &self.catalog);
+            return executor::execute_pragma(name, argument.as_deref(), &mut self.pager, &self.catalog);
         }
         executor::execute(&plan, &mut self.pager, &self.catalog)
     }
@@ -87,7 +87,7 @@ impl Database {
             if name == "database_list" {
                 return Ok(ExecResult { rows_affected: 0 });
             }
-            let _ = executor::execute_pragma(name, argument.as_deref(), &self.pager, &self.catalog)?;
+            let _ = executor::execute_pragma(name, argument.as_deref(), &mut self.pager, &self.catalog)?;
             return Ok(ExecResult { rows_affected: 0 });
         }
         if let Plan::AttachDatabase { ref schema_name, ref file_path } = plan {
@@ -164,7 +164,7 @@ impl Database {
             return Ok(SqlResult::Query(executor::execute_pragma(
                 name,
                 argument.as_deref(),
-                &self.pager,
+                &mut self.pager,
                 &self.catalog,
             )?));
         }

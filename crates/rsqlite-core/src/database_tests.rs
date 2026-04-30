@@ -5658,6 +5658,137 @@
     }
 
     #[test]
+    fn pragma_encoding() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db.query("PRAGMA encoding").unwrap();
+        assert_eq!(
+            r.rows[0].values[0],
+            crate::types::Value::Text("UTF-8".to_string())
+        );
+    }
+
+    #[test]
+    fn pragma_collation_list() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db.query("PRAGMA collation_list").unwrap();
+        assert_eq!(r.rows.len(), 3);
+        assert_eq!(
+            r.rows[0].values[1],
+            crate::types::Value::Text("BINARY".to_string())
+        );
+    }
+
+    #[test]
+    fn pragma_integrity_check_returns_ok() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db.query("PRAGMA integrity_check").unwrap();
+        assert_eq!(
+            r.rows[0].values[0],
+            crate::types::Value::Text("ok".to_string())
+        );
+    }
+
+    #[test]
+    fn pragma_quick_check_returns_ok() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db.query("PRAGMA quick_check").unwrap();
+        assert_eq!(
+            r.rows[0].values[0],
+            crate::types::Value::Text("ok".to_string())
+        );
+    }
+
+    #[test]
+    fn pragma_user_version_default_zero() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db.query("PRAGMA user_version").unwrap();
+        // Default user_version on a new DB is 0
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(0));
+    }
+
+    #[test]
+    fn pragma_application_id_default_zero() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db.query("PRAGMA application_id").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(0));
+    }
+
+    #[test]
+    fn pragma_table_xinfo_includes_default() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT DEFAULT 'active')",
+        )
+        .unwrap();
+        let r = db.query("PRAGMA table_xinfo(t)").unwrap();
+        assert_eq!(r.columns.len(), 7);
+        assert!(r.columns.contains(&"hidden".to_string()));
+        // Find the status row by name
+        let status_row = r
+            .rows
+            .iter()
+            .find(|row| matches!(&row.values[1], crate::types::Value::Text(s) if s == "status"))
+            .unwrap();
+        // Default expression preserved (non-null)
+        assert!(!matches!(status_row.values[4], crate::types::Value::Null));
+        // hidden = 0 for ordinary columns
+        assert_eq!(status_row.values[6], crate::types::Value::Integer(0));
+    }
+
+    #[test]
+    fn pragma_foreign_key_list_returns_fks() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY)").unwrap();
+        db.execute(
+            "CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parent(id))",
+        )
+        .unwrap();
+        let r = db.query("PRAGMA foreign_key_list(child)").unwrap();
+        assert_eq!(r.rows.len(), 1);
+        assert_eq!(
+            r.rows[0].values[2],
+            crate::types::Value::Text("parent".to_string())
+        );
+        assert_eq!(
+            r.rows[0].values[3],
+            crate::types::Value::Text("parent_id".to_string())
+        );
+    }
+
+    #[test]
+    fn pragma_foreign_key_check_empty_for_clean_db() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)").unwrap();
+        let r = db.query("PRAGMA foreign_key_check").unwrap();
+        assert_eq!(r.rows.len(), 0);
+    }
+
+    #[test]
+    fn pragma_auto_vacuum_returns_zero() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db.query("PRAGMA auto_vacuum").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(0));
+    }
+
+    #[test]
+    fn pragma_compile_options_empty() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db.query("PRAGMA compile_options").unwrap();
+        assert_eq!(r.rows.len(), 0);
+    }
+
+    #[test]
     fn default_persists_across_reopen() {
         let db_path = "/tmp/rsqlite_db_default_persist.db";
         let _ = std::fs::remove_file(db_path);
