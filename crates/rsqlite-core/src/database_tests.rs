@@ -5394,6 +5394,134 @@
     }
 
     #[test]
+    fn join_using_single_column() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE a (id INTEGER, label TEXT)").unwrap();
+        db.execute("CREATE TABLE b (id INTEGER, descr TEXT)").unwrap();
+        db.execute("INSERT INTO a VALUES (1, 'A1'), (2, 'A2'), (3, 'A3')").unwrap();
+        db.execute("INSERT INTO b VALUES (2, 'B2'), (3, 'B3'), (4, 'B4')").unwrap();
+
+        let result = db
+            .query("SELECT a.label, b.descr FROM a JOIN b USING (id) ORDER BY a.id")
+            .unwrap();
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(
+            result.rows[0].values[0],
+            crate::types::Value::Text("A2".to_string())
+        );
+        assert_eq!(
+            result.rows[0].values[1],
+            crate::types::Value::Text("B2".to_string())
+        );
+        assert_eq!(
+            result.rows[1].values[0],
+            crate::types::Value::Text("A3".to_string())
+        );
+    }
+
+    #[test]
+    fn join_using_multi_column() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE a (k1 INTEGER, k2 INTEGER, v TEXT)").unwrap();
+        db.execute("CREATE TABLE b (k1 INTEGER, k2 INTEGER, w TEXT)").unwrap();
+        db.execute("INSERT INTO a VALUES (1, 10, 'a'), (1, 20, 'b'), (2, 10, 'c')").unwrap();
+        db.execute("INSERT INTO b VALUES (1, 10, 'X'), (1, 99, 'Y'), (2, 10, 'Z')").unwrap();
+
+        let result = db
+            .query("SELECT a.v, b.w FROM a JOIN b USING (k1, k2) ORDER BY a.v")
+            .unwrap();
+        // Matches: (1,10) -> a='a', b='X'; (2,10) -> a='c', b='Z'
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(
+            result.rows[0].values[0],
+            crate::types::Value::Text("a".to_string())
+        );
+        assert_eq!(
+            result.rows[0].values[1],
+            crate::types::Value::Text("X".to_string())
+        );
+    }
+
+    #[test]
+    fn natural_join_basic() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE users (uid INTEGER, name TEXT)").unwrap();
+        db.execute("CREATE TABLE posts (uid INTEGER, title TEXT)").unwrap();
+        db.execute("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')").unwrap();
+        db.execute("INSERT INTO posts VALUES (1, 'Hello'), (2, 'World'), (3, 'Stale')").unwrap();
+
+        let result = db
+            .query("SELECT users.name, posts.title FROM users NATURAL JOIN posts ORDER BY users.uid")
+            .unwrap();
+        // Joins on shared column "uid". 2 matches.
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(
+            result.rows[0].values[0],
+            crate::types::Value::Text("Alice".to_string())
+        );
+    }
+
+    #[test]
+    fn natural_join_no_shared_columns_is_cross() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE a (x INTEGER)").unwrap();
+        db.execute("CREATE TABLE b (y INTEGER)").unwrap();
+        db.execute("INSERT INTO a VALUES (1), (2)").unwrap();
+        db.execute("INSERT INTO b VALUES (10), (20)").unwrap();
+
+        let result = db
+            .query("SELECT a.x, b.y FROM a NATURAL JOIN b")
+            .unwrap();
+        // No shared columns -> condition is None -> cartesian product (2*2 = 4)
+        assert_eq!(result.rows.len(), 4);
+    }
+
+    #[test]
+    fn natural_left_join_keeps_unmatched_left() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE users (uid INTEGER, name TEXT)").unwrap();
+        db.execute("CREATE TABLE posts (uid INTEGER, title TEXT)").unwrap();
+        db.execute("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Carol')").unwrap();
+        db.execute("INSERT INTO posts VALUES (1, 'Hello')").unwrap();
+
+        let result = db
+            .query(
+                "SELECT users.name, posts.title FROM users NATURAL LEFT JOIN posts ORDER BY users.uid",
+            )
+            .unwrap();
+        assert_eq!(result.rows.len(), 3);
+        assert_eq!(
+            result.rows[0].values[1],
+            crate::types::Value::Text("Hello".to_string())
+        );
+        assert_eq!(result.rows[1].values[1], crate::types::Value::Null);
+        assert_eq!(result.rows[2].values[1], crate::types::Value::Null);
+    }
+
+    #[test]
+    fn join_using_with_left_outer() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE a (id INTEGER, label TEXT)").unwrap();
+        db.execute("CREATE TABLE b (id INTEGER, val INTEGER)").unwrap();
+        db.execute("INSERT INTO a VALUES (1, 'one'), (2, 'two'), (3, 'three')").unwrap();
+        db.execute("INSERT INTO b VALUES (2, 200)").unwrap();
+
+        let result = db
+            .query("SELECT a.label, b.val FROM a LEFT JOIN b USING (id) ORDER BY a.id")
+            .unwrap();
+        assert_eq!(result.rows.len(), 3);
+        assert_eq!(result.rows[0].values[1], crate::types::Value::Null);
+        assert_eq!(result.rows[1].values[1], crate::types::Value::Integer(200));
+        assert_eq!(result.rows[2].values[1], crate::types::Value::Null);
+    }
+
+    #[test]
     fn default_persists_across_reopen() {
         let db_path = "/tmp/rsqlite_db_default_persist.db";
         let _ = std::fs::remove_file(db_path);

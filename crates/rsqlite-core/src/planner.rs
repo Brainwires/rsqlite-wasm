@@ -856,24 +856,25 @@ fn plan_select_body(
 
     for join in &from.joins {
         let (right_plan, right_columns) = resolve_table_factor(&join.relation, catalog, ctes)?;
+        let left_len = all_columns.len();
         let combined_columns: Vec<ColumnRef> =
             all_columns.iter().chain(right_columns.iter()).cloned().collect();
 
         let (join_type, condition) = match &join.join_operator {
             ast::JoinOperator::Inner(constraint) | ast::JoinOperator::Join(constraint) => {
-                let cond = plan_join_constraint(constraint, &combined_columns, catalog)?;
+                let cond = plan_join_constraint_with_split(constraint, &combined_columns, left_len, catalog)?;
                 (JoinType::Inner, cond)
             }
             ast::JoinOperator::Left(constraint) | ast::JoinOperator::LeftOuter(constraint) => {
-                let cond = plan_join_constraint(constraint, &combined_columns, catalog)?;
+                let cond = plan_join_constraint_with_split(constraint, &combined_columns, left_len, catalog)?;
                 (JoinType::Left, cond)
             }
             ast::JoinOperator::Right(constraint) | ast::JoinOperator::RightOuter(constraint) => {
-                let cond = plan_join_constraint(constraint, &combined_columns, catalog)?;
+                let cond = plan_join_constraint_with_split(constraint, &combined_columns, left_len, catalog)?;
                 (JoinType::Right, cond)
             }
             ast::JoinOperator::FullOuter(constraint) => {
-                let cond = plan_join_constraint(constraint, &combined_columns, catalog)?;
+                let cond = plan_join_constraint_with_split(constraint, &combined_columns, left_len, catalog)?;
                 (JoinType::Full, cond)
             }
             ast::JoinOperator::CrossJoin => (JoinType::Cross, None),
@@ -908,24 +909,25 @@ fn plan_select_body(
 
         for join in &extra_from.joins {
             let (right_plan, right_cols) = resolve_table_factor(&join.relation, catalog, ctes)?;
+            let left_len = all_columns.len();
             let combined: Vec<ColumnRef> =
                 all_columns.iter().chain(right_cols.iter()).cloned().collect();
 
             let (join_type, condition) = match &join.join_operator {
                 ast::JoinOperator::Inner(c) | ast::JoinOperator::Join(c) => {
-                    let cond = plan_join_constraint(c, &combined, catalog)?;
+                    let cond = plan_join_constraint_with_split(c, &combined, left_len, catalog)?;
                     (JoinType::Inner, cond)
                 }
                 ast::JoinOperator::Left(c) | ast::JoinOperator::LeftOuter(c) => {
-                    let cond = plan_join_constraint(c, &combined, catalog)?;
+                    let cond = plan_join_constraint_with_split(c, &combined, left_len, catalog)?;
                     (JoinType::Left, cond)
                 }
                 ast::JoinOperator::Right(c) | ast::JoinOperator::RightOuter(c) => {
-                    let cond = plan_join_constraint(c, &combined, catalog)?;
+                    let cond = plan_join_constraint_with_split(c, &combined, left_len, catalog)?;
                     (JoinType::Right, cond)
                 }
                 ast::JoinOperator::FullOuter(c) => {
-                    let cond = plan_join_constraint(c, &combined, catalog)?;
+                    let cond = plan_join_constraint_with_split(c, &combined, left_len, catalog)?;
                     (JoinType::Full, cond)
                 }
                 ast::JoinOperator::CrossJoin => (JoinType::Cross, None),
@@ -1090,9 +1092,22 @@ fn plan_select_body(
     Ok((plan, all_columns, output_names))
 }
 
-fn plan_join_constraint(
+/// Plan a join constraint. `left_len` is the number of columns from the
+/// left input — required so USING/NATURAL can find columns on each side
+/// independently. The legacy `On` and `None` arms ignore it.
+fn plan_join_constraint_with_split(
     constraint: &ast::JoinConstraint,
     columns: &[ColumnRef],
+    left_len: usize,
+    catalog: &Catalog,
+) -> Result<Option<PlanExpr>> {
+    plan_join_constraint_inner(constraint, columns, left_len, catalog)
+}
+
+fn plan_join_constraint_inner(
+    constraint: &ast::JoinConstraint,
+    columns: &[ColumnRef],
+    left_len: usize,
     catalog: &Catalog,
 ) -> Result<Option<PlanExpr>> {
     match constraint {
@@ -1100,11 +1115,95 @@ fn plan_join_constraint(
             let planned = plan_expr(expr, columns, catalog)?;
             Ok(Some(planned))
         }
-        ast::JoinConstraint::None | ast::JoinConstraint::Natural => Ok(None),
-        ast::JoinConstraint::Using(_) => Err(Error::Other(
-            "USING clause not yet supported".to_string(),
-        )),
+        ast::JoinConstraint::None => Ok(None),
+        ast::JoinConstraint::Using(names) => {
+            let left_cols = &columns[..left_len];
+            let right_cols = &columns[left_len..];
+            build_using_condition(names, left_cols, right_cols, left_len)
+        }
+        ast::JoinConstraint::Natural => {
+            let left_cols = &columns[..left_len];
+            let right_cols = &columns[left_len..];
+            build_natural_condition(left_cols, right_cols, left_len)
+        }
     }
+}
+
+fn build_using_condition(
+    names: &[ast::ObjectName],
+    left_cols: &[ColumnRef],
+    right_cols: &[ColumnRef],
+    right_offset: usize,
+) -> Result<Option<PlanExpr>> {
+    let mut conjuncts: Vec<PlanExpr> = Vec::new();
+    for name_obj in names {
+        let name = name_obj.to_string();
+        let left = left_cols
+            .iter()
+            .enumerate()
+            .find(|(_, c)| c.name.eq_ignore_ascii_case(&name))
+            .ok_or_else(|| {
+                Error::Other(format!("USING column not found on left: {name}"))
+            })?;
+        let right = right_cols
+            .iter()
+            .enumerate()
+            .find(|(_, c)| c.name.eq_ignore_ascii_case(&name))
+            .ok_or_else(|| {
+                Error::Other(format!("USING column not found on right: {name}"))
+            })?;
+        let mut left_ref = left.1.clone();
+        left_ref.column_index = left.0;
+        let mut right_ref = right.1.clone();
+        right_ref.column_index = right_offset + right.0;
+        conjuncts.push(PlanExpr::BinaryOp {
+            left: Box::new(PlanExpr::Column(left_ref)),
+            op: BinOp::Eq,
+            right: Box::new(PlanExpr::Column(right_ref)),
+        });
+    }
+    Ok(combine_and(conjuncts))
+}
+
+fn build_natural_condition(
+    left_cols: &[ColumnRef],
+    right_cols: &[ColumnRef],
+    right_offset: usize,
+) -> Result<Option<PlanExpr>> {
+    let mut conjuncts: Vec<PlanExpr> = Vec::new();
+    for (li, lc) in left_cols.iter().enumerate() {
+        if let Some((ri, rc)) = right_cols
+            .iter()
+            .enumerate()
+            .find(|(_, c)| c.name.eq_ignore_ascii_case(&lc.name))
+        {
+            let mut left_ref = lc.clone();
+            left_ref.column_index = li;
+            let mut right_ref = rc.clone();
+            right_ref.column_index = right_offset + ri;
+            conjuncts.push(PlanExpr::BinaryOp {
+                left: Box::new(PlanExpr::Column(left_ref)),
+                op: BinOp::Eq,
+                right: Box::new(PlanExpr::Column(right_ref)),
+            });
+        }
+    }
+    Ok(combine_and(conjuncts))
+}
+
+fn combine_and(mut conjuncts: Vec<PlanExpr>) -> Option<PlanExpr> {
+    if conjuncts.is_empty() {
+        return None;
+    }
+    let mut acc = conjuncts.remove(0);
+    for c in conjuncts {
+        acc = PlanExpr::BinaryOp {
+            left: Box::new(acc),
+            op: BinOp::And,
+            right: Box::new(c),
+        };
+    }
+    Some(acc)
 }
 
 fn plan_create_table(ct: &ast::CreateTable, catalog: &Catalog) -> Result<Plan> {
