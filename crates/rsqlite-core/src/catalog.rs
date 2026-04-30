@@ -49,6 +49,7 @@ pub struct ColumnDef {
     pub is_unique: bool,
     pub autoincrement: bool,
     pub column_index: usize,
+    pub default_expr: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -285,6 +286,14 @@ fn parse_table_def(entry: &SchemaEntry) -> Result<Option<TableDef>> {
                 }
             });
 
+            let default_expr = col.options.iter().find_map(|opt| {
+                if let ColumnOption::Default(expr) = &opt.option {
+                    Some(expr.to_string())
+                } else {
+                    None
+                }
+            });
+
             columns.push(ColumnDef {
                 name: col.name.value.clone(),
                 type_name: type_name.clone(),
@@ -295,6 +304,7 @@ fn parse_table_def(entry: &SchemaEntry) -> Result<Option<TableDef>> {
                 is_unique,
                 autoincrement,
                 column_index: i,
+                default_expr,
             });
         }
 

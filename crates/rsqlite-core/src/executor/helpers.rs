@@ -34,9 +34,10 @@ pub(super) fn map_query_row_to_insert(
     query_values: &[Value],
     table_columns: &[ColumnRef],
     target_columns: &Option<Vec<String>>,
-) -> Result<Vec<Value>> {
+) -> Result<(Vec<Value>, Vec<bool>)> {
     let num_table_cols = table_columns.len();
     let mut values = vec![Value::Null; num_table_cols];
+    let mut explicitly_set = vec![false; num_table_cols];
 
     if let Some(targets) = target_columns {
         for (i, col_name) in targets.iter().enumerate() {
@@ -45,16 +46,18 @@ pub(super) fn map_query_row_to_insert(
                 .position(|c| c.name.eq_ignore_ascii_case(col_name))
                 .ok_or_else(|| Error::Other(format!("unknown column: {col_name}")))?;
             values[idx] = query_values.get(i).cloned().unwrap_or(Value::Null);
+            explicitly_set[idx] = true;
         }
     } else {
         for (i, val) in query_values.iter().enumerate() {
             if i < num_table_cols {
                 values[i] = val.clone();
+                explicitly_set[i] = true;
             }
         }
     }
 
-    Ok(values)
+    Ok((values, explicitly_set))
 }
 
 pub(super) fn read_row_by_rowid(
@@ -171,23 +174,25 @@ pub(super) fn eval_insert_row(
     row_exprs: &[PlanExpr],
     table_columns: &[ColumnRef],
     target_columns: &Option<Vec<String>>,
-) -> Result<Vec<Value>> {
+) -> Result<(Vec<Value>, Vec<bool>)> {
     match target_columns {
         None => {
             let mut values = Vec::with_capacity(table_columns.len());
-            for (i, col) in table_columns.iter().enumerate() {
+            let mut explicitly_set = Vec::with_capacity(table_columns.len());
+            for (i, _col) in table_columns.iter().enumerate() {
                 if i < row_exprs.len() {
                     values.push(eval_literal(&row_exprs[i])?);
-                } else if col.is_rowid_alias {
-                    values.push(Value::Null);
+                    explicitly_set.push(true);
                 } else {
                     values.push(Value::Null);
+                    explicitly_set.push(false);
                 }
             }
-            Ok(values)
+            Ok((values, explicitly_set))
         }
         Some(target_cols) => {
             let mut values = vec![Value::Null; table_columns.len()];
+            let mut explicitly_set = vec![false; table_columns.len()];
             for (i, target_name) in target_cols.iter().enumerate() {
                 let col_idx = table_columns
                     .iter()
@@ -197,11 +202,82 @@ pub(super) fn eval_insert_row(
                     })?;
                 if i < row_exprs.len() {
                     values[col_idx] = eval_literal(&row_exprs[i])?;
+                    explicitly_set[col_idx] = true;
                 }
             }
-            Ok(values)
+            Ok((values, explicitly_set))
         }
     }
+}
+
+pub(super) fn apply_column_defaults(
+    values: &mut [Value],
+    explicitly_set: &[bool],
+    table_name: &str,
+    table_columns: &[ColumnRef],
+    pager: &mut Pager,
+    catalog: &Catalog,
+) -> Result<()> {
+    let table_def = match catalog.get_table(table_name) {
+        Some(td) => td,
+        None => return Ok(()),
+    };
+
+    let col_names: Vec<String> = table_columns.iter().map(|c| c.name.clone()).collect();
+    let placeholder_row = crate::types::Row { values: values.to_vec() };
+
+    for (i, col) in table_columns.iter().enumerate() {
+        if explicitly_set[i] {
+            continue;
+        }
+        let cat_col = match table_def
+            .columns
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(&col.name))
+        {
+            Some(c) => c,
+            None => continue,
+        };
+        let default_sql = match &cat_col.default_expr {
+            Some(s) => s,
+            None => continue,
+        };
+
+        let parsed = match rsqlite_parser::parse::parse_sql(&format!("SELECT {default_sql}")) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let expr_ast = parsed.into_iter().next().and_then(|stmt| {
+            if let sqlparser::ast::Statement::Query(q) = stmt {
+                if let sqlparser::ast::SetExpr::Select(sel) = *q.body {
+                    sel.projection.into_iter().next().and_then(|item| {
+                        if let sqlparser::ast::SelectItem::UnnamedExpr(e) = item {
+                            Some(e)
+                        } else {
+                            None
+                        }
+                    })
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        });
+        let expr_ast = match expr_ast {
+            Some(e) => e,
+            None => continue,
+        };
+        let plan_expr = match crate::planner::plan_expr(&expr_ast, table_columns, catalog) {
+            Ok(pe) => pe,
+            Err(_) => continue,
+        };
+        match super::eval::eval_expr(&plan_expr, &placeholder_row, &col_names, pager, catalog) {
+            Ok(v) => values[i] = v,
+            Err(_) => continue,
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn eval_literal(expr: &PlanExpr) -> Result<Value> {

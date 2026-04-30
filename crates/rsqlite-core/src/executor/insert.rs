@@ -17,8 +17,8 @@ use super::constraints::{
 };
 use super::eval::eval_expr;
 use super::helpers::{
-    build_index_key, eval_insert_row, get_table_indexes, map_query_row_to_insert,
-    read_row_by_rowid,
+    apply_column_defaults, build_index_key, eval_insert_row, get_table_indexes,
+    map_query_row_to_insert, read_row_by_rowid,
 };
 use super::state::{set_changes, set_last_insert_rowid};
 use super::trigger::fire_triggers;
@@ -36,10 +36,18 @@ pub(super) fn execute_insert(plan: &InsertPlan, pager: &mut Pager, catalog: &Cat
     if let Some(source) = &plan.source_query {
         let query_result = super::execute(source, pager, catalog)?;
         for row in &query_result.rows {
-            let values = map_query_row_to_insert(
+            let (mut values, explicitly_set) = map_query_row_to_insert(
                 &row.values,
                 &plan.table_columns,
                 &plan.target_columns,
+            )?;
+            apply_column_defaults(
+                &mut values,
+                &explicitly_set,
+                &plan.table_name,
+                &plan.table_columns,
+                pager,
+                catalog,
             )?;
 
             let mut rowid = None;
@@ -86,7 +94,16 @@ pub(super) fn execute_insert(plan: &InsertPlan, pager: &mut Pager, catalog: &Cat
 
     let mut last_rowid = 0i64;
     for row_exprs in &plan.rows {
-        let values = eval_insert_row(row_exprs, &plan.table_columns, &plan.target_columns)?;
+        let (mut values, explicitly_set) =
+            eval_insert_row(row_exprs, &plan.table_columns, &plan.target_columns)?;
+        apply_column_defaults(
+            &mut values,
+            &explicitly_set,
+            &plan.table_name,
+            &plan.table_columns,
+            pager,
+            catalog,
+        )?;
 
         let mut rowid = None;
         for (i, col) in plan.table_columns.iter().enumerate() {

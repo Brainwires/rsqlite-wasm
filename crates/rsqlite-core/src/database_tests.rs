@@ -4847,3 +4847,174 @@
         db.execute("ATTACH DATABASE 'other.db' AS aux").unwrap();
         assert!(db.execute("ATTACH DATABASE 'other.db' AS aux").is_err());
     }
+
+    #[test]
+    fn default_text_literal() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute(
+            "CREATE TABLE accounts (id INTEGER PRIMARY KEY, name TEXT, status TEXT DEFAULT 'active')",
+        )
+        .unwrap();
+        db.execute("INSERT INTO accounts (id, name) VALUES (1, 'Alice')").unwrap();
+
+        let result = db.query("SELECT status FROM accounts WHERE id = 1").unwrap();
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].values[0],
+            crate::types::Value::Text("active".to_string())
+        );
+    }
+
+    #[test]
+    fn default_integer_literal() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute(
+            "CREATE TABLE counters (id INTEGER PRIMARY KEY, value INTEGER DEFAULT 42)",
+        )
+        .unwrap();
+        db.execute("INSERT INTO counters (id) VALUES (1)").unwrap();
+
+        let result = db.query("SELECT value FROM counters WHERE id = 1").unwrap();
+        assert_eq!(result.rows[0].values[0], crate::types::Value::Integer(42));
+    }
+
+    #[test]
+    fn default_negative_integer_literal() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute(
+            "CREATE TABLE balance (id INTEGER PRIMARY KEY, owed INTEGER DEFAULT -10)",
+        )
+        .unwrap();
+        db.execute("INSERT INTO balance (id) VALUES (1)").unwrap();
+
+        let result = db.query("SELECT owed FROM balance WHERE id = 1").unwrap();
+        assert_eq!(result.rows[0].values[0], crate::types::Value::Integer(-10));
+    }
+
+    #[test]
+    fn default_real_literal() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute(
+            "CREATE TABLE rates (id INTEGER PRIMARY KEY, rate REAL DEFAULT 1.5)",
+        )
+        .unwrap();
+        db.execute("INSERT INTO rates (id) VALUES (1)").unwrap();
+
+        let result = db.query("SELECT rate FROM rates WHERE id = 1").unwrap();
+        assert_eq!(result.rows[0].values[0], crate::types::Value::Real(1.5));
+    }
+
+    #[test]
+    fn default_overridden_by_explicit_value() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute(
+            "CREATE TABLE accounts (id INTEGER PRIMARY KEY, status TEXT DEFAULT 'active')",
+        )
+        .unwrap();
+        db.execute("INSERT INTO accounts (id, status) VALUES (1, 'banned')").unwrap();
+
+        let result = db.query("SELECT status FROM accounts WHERE id = 1").unwrap();
+        assert_eq!(
+            result.rows[0].values[0],
+            crate::types::Value::Text("banned".to_string())
+        );
+    }
+
+    #[test]
+    fn default_explicit_null_not_replaced() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute(
+            "CREATE TABLE accounts (id INTEGER PRIMARY KEY, status TEXT DEFAULT 'active')",
+        )
+        .unwrap();
+        db.execute("INSERT INTO accounts (id, status) VALUES (1, NULL)").unwrap();
+
+        let result = db.query("SELECT status FROM accounts WHERE id = 1").unwrap();
+        assert_eq!(result.rows[0].values[0], crate::types::Value::Null);
+    }
+
+    #[test]
+    fn default_with_insert_select_partial_columns() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE source (n INTEGER, label TEXT)").unwrap();
+        db.execute("INSERT INTO source VALUES (1, 'one'), (2, 'two')").unwrap();
+        db.execute(
+            "CREATE TABLE target (id INTEGER PRIMARY KEY, label TEXT, status TEXT DEFAULT 'pending')",
+        )
+        .unwrap();
+        db.execute("INSERT INTO target (id, label) SELECT n, label FROM source").unwrap();
+
+        let result = db
+            .query("SELECT id, status FROM target ORDER BY id")
+            .unwrap();
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(
+            result.rows[0].values[1],
+            crate::types::Value::Text("pending".to_string())
+        );
+        assert_eq!(
+            result.rows[1].values[1],
+            crate::types::Value::Text("pending".to_string())
+        );
+    }
+
+    #[test]
+    fn default_null_when_no_default_and_omitted() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE plain (id INTEGER PRIMARY KEY, note TEXT)").unwrap();
+        db.execute("INSERT INTO plain (id) VALUES (1)").unwrap();
+
+        let result = db.query("SELECT note FROM plain WHERE id = 1").unwrap();
+        assert_eq!(result.rows[0].values[0], crate::types::Value::Null);
+    }
+
+    #[test]
+    fn default_with_not_null_constraint_satisfied() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute(
+            "CREATE TABLE jobs (id INTEGER PRIMARY KEY, status TEXT NOT NULL DEFAULT 'queued')",
+        )
+        .unwrap();
+        // INSERT omits status — NOT NULL would fail without DEFAULT, but should succeed with one.
+        db.execute("INSERT INTO jobs (id) VALUES (1)").unwrap();
+
+        let result = db.query("SELECT status FROM jobs WHERE id = 1").unwrap();
+        assert_eq!(
+            result.rows[0].values[0],
+            crate::types::Value::Text("queued".to_string())
+        );
+    }
+
+    #[test]
+    fn default_persists_across_reopen() {
+        let db_path = "/tmp/rsqlite_db_default_persist.db";
+        let _ = std::fs::remove_file(db_path);
+        let vfs = rsqlite_vfs::native::NativeVfs::new();
+        {
+            let mut db = Database::create(&vfs, db_path).unwrap();
+            db.execute(
+                "CREATE TABLE accounts (id INTEGER PRIMARY KEY, status TEXT DEFAULT 'active')",
+            )
+            .unwrap();
+        }
+        // Reopen — default_expr must be parsed back from stored schema SQL.
+        {
+            let mut db = Database::open(&vfs, db_path).unwrap();
+            db.execute("INSERT INTO accounts (id) VALUES (1)").unwrap();
+            let result = db.query("SELECT status FROM accounts WHERE id = 1").unwrap();
+            assert_eq!(
+                result.rows[0].values[0],
+                crate::types::Value::Text("active".to_string())
+            );
+        }
+        let _ = std::fs::remove_file(db_path);
+    }
