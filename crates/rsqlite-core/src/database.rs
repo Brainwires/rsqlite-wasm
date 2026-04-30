@@ -346,6 +346,8 @@ fn describe_plan_recursive(
             let jt = match join_type {
                 planner::JoinType::Inner => "INNER",
                 planner::JoinType::Left => "LEFT",
+                planner::JoinType::Right => "RIGHT",
+                planner::JoinType::Full => "FULL OUTER",
                 planner::JoinType::Cross => "CROSS",
             };
             rows.push(Row { values: vec![

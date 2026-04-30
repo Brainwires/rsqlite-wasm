@@ -5270,6 +5270,130 @@
     }
 
     #[test]
+    fn right_join_basic() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE a (id INTEGER, name TEXT)").unwrap();
+        db.execute("CREATE TABLE b (id INTEGER, label TEXT)").unwrap();
+        db.execute("INSERT INTO a VALUES (1, 'one'), (2, 'two')").unwrap();
+        db.execute("INSERT INTO b VALUES (2, 'B'), (3, 'C')").unwrap();
+
+        let result = db
+            .query("SELECT a.name, b.label FROM a RIGHT JOIN b ON a.id = b.id ORDER BY b.id")
+            .unwrap();
+        // Right has 2 rows; only b.id=2 matches a; b.id=3 has no match -> NULL on left.
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(
+            result.rows[0].values[0],
+            crate::types::Value::Text("two".to_string())
+        );
+        assert_eq!(
+            result.rows[0].values[1],
+            crate::types::Value::Text("B".to_string())
+        );
+        assert_eq!(result.rows[1].values[0], crate::types::Value::Null);
+        assert_eq!(
+            result.rows[1].values[1],
+            crate::types::Value::Text("C".to_string())
+        );
+    }
+
+    #[test]
+    fn right_outer_join_alias() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE a (id INTEGER)").unwrap();
+        db.execute("CREATE TABLE b (id INTEGER)").unwrap();
+        db.execute("INSERT INTO a VALUES (1)").unwrap();
+        db.execute("INSERT INTO b VALUES (1), (2)").unwrap();
+
+        let result = db
+            .query("SELECT a.id, b.id FROM a RIGHT OUTER JOIN b ON a.id = b.id ORDER BY b.id")
+            .unwrap();
+        assert_eq!(result.rows.len(), 2);
+    }
+
+    #[test]
+    fn full_outer_join_basic() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE a (id INTEGER, name TEXT)").unwrap();
+        db.execute("CREATE TABLE b (id INTEGER, label TEXT)").unwrap();
+        db.execute("INSERT INTO a VALUES (1, 'A'), (2, 'B')").unwrap();
+        db.execute("INSERT INTO b VALUES (2, 'X'), (3, 'Y')").unwrap();
+
+        let result = db
+            .query("SELECT a.id, b.id FROM a FULL OUTER JOIN b ON a.id = b.id")
+            .unwrap();
+        // Combinations: (1,NULL), (2,2), (NULL,3)
+        assert_eq!(result.rows.len(), 3);
+
+        // Order can vary; collect into a sortable representation.
+        let mut tuples: Vec<(Option<i64>, Option<i64>)> = result
+            .rows
+            .iter()
+            .map(|r| {
+                let to_int = |v: &crate::types::Value| match v {
+                    crate::types::Value::Integer(n) => Some(*n),
+                    _ => None,
+                };
+                (to_int(&r.values[0]), to_int(&r.values[1]))
+            })
+            .collect();
+        tuples.sort();
+        assert_eq!(tuples, vec![(None, Some(3)), (Some(1), None), (Some(2), Some(2))]);
+    }
+
+    #[test]
+    fn full_join_with_no_overlap() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE a (id INTEGER)").unwrap();
+        db.execute("CREATE TABLE b (id INTEGER)").unwrap();
+        db.execute("INSERT INTO a VALUES (1), (2)").unwrap();
+        db.execute("INSERT INTO b VALUES (3), (4)").unwrap();
+
+        let result = db
+            .query("SELECT a.id, b.id FROM a FULL OUTER JOIN b ON a.id = b.id")
+            .unwrap();
+        // 2 unmatched left + 2 unmatched right = 4 rows
+        assert_eq!(result.rows.len(), 4);
+    }
+
+    #[test]
+    fn right_join_with_null_keys() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE a (id INTEGER)").unwrap();
+        db.execute("CREATE TABLE b (id INTEGER)").unwrap();
+        db.execute("INSERT INTO a VALUES (NULL), (1)").unwrap();
+        db.execute("INSERT INTO b VALUES (NULL), (1)").unwrap();
+
+        // NULL never equals NULL in standard ON predicates, so NULL keys never match.
+        let result = db
+            .query("SELECT a.id, b.id FROM a RIGHT JOIN b ON a.id = b.id ORDER BY b.id")
+            .unwrap();
+        // Right rows: (NULL) -> no match -> (NULL, NULL); (1) -> match a.id=1 -> (1, 1)
+        assert_eq!(result.rows.len(), 2);
+    }
+
+    #[test]
+    fn full_outer_join_no_constraint_acts_like_cross() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE a (id INTEGER)").unwrap();
+        db.execute("CREATE TABLE b (id INTEGER)").unwrap();
+        db.execute("INSERT INTO a VALUES (1), (2)").unwrap();
+        db.execute("INSERT INTO b VALUES (3), (4)").unwrap();
+
+        let result = db
+            .query("SELECT a.id, b.id FROM a FULL OUTER JOIN b ON 1=1")
+            .unwrap();
+        // ON 1=1 matches everything, so outer-padding is unused: 2*2 = 4 rows.
+        assert_eq!(result.rows.len(), 4);
+    }
+
+    #[test]
     fn default_persists_across_reopen() {
         let db_path = "/tmp/rsqlite_db_default_persist.db";
         let _ = std::fs::remove_file(db_path);

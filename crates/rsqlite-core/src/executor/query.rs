@@ -52,15 +52,19 @@ pub(super) fn execute_join(
         .cloned()
         .collect();
 
+    let left_width = left_result.columns.len();
     let right_width = right_result.columns.len();
+    let null_left = vec![Value::Null; left_width];
     let null_right = vec![Value::Null; right_width];
 
     let mut rows = Vec::new();
+    // Track which right rows have been matched (used by RIGHT and FULL).
+    let mut right_matched = vec![false; right_result.rows.len()];
 
     for left_row in &left_result.rows {
-        let mut matched = false;
+        let mut left_matched = false;
 
-        for right_row in &right_result.rows {
+        for (right_idx, right_row) in right_result.rows.iter().enumerate() {
             let mut combined_values = left_row.values.clone();
             combined_values.extend_from_slice(&right_row.values);
             let combined_row = Row {
@@ -76,17 +80,29 @@ pub(super) fn execute_join(
             };
 
             if passes {
-                matched = true;
+                left_matched = true;
+                right_matched[right_idx] = true;
                 rows.push(combined_row);
             }
         }
 
-        if join_type == JoinType::Left && !matched {
+        if !left_matched
+            && (join_type == JoinType::Left || join_type == JoinType::Full)
+        {
             let mut combined_values = left_row.values.clone();
             combined_values.extend_from_slice(&null_right);
-            rows.push(Row {
-                values: combined_values,
-            });
+            rows.push(Row { values: combined_values });
+        }
+    }
+
+    if join_type == JoinType::Right || join_type == JoinType::Full {
+        for (right_idx, right_row) in right_result.rows.iter().enumerate() {
+            if right_matched[right_idx] {
+                continue;
+            }
+            let mut combined_values = null_left.clone();
+            combined_values.extend_from_slice(&right_row.values);
+            rows.push(Row { values: combined_values });
         }
     }
 

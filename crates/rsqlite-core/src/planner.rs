@@ -87,6 +87,8 @@ pub struct DeletePlan {
 pub enum JoinType {
     Inner,
     Left,
+    Right,
+    Full,
     Cross,
 }
 
@@ -866,10 +868,18 @@ fn plan_select_body(
                 let cond = plan_join_constraint(constraint, &combined_columns, catalog)?;
                 (JoinType::Left, cond)
             }
+            ast::JoinOperator::Right(constraint) | ast::JoinOperator::RightOuter(constraint) => {
+                let cond = plan_join_constraint(constraint, &combined_columns, catalog)?;
+                (JoinType::Right, cond)
+            }
+            ast::JoinOperator::FullOuter(constraint) => {
+                let cond = plan_join_constraint(constraint, &combined_columns, catalog)?;
+                (JoinType::Full, cond)
+            }
             ast::JoinOperator::CrossJoin => (JoinType::Cross, None),
             _ => {
                 return Err(Error::Other(
-                    "only INNER, LEFT, and CROSS JOIN are supported".to_string(),
+                    "only INNER, LEFT, RIGHT, FULL, and CROSS JOIN are supported".to_string(),
                 ))
             }
         };
@@ -910,10 +920,18 @@ fn plan_select_body(
                     let cond = plan_join_constraint(c, &combined, catalog)?;
                     (JoinType::Left, cond)
                 }
+                ast::JoinOperator::Right(c) | ast::JoinOperator::RightOuter(c) => {
+                    let cond = plan_join_constraint(c, &combined, catalog)?;
+                    (JoinType::Right, cond)
+                }
+                ast::JoinOperator::FullOuter(c) => {
+                    let cond = plan_join_constraint(c, &combined, catalog)?;
+                    (JoinType::Full, cond)
+                }
                 ast::JoinOperator::CrossJoin => (JoinType::Cross, None),
                 _ => {
                     return Err(Error::Other(
-                        "only INNER, LEFT, and CROSS JOIN are supported".to_string(),
+                        "only INNER, LEFT, RIGHT, FULL, and CROSS JOIN are supported".to_string(),
                     ))
                 }
             };
