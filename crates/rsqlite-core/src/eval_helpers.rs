@@ -333,11 +333,60 @@ pub(crate) fn eval_scalar_function(name: &str, args: &[Value]) -> Result<Value> 
             let result = simple_printf(&fmt, &args[1..]);
             Ok(Value::Text(result))
         }
-        "LIKELY" | "UNLIKELY" => {
+        "LIKELY" | "UNLIKELY" | "LIKELIHOOD" => {
             if args.is_empty() {
                 return Err(Error::Other(format!("{name} requires 1 argument")));
             }
             Ok(args[0].clone())
+        }
+        "SIGN" => {
+            if args.is_empty() {
+                return Err(Error::Other("SIGN requires 1 argument".into()));
+            }
+            match &args[0] {
+                Value::Null => Ok(Value::Null),
+                Value::Integer(n) => Ok(Value::Integer(n.signum())),
+                Value::Real(f) => {
+                    if f.is_nan() {
+                        Ok(Value::Null)
+                    } else if *f > 0.0 {
+                        Ok(Value::Integer(1))
+                    } else if *f < 0.0 {
+                        Ok(Value::Integer(-1))
+                    } else {
+                        Ok(Value::Integer(0))
+                    }
+                }
+                Value::Text(s) => match s.trim().parse::<f64>() {
+                    Ok(f) if f > 0.0 => Ok(Value::Integer(1)),
+                    Ok(f) if f < 0.0 => Ok(Value::Integer(-1)),
+                    Ok(_) => Ok(Value::Integer(0)),
+                    Err(_) => Ok(Value::Null),
+                },
+                Value::Blob(_) => Ok(Value::Null),
+            }
+        }
+        "SQLITE_VERSION" => Ok(Value::Text("3.42.0".to_string())),
+        "SQLITE_SOURCE_ID" => Ok(Value::Text(
+            "2023-05-16 12:36:15 rsqlite-wasm".to_string(),
+        )),
+        "RANDOMBLOB" => {
+            if args.is_empty() {
+                return Err(Error::Other("RANDOMBLOB requires 1 argument".into()));
+            }
+            let n = match &args[0] {
+                Value::Integer(n) => (*n).max(1) as usize,
+                _ => 1usize,
+            };
+            let mut bytes = Vec::with_capacity(n);
+            // Use rand_i64 to fill bytes; not cryptographically secure but
+            // matches SQLite's pseudo-random behavior for RANDOMBLOB.
+            while bytes.len() < n {
+                let r = rand_i64().to_le_bytes();
+                let need = n - bytes.len();
+                bytes.extend_from_slice(&r[..need.min(8)]);
+            }
+            Ok(Value::Blob(bytes))
         }
         "DATE" => crate::datetime::eval_date(args),
         "TIME" => crate::datetime::eval_time(args),

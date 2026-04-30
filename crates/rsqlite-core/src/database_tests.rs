@@ -5789,6 +5789,63 @@
     }
 
     #[test]
+    fn scalar_sign() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let cases = vec![
+            ("SELECT SIGN(5)", crate::types::Value::Integer(1)),
+            ("SELECT SIGN(-7)", crate::types::Value::Integer(-1)),
+            ("SELECT SIGN(0)", crate::types::Value::Integer(0)),
+            ("SELECT SIGN(2.5)", crate::types::Value::Integer(1)),
+            ("SELECT SIGN(NULL)", crate::types::Value::Null),
+        ];
+        for (sql, expected) in cases {
+            let r = db.query(sql).unwrap();
+            assert_eq!(r.rows[0].values[0], expected, "case: {sql}");
+        }
+    }
+
+    #[test]
+    fn scalar_sign_text_coercion() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db.query("SELECT SIGN('-42')").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(-1));
+        let r = db.query("SELECT SIGN('abc')").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Null);
+    }
+
+    #[test]
+    fn scalar_sqlite_version() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db.query("SELECT SQLITE_VERSION()").unwrap();
+        let s = match &r.rows[0].values[0] {
+            crate::types::Value::Text(s) => s.clone(),
+            _ => panic!("expected Text"),
+        };
+        // Must look like a version string (digits and dots).
+        assert!(s.chars().any(|c| c.is_ascii_digit()));
+        assert!(s.contains('.'));
+    }
+
+    #[test]
+    fn scalar_randomblob_length() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db.query("SELECT length(randomblob(16))").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(16));
+    }
+
+    #[test]
+    fn scalar_likelihood_passes_through() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        let r = db.query("SELECT LIKELIHOOD(7, 0.5)").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(7));
+    }
+
+    #[test]
     fn default_persists_across_reopen() {
         let db_path = "/tmp/rsqlite_db_default_persist.db";
         let _ = std::fs::remove_file(db_path);
