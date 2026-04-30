@@ -364,6 +364,24 @@ fn describe_plan_recursive(
             describe_plan_recursive(left, rows, id, my_id, depth + 1);
             describe_plan_recursive(right, rows, id, my_id, depth + 1);
         }
+        Plan::Intersect { left, right, all } => {
+            let op = if *all { "INTERSECT ALL" } else { "INTERSECT" };
+            rows.push(Row { values: vec![
+                Value::Integer(my_id), Value::Integer(parent),
+                Value::Integer(0), Value::Text(format!("{indent}COMPOUND QUERY ({op})")),
+            ]});
+            describe_plan_recursive(left, rows, id, my_id, depth + 1);
+            describe_plan_recursive(right, rows, id, my_id, depth + 1);
+        }
+        Plan::Except { left, right, all } => {
+            let op = if *all { "EXCEPT ALL" } else { "EXCEPT" };
+            rows.push(Row { values: vec![
+                Value::Integer(my_id), Value::Integer(parent),
+                Value::Integer(0), Value::Text(format!("{indent}COMPOUND QUERY ({op})")),
+            ]});
+            describe_plan_recursive(left, rows, id, my_id, depth + 1);
+            describe_plan_recursive(right, rows, id, my_id, depth + 1);
+        }
         Plan::Window { input, .. } => {
             rows.push(Row { values: vec![
                 Value::Integer(my_id), Value::Integer(parent),

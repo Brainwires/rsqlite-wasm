@@ -113,6 +113,56 @@ pub fn execute(plan: &Plan, pager: &mut Pager, catalog: &Catalog) -> Result<Quer
                 rows,
             })
         }
+        Plan::Intersect { left, right, all } => {
+            let left_result = execute(left, pager, catalog)?;
+            let right_result = execute(right, pager, catalog)?;
+            let mut rows = Vec::new();
+            // INTERSECT keeps left rows that also appear in right; INTERSECT (no
+            // ALL) deduplicates.
+            for row in &left_result.rows {
+                let in_right = right_result
+                    .rows
+                    .iter()
+                    .any(|r| r.values == row.values);
+                if !in_right {
+                    continue;
+                }
+                if *all {
+                    rows.push(row.clone());
+                } else if !rows.iter().any(|r: &crate::types::Row| r.values == row.values) {
+                    rows.push(row.clone());
+                }
+            }
+            Ok(QueryResult {
+                columns: left_result.columns,
+                rows,
+            })
+        }
+        Plan::Except { left, right, all } => {
+            let left_result = execute(left, pager, catalog)?;
+            let right_result = execute(right, pager, catalog)?;
+            let mut rows = Vec::new();
+            // EXCEPT keeps left rows that do NOT appear in right; without ALL
+            // it also deduplicates the result.
+            for row in &left_result.rows {
+                let in_right = right_result
+                    .rows
+                    .iter()
+                    .any(|r| r.values == row.values);
+                if in_right {
+                    continue;
+                }
+                if *all {
+                    rows.push(row.clone());
+                } else if !rows.iter().any(|r: &crate::types::Row| r.values == row.values) {
+                    rows.push(row.clone());
+                }
+            }
+            Ok(QueryResult {
+                columns: left_result.columns,
+                rows,
+            })
+        }
         Plan::Project { input, outputs } => execute_project(input, outputs, pager, catalog),
         Plan::Filter { input, predicate } => {
             let inner = execute(input, pager, catalog)?;

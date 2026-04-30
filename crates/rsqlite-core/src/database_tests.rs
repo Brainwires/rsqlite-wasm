@@ -5134,6 +5134,142 @@
     }
 
     #[test]
+    fn intersect_basic() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE a (n INTEGER)").unwrap();
+        db.execute("CREATE TABLE b (n INTEGER)").unwrap();
+        db.execute("INSERT INTO a VALUES (1), (2), (3), (4)").unwrap();
+        db.execute("INSERT INTO b VALUES (3), (4), (5), (6)").unwrap();
+
+        let result = db
+            .query("SELECT n FROM a INTERSECT SELECT n FROM b ORDER BY n")
+            .unwrap();
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(result.rows[0].values[0], crate::types::Value::Integer(3));
+        assert_eq!(result.rows[1].values[0], crate::types::Value::Integer(4));
+    }
+
+    #[test]
+    fn intersect_deduplicates() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE a (n INTEGER)").unwrap();
+        db.execute("CREATE TABLE b (n INTEGER)").unwrap();
+        db.execute("INSERT INTO a VALUES (1), (1), (2), (2)").unwrap();
+        db.execute("INSERT INTO b VALUES (1), (2), (2)").unwrap();
+
+        let result = db
+            .query("SELECT n FROM a INTERSECT SELECT n FROM b ORDER BY n")
+            .unwrap();
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(result.rows[0].values[0], crate::types::Value::Integer(1));
+        assert_eq!(result.rows[1].values[0], crate::types::Value::Integer(2));
+    }
+
+    #[test]
+    fn except_basic() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE a (n INTEGER)").unwrap();
+        db.execute("CREATE TABLE b (n INTEGER)").unwrap();
+        db.execute("INSERT INTO a VALUES (1), (2), (3), (4)").unwrap();
+        db.execute("INSERT INTO b VALUES (3), (4), (5), (6)").unwrap();
+
+        let result = db
+            .query("SELECT n FROM a EXCEPT SELECT n FROM b ORDER BY n")
+            .unwrap();
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(result.rows[0].values[0], crate::types::Value::Integer(1));
+        assert_eq!(result.rows[1].values[0], crate::types::Value::Integer(2));
+    }
+
+    #[test]
+    fn except_deduplicates_left() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE a (n INTEGER)").unwrap();
+        db.execute("CREATE TABLE b (n INTEGER)").unwrap();
+        db.execute("INSERT INTO a VALUES (1), (1), (2), (3), (3)").unwrap();
+        db.execute("INSERT INTO b VALUES (3)").unwrap();
+
+        let result = db
+            .query("SELECT n FROM a EXCEPT SELECT n FROM b ORDER BY n")
+            .unwrap();
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(result.rows[0].values[0], crate::types::Value::Integer(1));
+        assert_eq!(result.rows[1].values[0], crate::types::Value::Integer(2));
+    }
+
+    #[test]
+    fn intersect_multi_column() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE a (k TEXT, v INTEGER)").unwrap();
+        db.execute("CREATE TABLE b (k TEXT, v INTEGER)").unwrap();
+        db.execute("INSERT INTO a VALUES ('x', 1), ('y', 2), ('z', 3)").unwrap();
+        db.execute("INSERT INTO b VALUES ('y', 2), ('z', 99), ('x', 1)").unwrap();
+
+        let result = db
+            .query("SELECT k, v FROM a INTERSECT SELECT k, v FROM b ORDER BY k")
+            .unwrap();
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(
+            result.rows[0].values[0],
+            crate::types::Value::Text("x".to_string())
+        );
+        assert_eq!(
+            result.rows[1].values[0],
+            crate::types::Value::Text("y".to_string())
+        );
+    }
+
+    #[test]
+    fn except_with_no_overlap_returns_left() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE a (n INTEGER)").unwrap();
+        db.execute("CREATE TABLE b (n INTEGER)").unwrap();
+        db.execute("INSERT INTO a VALUES (1), (2)").unwrap();
+        db.execute("INSERT INTO b VALUES (3), (4)").unwrap();
+
+        let result = db
+            .query("SELECT n FROM a EXCEPT SELECT n FROM b ORDER BY n")
+            .unwrap();
+        assert_eq!(result.rows.len(), 2);
+    }
+
+    #[test]
+    fn intersect_with_full_overlap_returns_subset() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE a (n INTEGER)").unwrap();
+        db.execute("CREATE TABLE b (n INTEGER)").unwrap();
+        db.execute("INSERT INTO a VALUES (1), (2), (3)").unwrap();
+        db.execute("INSERT INTO b VALUES (1), (2), (3), (4), (5)").unwrap();
+
+        let result = db
+            .query("SELECT n FROM a INTERSECT SELECT n FROM b ORDER BY n")
+            .unwrap();
+        assert_eq!(result.rows.len(), 3);
+    }
+
+    #[test]
+    fn intersect_preserves_left_column_names() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE a (foo INTEGER)").unwrap();
+        db.execute("CREATE TABLE b (bar INTEGER)").unwrap();
+        db.execute("INSERT INTO a VALUES (1)").unwrap();
+        db.execute("INSERT INTO b VALUES (1)").unwrap();
+
+        let result = db
+            .query("SELECT foo FROM a INTERSECT SELECT bar FROM b")
+            .unwrap();
+        assert_eq!(result.columns, vec!["foo"]);
+    }
+
+    #[test]
     fn default_persists_across_reopen() {
         let db_path = "/tmp/rsqlite_db_default_persist.db";
         let _ = std::fs::remove_file(db_path);

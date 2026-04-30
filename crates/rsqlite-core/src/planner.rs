@@ -115,6 +115,16 @@ pub enum Plan {
         right: Box<Plan>,
         all: bool,
     },
+    Intersect {
+        left: Box<Plan>,
+        right: Box<Plan>,
+        all: bool,
+    },
+    Except {
+        left: Box<Plan>,
+        right: Box<Plan>,
+        all: bool,
+    },
     Scan {
         table: String,
         root_page: u32,
@@ -596,17 +606,27 @@ fn plan_set_expr(set_expr: &SetExpr, catalog: &Catalog, ctes: &CteMap) -> Result
             left,
             right,
         } => {
-            if *op != ast::SetOperator::Union {
-                return Err(Error::Other(format!("unsupported set operation: {op}")));
-            }
             let left_plan = plan_set_expr(left, catalog, ctes)?;
             let right_plan = plan_set_expr(right, catalog, ctes)?;
             let all = matches!(set_quantifier, ast::SetQuantifier::All);
-            Ok(Plan::Union {
-                left: Box::new(left_plan),
-                right: Box::new(right_plan),
-                all,
-            })
+            match op {
+                ast::SetOperator::Union => Ok(Plan::Union {
+                    left: Box::new(left_plan),
+                    right: Box::new(right_plan),
+                    all,
+                }),
+                ast::SetOperator::Intersect => Ok(Plan::Intersect {
+                    left: Box::new(left_plan),
+                    right: Box::new(right_plan),
+                    all,
+                }),
+                ast::SetOperator::Except => Ok(Plan::Except {
+                    left: Box::new(left_plan),
+                    right: Box::new(right_plan),
+                    all,
+                }),
+                _ => Err(Error::Other(format!("unsupported set operation: {op}"))),
+            }
         }
         _ => Err(Error::Other(
             "unsupported set expression".to_string(),
