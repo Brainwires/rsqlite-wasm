@@ -172,7 +172,7 @@ impl DatabaseHeader {
     pub fn new_default() -> Self {
         Self {
             page_size: DEFAULT_PAGE_SIZE,
-            write_version: 1,  // legacy journal mode
+            write_version: 1, // legacy journal mode
             read_version: 1,
             reserved_bytes: 0,
             max_embedded_payload_fraction: 64,

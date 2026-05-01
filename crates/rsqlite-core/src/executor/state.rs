@@ -24,12 +24,7 @@ pub fn clear_params() {
 }
 
 pub(super) fn get_param(index: usize) -> Value {
-    BOUND_PARAMS.with(|p| {
-        p.borrow()
-            .get(index)
-            .cloned()
-            .unwrap_or(Value::Null)
-    })
+    BOUND_PARAMS.with(|p| p.borrow().get(index).cloned().unwrap_or(Value::Null))
 }
 
 pub(super) fn set_last_insert_rowid(rowid: i64) {
@@ -86,9 +81,7 @@ pub(super) fn cte_working_set_remove(name: &str) {
 }
 
 pub(super) fn cte_working_set_get(name: &str) -> Option<QueryResult> {
-    RECURSIVE_CTE_WORKING.with(|w| {
-        w.borrow().get(name).cloned()
-    })
+    RECURSIVE_CTE_WORKING.with(|w| w.borrow().get(name).cloned())
 }
 
 pub(super) fn trigger_depth_get() -> u32 {

@@ -8,9 +8,12 @@ fn default_text_literal() {
         "CREATE TABLE accounts (id INTEGER PRIMARY KEY, name TEXT, status TEXT DEFAULT 'active')",
     )
     .unwrap();
-    db.execute("INSERT INTO accounts (id, name) VALUES (1, 'Alice')").unwrap();
+    db.execute("INSERT INTO accounts (id, name) VALUES (1, 'Alice')")
+        .unwrap();
 
-    let result = db.query("SELECT status FROM accounts WHERE id = 1").unwrap();
+    let result = db
+        .query("SELECT status FROM accounts WHERE id = 1")
+        .unwrap();
     assert_eq!(result.rows.len(), 1);
     assert_eq!(
         result.rows[0].values[0],
@@ -22,10 +25,8 @@ fn default_text_literal() {
 fn default_integer_literal() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute(
-        "CREATE TABLE counters (id INTEGER PRIMARY KEY, value INTEGER DEFAULT 42)",
-    )
-    .unwrap();
+    db.execute("CREATE TABLE counters (id INTEGER PRIMARY KEY, value INTEGER DEFAULT 42)")
+        .unwrap();
     db.execute("INSERT INTO counters (id) VALUES (1)").unwrap();
 
     let result = db.query("SELECT value FROM counters WHERE id = 1").unwrap();
@@ -36,10 +37,8 @@ fn default_integer_literal() {
 fn default_negative_integer_literal() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute(
-        "CREATE TABLE balance (id INTEGER PRIMARY KEY, owed INTEGER DEFAULT -10)",
-    )
-    .unwrap();
+    db.execute("CREATE TABLE balance (id INTEGER PRIMARY KEY, owed INTEGER DEFAULT -10)")
+        .unwrap();
     db.execute("INSERT INTO balance (id) VALUES (1)").unwrap();
 
     let result = db.query("SELECT owed FROM balance WHERE id = 1").unwrap();
@@ -50,10 +49,8 @@ fn default_negative_integer_literal() {
 fn default_real_literal() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute(
-        "CREATE TABLE rates (id INTEGER PRIMARY KEY, rate REAL DEFAULT 1.5)",
-    )
-    .unwrap();
+    db.execute("CREATE TABLE rates (id INTEGER PRIMARY KEY, rate REAL DEFAULT 1.5)")
+        .unwrap();
     db.execute("INSERT INTO rates (id) VALUES (1)").unwrap();
 
     let result = db.query("SELECT rate FROM rates WHERE id = 1").unwrap();
@@ -64,13 +61,14 @@ fn default_real_literal() {
 fn default_overridden_by_explicit_value() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute(
-        "CREATE TABLE accounts (id INTEGER PRIMARY KEY, status TEXT DEFAULT 'active')",
-    )
-    .unwrap();
-    db.execute("INSERT INTO accounts (id, status) VALUES (1, 'banned')").unwrap();
+    db.execute("CREATE TABLE accounts (id INTEGER PRIMARY KEY, status TEXT DEFAULT 'active')")
+        .unwrap();
+    db.execute("INSERT INTO accounts (id, status) VALUES (1, 'banned')")
+        .unwrap();
 
-    let result = db.query("SELECT status FROM accounts WHERE id = 1").unwrap();
+    let result = db
+        .query("SELECT status FROM accounts WHERE id = 1")
+        .unwrap();
     assert_eq!(
         result.rows[0].values[0],
         crate::types::Value::Text("banned".to_string())
@@ -81,13 +79,14 @@ fn default_overridden_by_explicit_value() {
 fn default_explicit_null_not_replaced() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute(
-        "CREATE TABLE accounts (id INTEGER PRIMARY KEY, status TEXT DEFAULT 'active')",
-    )
-    .unwrap();
-    db.execute("INSERT INTO accounts (id, status) VALUES (1, NULL)").unwrap();
+    db.execute("CREATE TABLE accounts (id INTEGER PRIMARY KEY, status TEXT DEFAULT 'active')")
+        .unwrap();
+    db.execute("INSERT INTO accounts (id, status) VALUES (1, NULL)")
+        .unwrap();
 
-    let result = db.query("SELECT status FROM accounts WHERE id = 1").unwrap();
+    let result = db
+        .query("SELECT status FROM accounts WHERE id = 1")
+        .unwrap();
     assert_eq!(result.rows[0].values[0], crate::types::Value::Null);
 }
 
@@ -95,13 +94,16 @@ fn default_explicit_null_not_replaced() {
 fn default_with_insert_select_partial_columns() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE source (n INTEGER, label TEXT)").unwrap();
-    db.execute("INSERT INTO source VALUES (1, 'one'), (2, 'two')").unwrap();
+    db.execute("CREATE TABLE source (n INTEGER, label TEXT)")
+        .unwrap();
+    db.execute("INSERT INTO source VALUES (1, 'one'), (2, 'two')")
+        .unwrap();
     db.execute(
         "CREATE TABLE target (id INTEGER PRIMARY KEY, label TEXT, status TEXT DEFAULT 'pending')",
     )
     .unwrap();
-    db.execute("INSERT INTO target (id, label) SELECT n, label FROM source").unwrap();
+    db.execute("INSERT INTO target (id, label) SELECT n, label FROM source")
+        .unwrap();
 
     let result = db
         .query("SELECT id, status FROM target ORDER BY id")
@@ -121,7 +123,8 @@ fn default_with_insert_select_partial_columns() {
 fn default_null_when_no_default_and_omitted() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE plain (id INTEGER PRIMARY KEY, note TEXT)").unwrap();
+    db.execute("CREATE TABLE plain (id INTEGER PRIMARY KEY, note TEXT)")
+        .unwrap();
     db.execute("INSERT INTO plain (id) VALUES (1)").unwrap();
 
     let result = db.query("SELECT note FROM plain WHERE id = 1").unwrap();
@@ -132,10 +135,8 @@ fn default_null_when_no_default_and_omitted() {
 fn default_with_not_null_constraint_satisfied() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute(
-        "CREATE TABLE jobs (id INTEGER PRIMARY KEY, status TEXT NOT NULL DEFAULT 'queued')",
-    )
-    .unwrap();
+    db.execute("CREATE TABLE jobs (id INTEGER PRIMARY KEY, status TEXT NOT NULL DEFAULT 'queued')")
+        .unwrap();
     // INSERT omits status — NOT NULL would fail without DEFAULT, but should succeed with one.
     db.execute("INSERT INTO jobs (id) VALUES (1)").unwrap();
 
@@ -150,7 +151,8 @@ fn default_with_not_null_constraint_satisfied() {
 fn bitwise_and_basic() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE flags (id INTEGER PRIMARY KEY, mask INTEGER)").unwrap();
+    db.execute("CREATE TABLE flags (id INTEGER PRIMARY KEY, mask INTEGER)")
+        .unwrap();
     db.execute("INSERT INTO flags VALUES (1, 12)").unwrap(); // 1100
     let result = db.query("SELECT mask & 10 FROM flags").unwrap(); // 1010 -> 1000 = 8
     assert_eq!(result.rows[0].values[0], crate::types::Value::Integer(8));
@@ -160,7 +162,8 @@ fn bitwise_and_basic() {
 fn bitwise_or_basic() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE flags (id INTEGER PRIMARY KEY, mask INTEGER)").unwrap();
+    db.execute("CREATE TABLE flags (id INTEGER PRIMARY KEY, mask INTEGER)")
+        .unwrap();
     db.execute("INSERT INTO flags VALUES (1, 12)").unwrap();
     let result = db.query("SELECT mask | 3 FROM flags").unwrap(); // 1100 | 0011 = 1111 = 15
     assert_eq!(result.rows[0].values[0], crate::types::Value::Integer(15));
@@ -170,10 +173,14 @@ fn bitwise_or_basic() {
 fn bitwise_in_where_clause() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE perms (id INTEGER PRIMARY KEY, mask INTEGER)").unwrap();
-    db.execute("INSERT INTO perms VALUES (1, 5), (2, 6), (3, 7)").unwrap();
+    db.execute("CREATE TABLE perms (id INTEGER PRIMARY KEY, mask INTEGER)")
+        .unwrap();
+    db.execute("INSERT INTO perms VALUES (1, 5), (2, 6), (3, 7)")
+        .unwrap();
     // Rows where the read bit (1) is set: 5 (101), 7 (111) — that's 2 rows
-    let result = db.query("SELECT id FROM perms WHERE (mask & 1) = 1 ORDER BY id").unwrap();
+    let result = db
+        .query("SELECT id FROM perms WHERE (mask & 1) = 1 ORDER BY id")
+        .unwrap();
     assert_eq!(result.rows.len(), 2);
     assert_eq!(result.rows[0].values[0], crate::types::Value::Integer(1));
     assert_eq!(result.rows[1].values[0], crate::types::Value::Integer(3));
@@ -183,7 +190,8 @@ fn bitwise_in_where_clause() {
 fn bitwise_with_null_propagates() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, x INTEGER)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, x INTEGER)")
+        .unwrap();
     db.execute("INSERT INTO t VALUES (1, NULL)").unwrap();
     let result = db.query("SELECT x & 5 FROM t").unwrap();
     assert_eq!(result.rows[0].values[0], crate::types::Value::Null);
@@ -194,12 +202,11 @@ fn is_distinct_from_with_null() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("CREATE TABLE t (a INTEGER, b INTEGER)").unwrap();
-    db.execute("INSERT INTO t VALUES (1, 1), (1, 2), (NULL, 1), (NULL, NULL)").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 1), (1, 2), (NULL, 1), (NULL, NULL)")
+        .unwrap();
     // a IS DISTINCT FROM b: rows where a != b in null-safe sense
     // (1,1) -> NOT distinct -> 0; (1,2) -> distinct -> 1; (NULL,1) -> distinct -> 1; (NULL,NULL) -> NOT distinct -> 0
-    let result = db
-        .query("SELECT a IS DISTINCT FROM b FROM t")
-        .unwrap();
+    let result = db.query("SELECT a IS DISTINCT FROM b FROM t").unwrap();
     assert_eq!(result.rows.len(), 4);
     assert_eq!(result.rows[0].values[0], crate::types::Value::Integer(0));
     assert_eq!(result.rows[1].values[0], crate::types::Value::Integer(1));
@@ -212,11 +219,10 @@ fn is_not_distinct_from_with_null() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("CREATE TABLE t (a INTEGER, b INTEGER)").unwrap();
-    db.execute("INSERT INTO t VALUES (1, 1), (NULL, NULL), (NULL, 5)").unwrap();
-    // (1,1) -> equal -> 1; (NULL,NULL) -> equal -> 1; (NULL,5) -> distinct -> 0
-    let result = db
-        .query("SELECT a IS NOT DISTINCT FROM b FROM t")
+    db.execute("INSERT INTO t VALUES (1, 1), (NULL, NULL), (NULL, 5)")
         .unwrap();
+    // (1,1) -> equal -> 1; (NULL,NULL) -> equal -> 1; (NULL,5) -> distinct -> 0
+    let result = db.query("SELECT a IS NOT DISTINCT FROM b FROM t").unwrap();
     assert_eq!(result.rows[0].values[0], crate::types::Value::Integer(1));
     assert_eq!(result.rows[1].values[0], crate::types::Value::Integer(1));
     assert_eq!(result.rows[2].values[0], crate::types::Value::Integer(0));
@@ -226,11 +232,10 @@ fn is_not_distinct_from_with_null() {
 fn is_distinct_from_in_where() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT)").unwrap();
-    db.execute(
-        "INSERT INTO t VALUES (1, 'active'), (2, 'pending'), (3, NULL), (4, 'active')",
-    )
-    .unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT)")
+        .unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'active'), (2, 'pending'), (3, NULL), (4, 'active')")
+        .unwrap();
     // = 'active' would miss NULL. IS NOT DISTINCT FROM 'active' is the same here,
     // but IS DISTINCT FROM 'active' includes the NULL row.
     let result = db
@@ -245,7 +250,8 @@ fn is_distinct_from_in_where() {
 fn like_with_escape_percent() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT)")
+        .unwrap();
     db.execute("INSERT INTO t VALUES (1, '50%'), (2, '50x'), (3, '50% off'), (4, 'abc')")
         .unwrap();
     // Match strings with literal % followed by anything
@@ -261,8 +267,10 @@ fn like_with_escape_percent() {
 fn like_with_escape_underscore() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT)").unwrap();
-    db.execute("INSERT INTO t VALUES (1, 'a_b'), (2, 'aXb'), (3, 'a__b')").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT)")
+        .unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'a_b'), (2, 'aXb'), (3, 'a__b')")
+        .unwrap();
     // Match literal underscore between a and b
     let result = db
         .query(r"SELECT id FROM t WHERE label LIKE 'a\_b' ESCAPE '\' ORDER BY id")
@@ -275,8 +283,10 @@ fn like_with_escape_underscore() {
 fn like_escape_with_custom_char() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT)").unwrap();
-    db.execute("INSERT INTO t VALUES (1, '50%'), (2, '50abc')").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT)")
+        .unwrap();
+    db.execute("INSERT INTO t VALUES (1, '50%'), (2, '50abc')")
+        .unwrap();
     // Use # as escape char
     let result = db
         .query("SELECT id FROM t WHERE label LIKE '50#%' ESCAPE '#'")
@@ -291,8 +301,10 @@ fn intersect_basic() {
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("CREATE TABLE a (n INTEGER)").unwrap();
     db.execute("CREATE TABLE b (n INTEGER)").unwrap();
-    db.execute("INSERT INTO a VALUES (1), (2), (3), (4)").unwrap();
-    db.execute("INSERT INTO b VALUES (3), (4), (5), (6)").unwrap();
+    db.execute("INSERT INTO a VALUES (1), (2), (3), (4)")
+        .unwrap();
+    db.execute("INSERT INTO b VALUES (3), (4), (5), (6)")
+        .unwrap();
 
     let result = db
         .query("SELECT n FROM a INTERSECT SELECT n FROM b ORDER BY n")
@@ -308,7 +320,8 @@ fn intersect_deduplicates() {
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("CREATE TABLE a (n INTEGER)").unwrap();
     db.execute("CREATE TABLE b (n INTEGER)").unwrap();
-    db.execute("INSERT INTO a VALUES (1), (1), (2), (2)").unwrap();
+    db.execute("INSERT INTO a VALUES (1), (1), (2), (2)")
+        .unwrap();
     db.execute("INSERT INTO b VALUES (1), (2), (2)").unwrap();
 
     let result = db
@@ -325,8 +338,10 @@ fn except_basic() {
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("CREATE TABLE a (n INTEGER)").unwrap();
     db.execute("CREATE TABLE b (n INTEGER)").unwrap();
-    db.execute("INSERT INTO a VALUES (1), (2), (3), (4)").unwrap();
-    db.execute("INSERT INTO b VALUES (3), (4), (5), (6)").unwrap();
+    db.execute("INSERT INTO a VALUES (1), (2), (3), (4)")
+        .unwrap();
+    db.execute("INSERT INTO b VALUES (3), (4), (5), (6)")
+        .unwrap();
 
     let result = db
         .query("SELECT n FROM a EXCEPT SELECT n FROM b ORDER BY n")
@@ -342,7 +357,8 @@ fn except_deduplicates_left() {
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("CREATE TABLE a (n INTEGER)").unwrap();
     db.execute("CREATE TABLE b (n INTEGER)").unwrap();
-    db.execute("INSERT INTO a VALUES (1), (1), (2), (3), (3)").unwrap();
+    db.execute("INSERT INTO a VALUES (1), (1), (2), (3), (3)")
+        .unwrap();
     db.execute("INSERT INTO b VALUES (3)").unwrap();
 
     let result = db
@@ -359,8 +375,10 @@ fn intersect_multi_column() {
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("CREATE TABLE a (k TEXT, v INTEGER)").unwrap();
     db.execute("CREATE TABLE b (k TEXT, v INTEGER)").unwrap();
-    db.execute("INSERT INTO a VALUES ('x', 1), ('y', 2), ('z', 3)").unwrap();
-    db.execute("INSERT INTO b VALUES ('y', 2), ('z', 99), ('x', 1)").unwrap();
+    db.execute("INSERT INTO a VALUES ('x', 1), ('y', 2), ('z', 3)")
+        .unwrap();
+    db.execute("INSERT INTO b VALUES ('y', 2), ('z', 99), ('x', 1)")
+        .unwrap();
 
     let result = db
         .query("SELECT k, v FROM a INTERSECT SELECT k, v FROM b ORDER BY k")
@@ -398,7 +416,8 @@ fn intersect_with_full_overlap_returns_subset() {
     db.execute("CREATE TABLE a (n INTEGER)").unwrap();
     db.execute("CREATE TABLE b (n INTEGER)").unwrap();
     db.execute("INSERT INTO a VALUES (1), (2), (3)").unwrap();
-    db.execute("INSERT INTO b VALUES (1), (2), (3), (4), (5)").unwrap();
+    db.execute("INSERT INTO b VALUES (1), (2), (3), (4), (5)")
+        .unwrap();
 
     let result = db
         .query("SELECT n FROM a INTERSECT SELECT n FROM b ORDER BY n")
@@ -425,10 +444,14 @@ fn intersect_preserves_left_column_names() {
 fn right_join_basic() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE a (id INTEGER, name TEXT)").unwrap();
-    db.execute("CREATE TABLE b (id INTEGER, label TEXT)").unwrap();
-    db.execute("INSERT INTO a VALUES (1, 'one'), (2, 'two')").unwrap();
-    db.execute("INSERT INTO b VALUES (2, 'B'), (3, 'C')").unwrap();
+    db.execute("CREATE TABLE a (id INTEGER, name TEXT)")
+        .unwrap();
+    db.execute("CREATE TABLE b (id INTEGER, label TEXT)")
+        .unwrap();
+    db.execute("INSERT INTO a VALUES (1, 'one'), (2, 'two')")
+        .unwrap();
+    db.execute("INSERT INTO b VALUES (2, 'B'), (3, 'C')")
+        .unwrap();
 
     let result = db
         .query("SELECT a.name, b.label FROM a RIGHT JOIN b ON a.id = b.id ORDER BY b.id")
@@ -469,10 +492,14 @@ fn right_outer_join_alias() {
 fn full_outer_join_basic() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE a (id INTEGER, name TEXT)").unwrap();
-    db.execute("CREATE TABLE b (id INTEGER, label TEXT)").unwrap();
-    db.execute("INSERT INTO a VALUES (1, 'A'), (2, 'B')").unwrap();
-    db.execute("INSERT INTO b VALUES (2, 'X'), (3, 'Y')").unwrap();
+    db.execute("CREATE TABLE a (id INTEGER, name TEXT)")
+        .unwrap();
+    db.execute("CREATE TABLE b (id INTEGER, label TEXT)")
+        .unwrap();
+    db.execute("INSERT INTO a VALUES (1, 'A'), (2, 'B')")
+        .unwrap();
+    db.execute("INSERT INTO b VALUES (2, 'X'), (3, 'Y')")
+        .unwrap();
 
     let result = db
         .query("SELECT a.id, b.id FROM a FULL OUTER JOIN b ON a.id = b.id")
@@ -493,7 +520,10 @@ fn full_outer_join_basic() {
         })
         .collect();
     tuples.sort();
-    assert_eq!(tuples, vec![(None, Some(3)), (Some(1), None), (Some(2), Some(2))]);
+    assert_eq!(
+        tuples,
+        vec![(None, Some(3)), (Some(1), None), (Some(2), Some(2))]
+    );
 }
 
 #[test]
@@ -549,10 +579,14 @@ fn full_outer_join_no_constraint_acts_like_cross() {
 fn join_using_single_column() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE a (id INTEGER, label TEXT)").unwrap();
-    db.execute("CREATE TABLE b (id INTEGER, descr TEXT)").unwrap();
-    db.execute("INSERT INTO a VALUES (1, 'A1'), (2, 'A2'), (3, 'A3')").unwrap();
-    db.execute("INSERT INTO b VALUES (2, 'B2'), (3, 'B3'), (4, 'B4')").unwrap();
+    db.execute("CREATE TABLE a (id INTEGER, label TEXT)")
+        .unwrap();
+    db.execute("CREATE TABLE b (id INTEGER, descr TEXT)")
+        .unwrap();
+    db.execute("INSERT INTO a VALUES (1, 'A1'), (2, 'A2'), (3, 'A3')")
+        .unwrap();
+    db.execute("INSERT INTO b VALUES (2, 'B2'), (3, 'B3'), (4, 'B4')")
+        .unwrap();
 
     let result = db
         .query("SELECT a.label, b.descr FROM a JOIN b USING (id) ORDER BY a.id")
@@ -576,10 +610,14 @@ fn join_using_single_column() {
 fn join_using_multi_column() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE a (k1 INTEGER, k2 INTEGER, v TEXT)").unwrap();
-    db.execute("CREATE TABLE b (k1 INTEGER, k2 INTEGER, w TEXT)").unwrap();
-    db.execute("INSERT INTO a VALUES (1, 10, 'a'), (1, 20, 'b'), (2, 10, 'c')").unwrap();
-    db.execute("INSERT INTO b VALUES (1, 10, 'X'), (1, 99, 'Y'), (2, 10, 'Z')").unwrap();
+    db.execute("CREATE TABLE a (k1 INTEGER, k2 INTEGER, v TEXT)")
+        .unwrap();
+    db.execute("CREATE TABLE b (k1 INTEGER, k2 INTEGER, w TEXT)")
+        .unwrap();
+    db.execute("INSERT INTO a VALUES (1, 10, 'a'), (1, 20, 'b'), (2, 10, 'c')")
+        .unwrap();
+    db.execute("INSERT INTO b VALUES (1, 10, 'X'), (1, 99, 'Y'), (2, 10, 'Z')")
+        .unwrap();
 
     let result = db
         .query("SELECT a.v, b.w FROM a JOIN b USING (k1, k2) ORDER BY a.v")
@@ -600,10 +638,14 @@ fn join_using_multi_column() {
 fn natural_join_basic() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE users (uid INTEGER, name TEXT)").unwrap();
-    db.execute("CREATE TABLE posts (uid INTEGER, title TEXT)").unwrap();
-    db.execute("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')").unwrap();
-    db.execute("INSERT INTO posts VALUES (1, 'Hello'), (2, 'World'), (3, 'Stale')").unwrap();
+    db.execute("CREATE TABLE users (uid INTEGER, name TEXT)")
+        .unwrap();
+    db.execute("CREATE TABLE posts (uid INTEGER, title TEXT)")
+        .unwrap();
+    db.execute("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')")
+        .unwrap();
+    db.execute("INSERT INTO posts VALUES (1, 'Hello'), (2, 'World'), (3, 'Stale')")
+        .unwrap();
 
     let result = db
         .query("SELECT users.name, posts.title FROM users NATURAL JOIN posts ORDER BY users.uid")
@@ -625,9 +667,7 @@ fn natural_join_no_shared_columns_is_cross() {
     db.execute("INSERT INTO a VALUES (1), (2)").unwrap();
     db.execute("INSERT INTO b VALUES (10), (20)").unwrap();
 
-    let result = db
-        .query("SELECT a.x, b.y FROM a NATURAL JOIN b")
-        .unwrap();
+    let result = db.query("SELECT a.x, b.y FROM a NATURAL JOIN b").unwrap();
     // No shared columns -> condition is None -> cartesian product (2*2 = 4)
     assert_eq!(result.rows.len(), 4);
 }
@@ -636,9 +676,12 @@ fn natural_join_no_shared_columns_is_cross() {
 fn natural_left_join_keeps_unmatched_left() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE users (uid INTEGER, name TEXT)").unwrap();
-    db.execute("CREATE TABLE posts (uid INTEGER, title TEXT)").unwrap();
-    db.execute("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Carol')").unwrap();
+    db.execute("CREATE TABLE users (uid INTEGER, name TEXT)")
+        .unwrap();
+    db.execute("CREATE TABLE posts (uid INTEGER, title TEXT)")
+        .unwrap();
+    db.execute("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Carol')")
+        .unwrap();
     db.execute("INSERT INTO posts VALUES (1, 'Hello')").unwrap();
 
     let result = db
@@ -659,9 +702,12 @@ fn natural_left_join_keeps_unmatched_left() {
 fn join_using_with_left_outer() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE a (id INTEGER, label TEXT)").unwrap();
-    db.execute("CREATE TABLE b (id INTEGER, val INTEGER)").unwrap();
-    db.execute("INSERT INTO a VALUES (1, 'one'), (2, 'two'), (3, 'three')").unwrap();
+    db.execute("CREATE TABLE a (id INTEGER, label TEXT)")
+        .unwrap();
+    db.execute("CREATE TABLE b (id INTEGER, val INTEGER)")
+        .unwrap();
+    db.execute("INSERT INTO a VALUES (1, 'one'), (2, 'two'), (3, 'three')")
+        .unwrap();
     db.execute("INSERT INTO b VALUES (2, 200)").unwrap();
 
     let result = db
@@ -677,9 +723,7 @@ fn join_using_with_left_outer() {
 fn json_arrow_object_key() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    let r = db
-        .query(r#"SELECT '{"a":1,"b":"hello"}' -> 'b'"#)
-        .unwrap();
+    let r = db.query(r#"SELECT '{"a":1,"b":"hello"}' -> 'b'"#).unwrap();
     // -> returns JSON text (string with quotes preserved)
     assert_eq!(
         r.rows[0].values[0],
@@ -691,9 +735,7 @@ fn json_arrow_object_key() {
 fn json_long_arrow_object_key() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    let r = db
-        .query(r#"SELECT '{"a":1,"b":"hello"}' ->> 'b'"#)
-        .unwrap();
+    let r = db.query(r#"SELECT '{"a":1,"b":"hello"}' ->> 'b'"#).unwrap();
     // ->> returns SQL scalar text (unwrapped)
     assert_eq!(
         r.rows[0].values[0],
@@ -705,9 +747,7 @@ fn json_long_arrow_object_key() {
 fn json_long_arrow_returns_integer() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    let r = db
-        .query(r#"SELECT '{"n":42}' ->> 'n'"#)
-        .unwrap();
+    let r = db.query(r#"SELECT '{"n":42}' ->> 'n'"#).unwrap();
     assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(42));
 }
 
@@ -715,9 +755,7 @@ fn json_long_arrow_returns_integer() {
 fn json_arrow_array_index() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    let r = db
-        .query("SELECT '[10,20,30]' ->> 1")
-        .unwrap();
+    let r = db.query("SELECT '[10,20,30]' ->> 1").unwrap();
     assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(20));
 }
 
@@ -725,9 +763,7 @@ fn json_arrow_array_index() {
 fn json_arrow_missing_key_returns_null() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    let r = db
-        .query(r#"SELECT '{"a":1}' ->> 'nope'"#)
-        .unwrap();
+    let r = db.query(r#"SELECT '{"a":1}' ->> 'nope'"#).unwrap();
     assert_eq!(r.rows[0].values[0], crate::types::Value::Null);
 }
 
@@ -735,9 +771,7 @@ fn json_arrow_missing_key_returns_null() {
 fn json_arrow_invalid_json_returns_null() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    let r = db
-        .query(r#"SELECT 'not json' ->> 'a'"#)
-        .unwrap();
+    let r = db.query(r#"SELECT 'not json' ->> 'a'"#).unwrap();
     assert_eq!(r.rows[0].values[0], crate::types::Value::Null);
 }
 
@@ -747,9 +781,7 @@ fn json_group_array_integers() {
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("CREATE TABLE t (n INTEGER)").unwrap();
     db.execute("INSERT INTO t VALUES (1), (2), (3)").unwrap();
-    let r = db
-        .query("SELECT json_group_array(n) FROM t")
-        .unwrap();
+    let r = db.query("SELECT json_group_array(n) FROM t").unwrap();
     assert_eq!(
         r.rows[0].values[0],
         crate::types::Value::Text("[1,2,3]".to_string())
@@ -761,10 +793,9 @@ fn json_group_array_with_nulls() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("CREATE TABLE t (v TEXT)").unwrap();
-    db.execute("INSERT INTO t VALUES ('a'), (NULL), ('b')").unwrap();
-    let r = db
-        .query("SELECT json_group_array(v) FROM t")
+    db.execute("INSERT INTO t VALUES ('a'), (NULL), ('b')")
         .unwrap();
+    let r = db.query("SELECT json_group_array(v) FROM t").unwrap();
     assert_eq!(
         r.rows[0].values[0],
         crate::types::Value::Text(r#"["a",null,"b"]"#.to_string())
@@ -776,10 +807,9 @@ fn json_group_object_basic() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("CREATE TABLE t (k TEXT, v INTEGER)").unwrap();
-    db.execute("INSERT INTO t VALUES ('a', 1), ('b', 2)").unwrap();
-    let r = db
-        .query("SELECT json_group_object(k, v) FROM t")
+    db.execute("INSERT INTO t VALUES ('a', 1), ('b', 2)")
         .unwrap();
+    let r = db.query("SELECT json_group_object(k, v) FROM t").unwrap();
     // Order of keys is insertion order
     let text = match &r.rows[0].values[0] {
         crate::types::Value::Text(s) => s.clone(),
@@ -794,7 +824,8 @@ fn json_group_array_with_group_by() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("CREATE TABLE t (cat TEXT, n INTEGER)").unwrap();
-    db.execute("INSERT INTO t VALUES ('a', 1), ('a', 2), ('b', 3)").unwrap();
+    db.execute("INSERT INTO t VALUES ('a', 1), ('a', 2), ('b', 3)")
+        .unwrap();
     let r = db
         .query("SELECT cat, json_group_array(n) FROM t GROUP BY cat ORDER BY cat")
         .unwrap();
@@ -875,10 +906,8 @@ fn pragma_application_id_default_zero() {
 fn pragma_table_xinfo_includes_default() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute(
-        "CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT DEFAULT 'active')",
-    )
-    .unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT DEFAULT 'active')")
+        .unwrap();
     let r = db.query("PRAGMA table_xinfo(t)").unwrap();
     assert_eq!(r.columns.len(), 7);
     assert!(r.columns.contains(&"hidden".to_string()));
@@ -898,7 +927,8 @@ fn pragma_table_xinfo_includes_default() {
 fn pragma_foreign_key_list_returns_fks() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY)").unwrap();
+    db.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY)")
+        .unwrap();
     db.execute(
         "CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parent(id))",
     )
@@ -919,7 +949,8 @@ fn pragma_foreign_key_list_returns_fks() {
 fn pragma_foreign_key_check_empty_for_clean_db() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+        .unwrap();
     let r = db.query("PRAGMA foreign_key_check").unwrap();
     assert_eq!(r.rows.len(), 0);
 }
@@ -1002,7 +1033,8 @@ fn window_frame_running_sum_default() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("CREATE TABLE t (n INTEGER)").unwrap();
-    db.execute("INSERT INTO t VALUES (1), (2), (3), (4)").unwrap();
+    db.execute("INSERT INTO t VALUES (1), (2), (3), (4)")
+        .unwrap();
     // With ORDER BY and no explicit frame, SQLite default is
     // RANGE UNBOUNDED PRECEDING TO CURRENT ROW (running sum).
     let r = db
@@ -1020,7 +1052,8 @@ fn window_frame_rows_between_preceding_current() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("CREATE TABLE t (n INTEGER)").unwrap();
-    db.execute("INSERT INTO t VALUES (10), (20), (30), (40), (50)").unwrap();
+    db.execute("INSERT INTO t VALUES (10), (20), (30), (40), (50)")
+        .unwrap();
     // Sliding sum over current and 1 preceding row.
     let r = db
         .query("SELECT n, SUM(n) OVER (ORDER BY n ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) FROM t ORDER BY n")
@@ -1051,7 +1084,8 @@ fn window_frame_rows_current_to_following() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("CREATE TABLE t (n INTEGER)").unwrap();
-    db.execute("INSERT INTO t VALUES (1), (2), (3), (4)").unwrap();
+    db.execute("INSERT INTO t VALUES (1), (2), (3), (4)")
+        .unwrap();
     // Sum of current row + next row.
     let r = db
         .query("SELECT n, SUM(n) OVER (ORDER BY n ROWS BETWEEN CURRENT ROW AND 1 FOLLOWING) FROM t ORDER BY n")
@@ -1067,7 +1101,8 @@ fn window_frame_default_with_peers() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("CREATE TABLE t (g INTEGER, v INTEGER)").unwrap();
-    db.execute("INSERT INTO t VALUES (1, 10), (1, 20), (2, 30), (2, 40)").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 10), (1, 20), (2, 30), (2, 40)")
+        .unwrap();
     // Default RANGE frame: peer rows (same ORDER BY value) get the same
     // running sum because the frame extends through all peers.
     let r = db
@@ -1086,7 +1121,8 @@ fn window_frame_preserves_partition() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("CREATE TABLE t (g TEXT, n INTEGER)").unwrap();
-    db.execute("INSERT INTO t VALUES ('a', 1), ('a', 2), ('b', 10), ('b', 20)").unwrap();
+    db.execute("INSERT INTO t VALUES ('a', 1), ('a', 2), ('b', 10), ('b', 20)")
+        .unwrap();
     // Running sum, but partitioned by g — frames don't cross partitions.
     let r = db
         .query("SELECT g, n, SUM(n) OVER (PARTITION BY g ORDER BY n) FROM t ORDER BY g, n")
@@ -1102,7 +1138,8 @@ fn window_frame_avg_sliding() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("CREATE TABLE t (n INTEGER)").unwrap();
-    db.execute("INSERT INTO t VALUES (10), (20), (30), (40), (50)").unwrap();
+    db.execute("INSERT INTO t VALUES (10), (20), (30), (40), (50)")
+        .unwrap();
     let r = db
         .query("SELECT n, AVG(n) OVER (ORDER BY n ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM t ORDER BY n")
         .unwrap();
@@ -1119,11 +1156,10 @@ fn named_window_basic() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("CREATE TABLE t (g TEXT, n INTEGER)").unwrap();
-    db.execute("INSERT INTO t VALUES ('a', 1), ('a', 2), ('b', 10)").unwrap();
+    db.execute("INSERT INTO t VALUES ('a', 1), ('a', 2), ('b', 10)")
+        .unwrap();
     let r = db
-        .query(
-            "SELECT g, n, SUM(n) OVER w FROM t WINDOW w AS (PARTITION BY g) ORDER BY g, n",
-        )
+        .query("SELECT g, n, SUM(n) OVER w FROM t WINDOW w AS (PARTITION BY g) ORDER BY g, n")
         .unwrap();
     assert_eq!(r.rows[0].values[2], crate::types::Value::Integer(3));
     assert_eq!(r.rows[1].values[2], crate::types::Value::Integer(3));
@@ -1149,11 +1185,10 @@ fn named_window_multiple_uses() {
 fn aggregate_filter_basic() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE t (n INTEGER, label TEXT)").unwrap();
-    db.execute(
-        "INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'a'), (4, 'b'), (5, 'a')",
-    )
-    .unwrap();
+    db.execute("CREATE TABLE t (n INTEGER, label TEXT)")
+        .unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'a'), (4, 'b'), (5, 'a')")
+        .unwrap();
     // SUM only of rows where label='a': 1 + 3 + 5 = 9
     let r = db
         .query("SELECT SUM(n) FILTER (WHERE label = 'a') FROM t")
@@ -1166,7 +1201,8 @@ fn aggregate_filter_count() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("CREATE TABLE t (n INTEGER)").unwrap();
-    db.execute("INSERT INTO t VALUES (1), (2), (3), (4), (5)").unwrap();
+    db.execute("INSERT INTO t VALUES (1), (2), (3), (4), (5)")
+        .unwrap();
     let r = db
         .query("SELECT COUNT(*) FILTER (WHERE n > 2) FROM t")
         .unwrap();
@@ -1178,7 +1214,8 @@ fn aggregate_filter_with_group_by() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("CREATE TABLE t (g TEXT, n INTEGER)").unwrap();
-    db.execute("INSERT INTO t VALUES ('a', 1), ('a', 2), ('b', 5), ('b', 10)").unwrap();
+    db.execute("INSERT INTO t VALUES ('a', 1), ('a', 2), ('b', 5), ('b', 10)")
+        .unwrap();
     let r = db
         .query("SELECT g, SUM(n) FILTER (WHERE n > 1) FROM t GROUP BY g ORDER BY g")
         .unwrap();
@@ -1191,12 +1228,11 @@ fn window_filter_count() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("CREATE TABLE t (n INTEGER)").unwrap();
-    db.execute("INSERT INTO t VALUES (1), (2), (3), (4)").unwrap();
+    db.execute("INSERT INTO t VALUES (1), (2), (3), (4)")
+        .unwrap();
     // Running count of even values
     let r = db
-        .query(
-            "SELECT n, COUNT(*) FILTER (WHERE n % 2 = 0) OVER (ORDER BY n) FROM t ORDER BY n",
-        )
+        .query("SELECT n, COUNT(*) FILTER (WHERE n % 2 = 0) OVER (ORDER BY n) FROM t ORDER BY n")
         .unwrap();
     assert_eq!(r.rows[0].values[1], crate::types::Value::Integer(0)); // 1: no evens yet
     assert_eq!(r.rows[1].values[1], crate::types::Value::Integer(1)); // 2: one even
@@ -1209,7 +1245,8 @@ fn window_nth_value() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("CREATE TABLE t (n INTEGER)").unwrap();
-    db.execute("INSERT INTO t VALUES (10), (20), (30), (40)").unwrap();
+    db.execute("INSERT INTO t VALUES (10), (20), (30), (40)")
+        .unwrap();
     let r = db
         .query("SELECT n, NTH_VALUE(n, 2) OVER (ORDER BY n) FROM t ORDER BY n")
         .unwrap();
@@ -1238,7 +1275,8 @@ fn window_percent_rank() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("CREATE TABLE t (n INTEGER)").unwrap();
-    db.execute("INSERT INTO t VALUES (1), (2), (3), (4), (5)").unwrap();
+    db.execute("INSERT INTO t VALUES (1), (2), (3), (4), (5)")
+        .unwrap();
     let r = db
         .query("SELECT n, PERCENT_RANK() OVER (ORDER BY n) FROM t ORDER BY n")
         .unwrap();
@@ -1253,7 +1291,8 @@ fn window_cume_dist() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("CREATE TABLE t (n INTEGER)").unwrap();
-    db.execute("INSERT INTO t VALUES (1), (2), (3), (4)").unwrap();
+    db.execute("INSERT INTO t VALUES (1), (2), (3), (4)")
+        .unwrap();
     let r = db
         .query("SELECT n, CUME_DIST() OVER (ORDER BY n) FROM t ORDER BY n")
         .unwrap();
@@ -1267,11 +1306,10 @@ fn window_cume_dist() {
 fn upsert_conflict_target_unique_column() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute(
-        "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT UNIQUE, name TEXT)",
-    )
-    .unwrap();
-    db.execute("INSERT INTO users VALUES (1, 'a@x.com', 'Alice')").unwrap();
+    db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT UNIQUE, name TEXT)")
+        .unwrap();
+    db.execute("INSERT INTO users VALUES (1, 'a@x.com', 'Alice')")
+        .unwrap();
     // Conflict on email — should update Alice -> Alicia
     db.execute(
         "INSERT INTO users (email, name) VALUES ('a@x.com', 'Alicia') ON CONFLICT (email) DO UPDATE SET name = 'Alicia'",
@@ -1289,7 +1327,8 @@ fn upsert_conflict_target_unique_column() {
 fn upsert_with_excluded_reference() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE counts (k TEXT PRIMARY KEY, n INTEGER)").unwrap();
+    db.execute("CREATE TABLE counts (k TEXT PRIMARY KEY, n INTEGER)")
+        .unwrap();
     db.execute("INSERT INTO counts VALUES ('hits', 5)").unwrap();
     // Increment-on-conflict using excluded.n + old n
     db.execute(
@@ -1305,7 +1344,8 @@ fn upsert_with_excluded_reference() {
 fn upsert_excluded_replaces_value() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT)")
+        .unwrap();
     db.execute("INSERT INTO t VALUES (1, 'old')").unwrap();
     db.execute(
         "INSERT INTO t VALUES (1, 'new') ON CONFLICT (id) DO UPDATE SET label = excluded.label",
@@ -1323,13 +1363,12 @@ fn upsert_excluded_replaces_value() {
 fn upsert_inserts_when_no_conflict() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)")
+        .unwrap();
     db.execute("INSERT INTO t VALUES (1, 10)").unwrap();
     // No conflict (id=2 doesn't exist) -> normal insert
-    db.execute(
-        "INSERT INTO t VALUES (2, 20) ON CONFLICT (id) DO UPDATE SET n = excluded.n",
-    )
-    .unwrap();
+    db.execute("INSERT INTO t VALUES (2, 20) ON CONFLICT (id) DO UPDATE SET n = excluded.n")
+        .unwrap();
 
     let r = db.query("SELECT id, n FROM t ORDER BY id").unwrap();
     assert_eq!(r.rows.len(), 2);
@@ -1340,7 +1379,8 @@ fn upsert_inserts_when_no_conflict() {
 fn upsert_with_where_clause_skips_when_false() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)")
+        .unwrap();
     db.execute("INSERT INTO t VALUES (1, 100)").unwrap();
     // WHERE n < excluded.n: 100 < 5 is FALSE, so no update
     db.execute(
@@ -1356,7 +1396,8 @@ fn upsert_with_where_clause_skips_when_false() {
 fn upsert_with_where_clause_applies_when_true() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)")
+        .unwrap();
     db.execute("INSERT INTO t VALUES (1, 5)").unwrap();
     // WHERE n < excluded.n: 5 < 100 is TRUE, so update happens
     db.execute(
@@ -1372,7 +1413,8 @@ fn upsert_with_where_clause_applies_when_true() {
 fn insert_returning_basic() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+        .unwrap();
     let r = db
         .query("INSERT INTO t (name) VALUES ('Alice') RETURNING id, name")
         .unwrap();
@@ -1388,7 +1430,8 @@ fn insert_returning_basic() {
 fn insert_returning_star() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)")
+        .unwrap();
     let r = db
         .query("INSERT INTO t VALUES (10, 100) RETURNING *")
         .unwrap();
@@ -1401,7 +1444,8 @@ fn insert_returning_star() {
 fn insert_returning_multiple_rows() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)")
+        .unwrap();
     let r = db
         .query("INSERT INTO t (n) VALUES (1), (2), (3) RETURNING id")
         .unwrap();
@@ -1412,7 +1456,8 @@ fn insert_returning_multiple_rows() {
 fn insert_returning_expression() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)")
+        .unwrap();
     let r = db
         .query("INSERT INTO t VALUES (1, 5) RETURNING n * 2 AS doubled")
         .unwrap();
@@ -1424,7 +1469,8 @@ fn insert_returning_expression() {
 fn update_returning_new_value() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)")
+        .unwrap();
     db.execute("INSERT INTO t VALUES (1, 10), (2, 20)").unwrap();
     let r = db
         .query("UPDATE t SET n = n + 5 WHERE id = 1 RETURNING id, n")
@@ -1437,11 +1483,11 @@ fn update_returning_new_value() {
 fn update_returning_multiple_rows() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)").unwrap();
-    db.execute("INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)").unwrap();
-    let r = db
-        .query("UPDATE t SET n = n * 2 RETURNING id")
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)")
         .unwrap();
+    db.execute("INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)")
+        .unwrap();
+    let r = db.query("UPDATE t SET n = n * 2 RETURNING id").unwrap();
     assert_eq!(r.rows.len(), 3);
 }
 
@@ -1449,8 +1495,10 @@ fn update_returning_multiple_rows() {
 fn delete_returning_old_value() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT)").unwrap();
-    db.execute("INSERT INTO t VALUES (1, 'a'), (2, 'b')").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT)")
+        .unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'a'), (2, 'b')")
+        .unwrap();
     let r = db
         .query("DELETE FROM t WHERE id = 1 RETURNING label")
         .unwrap();
@@ -1468,7 +1516,8 @@ fn delete_returning_old_value() {
 fn delete_returning_star() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)")
+        .unwrap();
     db.execute("INSERT INTO t VALUES (1, 10), (2, 20)").unwrap();
     let r = db.query("DELETE FROM t RETURNING *").unwrap();
     assert_eq!(r.rows.len(), 2);
@@ -1478,7 +1527,8 @@ fn delete_returning_star() {
 fn returning_no_match_yields_empty_result() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)")
+        .unwrap();
     db.execute("INSERT INTO t VALUES (1, 10)").unwrap();
     let r = db
         .query("UPDATE t SET n = 100 WHERE id = 999 RETURNING id")
@@ -1491,13 +1541,15 @@ fn fk_on_delete_cascade_basic() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("PRAGMA foreign_keys = ON").unwrap();
-    db.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY)").unwrap();
+    db.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY)")
+        .unwrap();
     db.execute(
         "CREATE TABLE child (id INTEGER PRIMARY KEY, p INTEGER REFERENCES parent(id) ON DELETE CASCADE)",
     )
     .unwrap();
     db.execute("INSERT INTO parent VALUES (1), (2)").unwrap();
-    db.execute("INSERT INTO child VALUES (10, 1), (11, 1), (12, 2)").unwrap();
+    db.execute("INSERT INTO child VALUES (10, 1), (11, 1), (12, 2)")
+        .unwrap();
 
     db.execute("DELETE FROM parent WHERE id = 1").unwrap();
     let r = db.query("SELECT id FROM child ORDER BY id").unwrap();
@@ -1511,13 +1563,15 @@ fn fk_on_delete_set_null() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("PRAGMA foreign_keys = ON").unwrap();
-    db.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY)").unwrap();
+    db.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY)")
+        .unwrap();
     db.execute(
         "CREATE TABLE child (id INTEGER PRIMARY KEY, p INTEGER REFERENCES parent(id) ON DELETE SET NULL)",
     )
     .unwrap();
     db.execute("INSERT INTO parent VALUES (1)").unwrap();
-    db.execute("INSERT INTO child VALUES (10, 1), (11, 1)").unwrap();
+    db.execute("INSERT INTO child VALUES (10, 1), (11, 1)")
+        .unwrap();
 
     db.execute("DELETE FROM parent WHERE id = 1").unwrap();
     let r = db.query("SELECT id, p FROM child ORDER BY id").unwrap();
@@ -1531,7 +1585,8 @@ fn fk_on_delete_set_default() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("PRAGMA foreign_keys = ON").unwrap();
-    db.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY)").unwrap();
+    db.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY)")
+        .unwrap();
     db.execute("INSERT INTO parent VALUES (0), (1)").unwrap();
     db.execute(
         "CREATE TABLE child (id INTEGER PRIMARY KEY, p INTEGER DEFAULT 0 REFERENCES parent(id) ON DELETE SET DEFAULT)",
@@ -1550,7 +1605,8 @@ fn fk_on_delete_restrict_errors() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("PRAGMA foreign_keys = ON").unwrap();
-    db.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY)").unwrap();
+    db.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY)")
+        .unwrap();
     db.execute(
         "CREATE TABLE child (id INTEGER PRIMARY KEY, p INTEGER REFERENCES parent(id) ON DELETE RESTRICT)",
     )
@@ -1568,11 +1624,10 @@ fn fk_no_action_default_errors() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("PRAGMA foreign_keys = ON").unwrap();
-    db.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY)").unwrap();
-    db.execute(
-        "CREATE TABLE child (id INTEGER PRIMARY KEY, p INTEGER REFERENCES parent(id))",
-    )
-    .unwrap();
+    db.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY)")
+        .unwrap();
+    db.execute("CREATE TABLE child (id INTEGER PRIMARY KEY, p INTEGER REFERENCES parent(id))")
+        .unwrap();
     db.execute("INSERT INTO parent VALUES (1)").unwrap();
     db.execute("INSERT INTO child VALUES (10, 1)").unwrap();
     assert!(db.execute("DELETE FROM parent WHERE id = 1").is_err());
@@ -1583,7 +1638,8 @@ fn fk_cascade_multi_level() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
     db.execute("PRAGMA foreign_keys = ON").unwrap();
-    db.execute("CREATE TABLE a (id INTEGER PRIMARY KEY)").unwrap();
+    db.execute("CREATE TABLE a (id INTEGER PRIMARY KEY)")
+        .unwrap();
     db.execute(
         "CREATE TABLE b (id INTEGER PRIMARY KEY, a_id INTEGER REFERENCES a(id) ON DELETE CASCADE)",
     )
@@ -1594,7 +1650,8 @@ fn fk_cascade_multi_level() {
     .unwrap();
     db.execute("INSERT INTO a VALUES (1)").unwrap();
     db.execute("INSERT INTO b VALUES (10, 1)").unwrap();
-    db.execute("INSERT INTO c VALUES (100, 10), (101, 10)").unwrap();
+    db.execute("INSERT INTO c VALUES (100, 10), (101, 10)")
+        .unwrap();
 
     db.execute("DELETE FROM a WHERE id = 1").unwrap();
     // a, b, and c should all be empty.
@@ -1616,7 +1673,8 @@ fn fk_cascade_multi_level() {
 fn fk_pragma_foreign_key_list_includes_actions() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY)").unwrap();
+    db.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY)")
+        .unwrap();
     db.execute(
         "CREATE TABLE child (id INTEGER PRIMARY KEY, p INTEGER REFERENCES parent(id) ON DELETE CASCADE ON UPDATE SET NULL)",
     )
@@ -1632,7 +1690,8 @@ fn fk_pragma_foreign_key_list_includes_actions() {
 fn reindex_succeeds_as_noop() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+        .unwrap();
     db.execute("CREATE INDEX idx_name ON t(name)").unwrap();
     // Both forms should accept without error.
     db.execute("REINDEX").unwrap();
@@ -1644,7 +1703,8 @@ fn reindex_succeeds_as_noop() {
 fn analyze_succeeds_as_noop() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+        .unwrap();
     db.execute("ANALYZE").unwrap();
     db.execute("ANALYZE t").unwrap();
 }
@@ -1653,7 +1713,8 @@ fn analyze_succeeds_as_noop() {
 fn insert_or_rollback_undoes_transaction() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT NOT NULL)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+        .unwrap();
     db.execute("BEGIN").unwrap();
     db.execute("INSERT INTO t VALUES (1, 'good')").unwrap();
     // OR ROLLBACK on NOT NULL violation should rollback both rows.
@@ -1669,7 +1730,8 @@ fn insert_or_rollback_undoes_transaction() {
 fn insert_or_fail_keeps_prior_rows() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT NOT NULL)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+        .unwrap();
     // First insert succeeds; multi-row INSERT OR FAIL stops on bad row but
     // keeps the good ones above it.
     let res = db.execute("INSERT OR FAIL INTO t VALUES (1, 'a'), (2, NULL), (3, 'c')");
@@ -1683,8 +1745,10 @@ fn insert_or_fail_keeps_prior_rows() {
 fn delete_with_limit() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)").unwrap();
-    db.execute("INSERT INTO t VALUES (1), (2), (3), (4), (5)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+        .unwrap();
+    db.execute("INSERT INTO t VALUES (1), (2), (3), (4), (5)")
+        .unwrap();
     db.execute("DELETE FROM t LIMIT 2").unwrap();
     let r = db.query("SELECT COUNT(*) FROM t").unwrap();
     assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(3));
@@ -1694,7 +1758,8 @@ fn delete_with_limit() {
 fn delete_with_order_by_and_limit() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)")
+        .unwrap();
     db.execute("INSERT INTO t VALUES (1, 10), (2, 30), (3, 20), (4, 50), (5, 40)")
         .unwrap();
     // Delete the 2 highest-n rows: (4,50) and (5,40).
@@ -1710,10 +1775,14 @@ fn delete_with_order_by_and_limit() {
 fn update_from_basic() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE inventory (sku TEXT PRIMARY KEY, qty INTEGER)").unwrap();
-    db.execute("CREATE TABLE sold (sku TEXT, amount INTEGER)").unwrap();
-    db.execute("INSERT INTO inventory VALUES ('A', 100), ('B', 50), ('C', 10)").unwrap();
-    db.execute("INSERT INTO sold VALUES ('A', 30), ('B', 5)").unwrap();
+    db.execute("CREATE TABLE inventory (sku TEXT PRIMARY KEY, qty INTEGER)")
+        .unwrap();
+    db.execute("CREATE TABLE sold (sku TEXT, amount INTEGER)")
+        .unwrap();
+    db.execute("INSERT INTO inventory VALUES ('A', 100), ('B', 50), ('C', 10)")
+        .unwrap();
+    db.execute("INSERT INTO sold VALUES ('A', 30), ('B', 5)")
+        .unwrap();
 
     db.execute(
         "UPDATE inventory SET qty = qty - sold.amount FROM sold WHERE inventory.sku = sold.sku",
@@ -1735,16 +1804,16 @@ fn default_persists_across_reopen() {
     let vfs = rsqlite_vfs::native::NativeVfs::new();
     {
         let mut db = Database::create(&vfs, db_path).unwrap();
-        db.execute(
-            "CREATE TABLE accounts (id INTEGER PRIMARY KEY, status TEXT DEFAULT 'active')",
-        )
-        .unwrap();
+        db.execute("CREATE TABLE accounts (id INTEGER PRIMARY KEY, status TEXT DEFAULT 'active')")
+            .unwrap();
     }
     // Reopen — default_expr must be parsed back from stored schema SQL.
     {
         let mut db = Database::open(&vfs, db_path).unwrap();
         db.execute("INSERT INTO accounts (id) VALUES (1)").unwrap();
-        let result = db.query("SELECT status FROM accounts WHERE id = 1").unwrap();
+        let result = db
+            .query("SELECT status FROM accounts WHERE id = 1")
+            .unwrap();
         assert_eq!(
             result.rows[0].values[0],
             crate::types::Value::Text("active".to_string())

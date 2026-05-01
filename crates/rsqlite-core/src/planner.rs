@@ -307,7 +307,14 @@ pub fn plan_statement(stmt: &Statement, catalog: &Catalog) -> Result<Plan> {
             returning,
             from,
             ..
-        } => plan_update(table, assignments, selection.as_ref(), returning.as_deref(), from.as_ref(), catalog),
+        } => plan_update(
+            table,
+            assignments,
+            selection.as_ref(),
+            returning.as_deref(),
+            from.as_ref(),
+            catalog,
+        ),
         Statement::Delete(delete) => plan_delete(delete, catalog),
         Statement::Drop {
             object_type,
@@ -358,12 +365,12 @@ pub fn plan_statement(stmt: &Statement, catalog: &Catalog) -> Result<Plan> {
                         column_type: col_type,
                     })
                 }
-                ast::AlterTableOperation::RenameTable { table_name: new_name } => {
-                    Ok(Plan::AlterTableRename {
-                        old_name: table_name,
-                        new_name: new_name.to_string(),
-                    })
-                }
+                ast::AlterTableOperation::RenameTable {
+                    table_name: new_name,
+                } => Ok(Plan::AlterTableRename {
+                    old_name: table_name,
+                    new_name: new_name.to_string(),
+                }),
                 other => Err(Error::Other(format!(
                     "unsupported ALTER TABLE operation: {other}"
                 ))),
@@ -464,20 +471,28 @@ pub fn plan_statement(stmt: &Statement, catalog: &Catalog) -> Result<Plan> {
         }
         Statement::StartTransaction { .. } => Ok(Plan::Begin),
         Statement::Commit { .. } => Ok(Plan::Commit),
-        Statement::Rollback { savepoint: Some(name), .. } => Ok(Plan::RollbackTo(name.value.clone())),
+        Statement::Rollback {
+            savepoint: Some(name),
+            ..
+        } => Ok(Plan::RollbackTo(name.value.clone())),
         Statement::Rollback { .. } => Ok(Plan::Rollback),
         Statement::Savepoint { name } => Ok(Plan::Savepoint(name.value.clone())),
         Statement::ReleaseSavepoint { name } => Ok(Plan::Release(name.value.clone())),
-        Statement::AttachDatabase { schema_name, database_file_name, .. } => {
-            let file_path = database_file_name.to_string().trim_matches('\'').to_string();
+        Statement::AttachDatabase {
+            schema_name,
+            database_file_name,
+            ..
+        } => {
+            let file_path = database_file_name
+                .to_string()
+                .trim_matches('\'')
+                .to_string();
             Ok(Plan::AttachDatabase {
                 schema_name: schema_name.value.clone(),
                 file_path,
             })
         }
-        _ => Err(Error::Other(format!(
-            "unsupported statement type: {stmt}"
-        ))),
+        _ => Err(Error::Other(format!("unsupported statement type: {stmt}"))),
     }
 }
 
@@ -569,7 +584,11 @@ fn resolve_view(
         .map_err(|e| Error::Other(format!("failed to parse view SQL: {e}")))?;
 
     match stmts.into_iter().next() {
-        Some(Statement::CreateView { query, columns: view_cols, .. }) => {
+        Some(Statement::CreateView {
+            query,
+            columns: view_cols,
+            ..
+        }) => {
             let prefix = alias
                 .as_ref()
                 .map(|a| a.name.value.clone())
@@ -594,7 +613,9 @@ fn resolve_view(
 
             Ok((plan, columns))
         }
-        _ => Err(Error::Other(format!("invalid view definition for {view_name}"))),
+        _ => Err(Error::Other(format!(
+            "invalid view definition for {view_name}"
+        ))),
     }
 }
 
@@ -604,9 +625,7 @@ fn extract_plan_output_names(plan: &Plan, view_cols: &[ast::ViewColumnDef]) -> V
     }
 
     match plan {
-        Plan::Project { outputs, .. } => {
-            outputs.iter().map(|o| o.alias.clone()).collect()
-        }
+        Plan::Project { outputs, .. } => outputs.iter().map(|o| o.alias.clone()).collect(),
         Plan::Distinct { input } => extract_plan_output_names(input, view_cols),
         Plan::Sort { input, .. } => extract_plan_output_names(input, view_cols),
         Plan::Limit { input, .. } => extract_plan_output_names(input, view_cols),
@@ -646,7 +665,10 @@ fn rewrite_window_refs(expr: &PlanExpr, win_idx: &mut usize, base_col_offset: us
         },
         PlanExpr::Function { name, args } => PlanExpr::Function {
             name: name.clone(),
-            args: args.iter().map(|a| rewrite_window_refs(a, win_idx, base_col_offset)).collect(),
+            args: args
+                .iter()
+                .map(|a| rewrite_window_refs(a, win_idx, base_col_offset))
+                .collect(),
         },
         other => other.clone(),
     }
@@ -683,9 +705,7 @@ fn plan_set_expr(set_expr: &SetExpr, catalog: &Catalog, ctes: &CteMap) -> Result
                 _ => Err(Error::Other(format!("unsupported set operation: {op}"))),
             }
         }
-        _ => Err(Error::Other(
-            "unsupported set expression".to_string(),
-        )),
+        _ => Err(Error::Other("unsupported set expression".to_string())),
     }
 }
 
@@ -727,19 +747,25 @@ fn plan_recursive_cte(
     parent_ctes: &CteMap,
 ) -> Result<(Plan, Plan)> {
     match cte.query.body.as_ref() {
-        SetExpr::SetOperation { left, right, op, .. } if *op == ast::SetOperator::Union => {
+        SetExpr::SetOperation {
+            left, right, op, ..
+        } if *op == ast::SetOperator::Union => {
             let (anchor_body, recursive_body) = if body_references_name(right, name) {
                 (left.as_ref(), right.as_ref())
             } else if body_references_name(left, name) {
                 (right.as_ref(), left.as_ref())
             } else {
-                return Err(Error::Other("recursive CTE does not reference itself".into()));
+                return Err(Error::Other(
+                    "recursive CTE does not reference itself".into(),
+                ));
             };
 
             let anchor_plan = plan_set_expr(anchor_body, catalog, parent_ctes)?;
 
-            let ref_columns: Vec<ColumnRef> = column_names.iter().enumerate().map(|(i, cn)| {
-                ColumnRef {
+            let ref_columns: Vec<ColumnRef> = column_names
+                .iter()
+                .enumerate()
+                .map(|(i, cn)| ColumnRef {
                     name: cn.clone(),
                     column_index: i,
                     is_rowid_alias: false,
@@ -747,17 +773,20 @@ fn plan_recursive_cte(
                     nullable: true,
                     is_primary_key: false,
                     is_unique: false,
-                }
-            }).collect();
+                })
+                .collect();
 
             let mut recursive_ctes = parent_ctes.clone();
-            recursive_ctes.insert(name.to_string(), CteDef {
-                plan: Plan::RecursiveCteRef {
-                    name: name.to_string(),
-                    columns: ref_columns,
+            recursive_ctes.insert(
+                name.to_string(),
+                CteDef {
+                    plan: Plan::RecursiveCteRef {
+                        name: name.to_string(),
+                        columns: ref_columns,
+                    },
+                    output_columns: column_names.to_vec(),
                 },
-                output_columns: column_names.to_vec(),
-            });
+            );
 
             let recursive_plan = plan_set_expr(recursive_body, catalog, &recursive_ctes)?;
 
@@ -777,8 +806,14 @@ fn plan_select(query: &ast::Query, catalog: &Catalog, parent_ctes: &CteMap) -> R
             let name = cte.alias.name.value.to_lowercase();
 
             if with.recursive && is_recursive_cte(cte, &name) {
-                let column_names: Vec<String> = cte.alias.columns.iter().map(|c| c.name.value.clone()).collect();
-                let (anchor_plan, recursive_plan) = plan_recursive_cte(cte, &name, &column_names, catalog, &ctes)?;
+                let column_names: Vec<String> = cte
+                    .alias
+                    .columns
+                    .iter()
+                    .map(|c| c.name.value.clone())
+                    .collect();
+                let (anchor_plan, recursive_plan) =
+                    plan_recursive_cte(cte, &name, &column_names, catalog, &ctes)?;
                 let rcte_plan = Plan::RecursiveCte {
                     name: name.clone(),
                     column_names: column_names.clone(),
@@ -790,7 +825,13 @@ fn plan_select(query: &ast::Query, catalog: &Catalog, parent_ctes: &CteMap) -> R
                 } else {
                     column_names.clone()
                 };
-                ctes.insert(name, CteDef { plan: rcte_plan, output_columns });
+                ctes.insert(
+                    name,
+                    CteDef {
+                        plan: rcte_plan,
+                        output_columns,
+                    },
+                );
                 continue;
             }
 
@@ -799,8 +840,12 @@ fn plan_select(query: &ast::Query, catalog: &Catalog, parent_ctes: &CteMap) -> R
                 extract_plan_output_names(&cte_plan, &[])
             } else {
                 let orig_names = extract_plan_output_names(&cte_plan, &[]);
-                let new_names: Vec<String> =
-                    cte.alias.columns.iter().map(|c| c.name.value.clone()).collect();
+                let new_names: Vec<String> = cte
+                    .alias
+                    .columns
+                    .iter()
+                    .map(|c| c.name.value.clone())
+                    .collect();
                 let outputs: Vec<ProjectionItem> = new_names
                     .iter()
                     .enumerate()
@@ -826,7 +871,13 @@ fn plan_select(query: &ast::Query, catalog: &Catalog, parent_ctes: &CteMap) -> R
                 };
                 new_names
             };
-            ctes.insert(name, CteDef { plan: cte_plan, output_columns });
+            ctes.insert(
+                name,
+                CteDef {
+                    plan: cte_plan,
+                    output_columns,
+                },
+            );
         }
     }
 
@@ -899,20 +950,21 @@ fn plan_select_body(
         let name = def.0.value.clone();
         let resolved_spec = match &def.1 {
             ast::NamedWindowExpr::WindowSpec(spec) => spec.clone(),
-            ast::NamedWindowExpr::NamedWindow(other) => named_windows
-                .get(&other.value)
-                .cloned()
-                .ok_or_else(|| {
+            ast::NamedWindowExpr::NamedWindow(other) => {
+                named_windows.get(&other.value).cloned().ok_or_else(|| {
                     Error::Other(format!(
                         "named window references unknown window: {}",
                         other.value
                     ))
-                })?,
+                })?
+            }
         };
         named_windows.insert(name, resolved_spec);
     }
 
-    expr::with_named_windows(named_windows, || plan_select_body_inner(select, catalog, ctes))
+    expr::with_named_windows(named_windows, || {
+        plan_select_body_inner(select, catalog, ctes)
+    })
 }
 
 fn plan_select_body_inner(
@@ -938,31 +990,54 @@ fn plan_select_body_inner(
     for join in &from.joins {
         let (right_plan, right_columns) = resolve_table_factor(&join.relation, catalog, ctes)?;
         let left_len = all_columns.len();
-        let combined_columns: Vec<ColumnRef> =
-            all_columns.iter().chain(right_columns.iter()).cloned().collect();
+        let combined_columns: Vec<ColumnRef> = all_columns
+            .iter()
+            .chain(right_columns.iter())
+            .cloned()
+            .collect();
 
         let (join_type, condition) = match &join.join_operator {
             ast::JoinOperator::Inner(constraint) | ast::JoinOperator::Join(constraint) => {
-                let cond = plan_join_constraint_with_split(constraint, &combined_columns, left_len, catalog)?;
+                let cond = plan_join_constraint_with_split(
+                    constraint,
+                    &combined_columns,
+                    left_len,
+                    catalog,
+                )?;
                 (JoinType::Inner, cond)
             }
             ast::JoinOperator::Left(constraint) | ast::JoinOperator::LeftOuter(constraint) => {
-                let cond = plan_join_constraint_with_split(constraint, &combined_columns, left_len, catalog)?;
+                let cond = plan_join_constraint_with_split(
+                    constraint,
+                    &combined_columns,
+                    left_len,
+                    catalog,
+                )?;
                 (JoinType::Left, cond)
             }
             ast::JoinOperator::Right(constraint) | ast::JoinOperator::RightOuter(constraint) => {
-                let cond = plan_join_constraint_with_split(constraint, &combined_columns, left_len, catalog)?;
+                let cond = plan_join_constraint_with_split(
+                    constraint,
+                    &combined_columns,
+                    left_len,
+                    catalog,
+                )?;
                 (JoinType::Right, cond)
             }
             ast::JoinOperator::FullOuter(constraint) => {
-                let cond = plan_join_constraint_with_split(constraint, &combined_columns, left_len, catalog)?;
+                let cond = plan_join_constraint_with_split(
+                    constraint,
+                    &combined_columns,
+                    left_len,
+                    catalog,
+                )?;
                 (JoinType::Full, cond)
             }
             ast::JoinOperator::CrossJoin => (JoinType::Cross, None),
             _ => {
                 return Err(Error::Other(
                     "only INNER, LEFT, RIGHT, FULL, and CROSS JOIN are supported".to_string(),
-                ))
+                ));
             }
         };
 
@@ -976,9 +1051,13 @@ fn plan_select_body_inner(
     }
 
     for extra_from in &select.from[1..] {
-        let (right_plan, right_columns) = resolve_table_factor(&extra_from.relation, catalog, ctes)?;
-        let combined_columns: Vec<ColumnRef> =
-            all_columns.iter().chain(right_columns.iter()).cloned().collect();
+        let (right_plan, right_columns) =
+            resolve_table_factor(&extra_from.relation, catalog, ctes)?;
+        let combined_columns: Vec<ColumnRef> = all_columns
+            .iter()
+            .chain(right_columns.iter())
+            .cloned()
+            .collect();
 
         plan = Plan::NestedLoopJoin {
             left: Box::new(plan),
@@ -991,8 +1070,11 @@ fn plan_select_body_inner(
         for join in &extra_from.joins {
             let (right_plan, right_cols) = resolve_table_factor(&join.relation, catalog, ctes)?;
             let left_len = all_columns.len();
-            let combined: Vec<ColumnRef> =
-                all_columns.iter().chain(right_cols.iter()).cloned().collect();
+            let combined: Vec<ColumnRef> = all_columns
+                .iter()
+                .chain(right_cols.iter())
+                .cloned()
+                .collect();
 
             let (join_type, condition) = match &join.join_operator {
                 ast::JoinOperator::Inner(c) | ast::JoinOperator::Join(c) => {
@@ -1015,7 +1097,7 @@ fn plan_select_body_inner(
                 _ => {
                     return Err(Error::Other(
                         "only INNER, LEFT, RIGHT, FULL, and CROSS JOIN are supported".to_string(),
-                    ))
+                    ));
                 }
             };
 
@@ -1033,9 +1115,7 @@ fn plan_select_body_inner(
     if let Some(selection) = &select.selection {
         let predicate = plan_expr(selection, &all_columns, catalog)?;
 
-        if let Some(index_plan) =
-            try_index_scan(&plan, &predicate, &all_columns, catalog)
-        {
+        if let Some(index_plan) = try_index_scan(&plan, &predicate, &all_columns, catalog) {
             plan = index_plan;
         } else {
             plan = Plan::Filter {
@@ -1115,7 +1195,11 @@ fn plan_select_body_inner(
         }
 
         let current_output_names: Vec<String> = match &plan {
-            Plan::Aggregate { group_by, aggregates, .. } => {
+            Plan::Aggregate {
+                group_by,
+                aggregates,
+                ..
+            } => {
                 let mut names = Vec::new();
                 for gb in group_by {
                     if let PlanExpr::Column(c) = gb {
@@ -1223,16 +1307,12 @@ fn build_using_condition(
             .iter()
             .enumerate()
             .find(|(_, c)| c.name.eq_ignore_ascii_case(&name))
-            .ok_or_else(|| {
-                Error::Other(format!("USING column not found on left: {name}"))
-            })?;
+            .ok_or_else(|| Error::Other(format!("USING column not found on left: {name}")))?;
         let right = right_cols
             .iter()
             .enumerate()
             .find(|(_, c)| c.name.eq_ignore_ascii_case(&name))
-            .ok_or_else(|| {
-                Error::Other(format!("USING column not found on right: {name}"))
-            })?;
+            .ok_or_else(|| Error::Other(format!("USING column not found on right: {name}")))?;
         let mut left_ref = left.1.clone();
         left_ref.column_index = left.0;
         let mut right_ref = right.1.clone();
@@ -1381,9 +1461,9 @@ fn try_index_scan(
             let mut all_matched = true;
 
             for idx_col in &idx_def.columns {
-                let found = eq_parts.iter().find(|(col_name, _)| {
-                    col_name.eq_ignore_ascii_case(idx_col)
-                });
+                let found = eq_parts
+                    .iter()
+                    .find(|(col_name, _)| col_name.eq_ignore_ascii_case(idx_col));
                 match found {
                     Some((_, val_expr)) => lookup_values.push(val_expr.clone()),
                     None => {
@@ -1496,10 +1576,7 @@ fn extract_range_bounds(predicate: &PlanExpr) -> Vec<(String, PlanExpr, bool, bo
     bounds
 }
 
-fn collect_range_parts(
-    expr: &PlanExpr,
-    out: &mut Vec<(String, PlanExpr, bool, bool)>,
-) {
+fn collect_range_parts(expr: &PlanExpr, out: &mut Vec<(String, PlanExpr, bool, bool)>) {
     match expr {
         PlanExpr::BinaryOp {
             left,
@@ -1546,10 +1623,7 @@ fn collect_range_parts(
     }
 }
 
-fn build_remaining_range_predicate(
-    predicate: &PlanExpr,
-    index_column: &str,
-) -> Option<PlanExpr> {
+fn build_remaining_range_predicate(predicate: &PlanExpr, index_column: &str) -> Option<PlanExpr> {
     match predicate {
         PlanExpr::BinaryOp {
             left,
@@ -1597,11 +1671,7 @@ fn build_remaining_range_predicate(
 fn extract_equality_parts(predicate: &PlanExpr) -> Option<Vec<(String, PlanExpr)>> {
     let mut parts = Vec::new();
     collect_and_equalities(predicate, &mut parts);
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts)
-    }
+    if parts.is_empty() { None } else { Some(parts) }
 }
 
 fn collect_and_equalities(expr: &PlanExpr, out: &mut Vec<(String, PlanExpr)>) {
@@ -1682,18 +1752,10 @@ fn build_remaining_predicate(predicate: &PlanExpr, index_columns: &[String]) -> 
 }
 
 fn plan_create_index(ci: &ast::CreateIndex) -> Result<Plan> {
-    let index_name = ci
-        .name
-        .as_ref()
-        .map(|n| n.to_string())
-        .unwrap_or_default();
+    let index_name = ci.name.as_ref().map(|n| n.to_string()).unwrap_or_default();
     let table_name = ci.table_name.to_string();
 
-    let columns: Vec<String> = ci
-        .columns
-        .iter()
-        .map(|c| c.expr.to_string())
-        .collect();
+    let columns: Vec<String> = ci.columns.iter().map(|c| c.expr.to_string()).collect();
 
     let sql = format!("{ci}");
 
@@ -1712,13 +1774,13 @@ fn plan_insert(insert: &ast::Insert, catalog: &Catalog) -> Result<Plan> {
         _ => {
             return Err(Error::Other(
                 "only simple table names are supported in INSERT".to_string(),
-            ))
+            ));
         }
     };
 
-    let table_def = catalog.get_table(&table_name).ok_or_else(|| {
-        Error::Other(format!("table not found: {table_name}"))
-    })?;
+    let table_def = catalog
+        .get_table(&table_name)
+        .ok_or_else(|| Error::Other(format!("table not found: {table_name}")))?;
 
     let all_columns: Vec<ColumnRef> = table_def
         .columns
@@ -1737,19 +1799,11 @@ fn plan_insert(insert: &ast::Insert, catalog: &Catalog) -> Result<Plan> {
     let target_columns = if insert.columns.is_empty() {
         None
     } else {
-        Some(
-            insert
-                .columns
-                .iter()
-                .map(|c| c.value.clone())
-                .collect(),
-        )
+        Some(insert.columns.iter().map(|c| c.value.clone()).collect())
     };
 
     let (rows, source_query) = match insert.source.as_ref() {
-        None => {
-            (vec![vec![]], None)
-        }
+        None => (vec![vec![]], None),
         Some(source) => match source.body.as_ref() {
             SetExpr::Values(values) => {
                 let mut planned_rows = Vec::new();
@@ -1769,8 +1823,8 @@ fn plan_insert(insert: &ast::Insert, catalog: &Catalog) -> Result<Plan> {
         },
     };
 
-    let or_replace = insert.replace_into
-        || matches!(insert.or, Some(ast::SqliteOnConflict::Replace));
+    let or_replace =
+        insert.replace_into || matches!(insert.or, Some(ast::SqliteOnConflict::Replace));
 
     let on_conflict = if matches!(insert.or, Some(ast::SqliteOnConflict::Ignore)) {
         Some(OnConflictPlan::DoNothing)
@@ -1811,7 +1865,7 @@ fn plan_insert(insert: &ast::Insert, catalog: &Catalog) -> Result<Plan> {
                             ast::AssignmentTarget::Tuple(_) => {
                                 return Err(Error::Other(
                                     "tuple assignment not supported".to_string(),
-                                ))
+                                ));
                             }
                         };
                         let expr = plan_expr(&assign.value, &planning_columns, catalog)?;
@@ -1878,13 +1932,13 @@ fn plan_update(
         _ => {
             return Err(Error::Other(
                 "only simple table references are supported in UPDATE".to_string(),
-            ))
+            ));
         }
     };
 
-    let table_def = catalog.get_table(&table_name).ok_or_else(|| {
-        Error::Other(format!("table not found: {table_name}"))
-    })?;
+    let table_def = catalog
+        .get_table(&table_name)
+        .ok_or_else(|| Error::Other(format!("table not found: {table_name}")))?;
 
     let all_columns: Vec<ColumnRef> = table_def
         .columns
@@ -1907,18 +1961,20 @@ fn plan_update(
         None => None,
         Some(ast::UpdateTableFromKind::BeforeSet(t))
         | Some(ast::UpdateTableFromKind::AfterSet(t)) => {
-            let first = t.first().ok_or_else(|| {
-                Error::Other("UPDATE FROM requires a table".to_string())
-            })?;
+            let first = t
+                .first()
+                .ok_or_else(|| Error::Other("UPDATE FROM requires a table".to_string()))?;
             let from_table_name = match &first.relation {
                 TableFactor::Table { name, .. } => name.to_string(),
-                _ => return Err(Error::Other(
-                    "only simple table references are supported in UPDATE FROM".to_string(),
-                )),
+                _ => {
+                    return Err(Error::Other(
+                        "only simple table references are supported in UPDATE FROM".to_string(),
+                    ));
+                }
             };
-            let from_def = catalog.get_table(&from_table_name).ok_or_else(|| {
-                Error::Other(format!("table not found: {from_table_name}"))
-            })?;
+            let from_def = catalog
+                .get_table(&from_table_name)
+                .ok_or_else(|| Error::Other(format!("table not found: {from_table_name}")))?;
             let from_columns: Vec<ColumnRef> = from_def
                 .columns
                 .iter()
@@ -1950,9 +2006,7 @@ fn plan_update(
         let col_name = match &assignment.target {
             ast::AssignmentTarget::ColumnName(name) => name.to_string(),
             ast::AssignmentTarget::Tuple(_) => {
-                return Err(Error::Other(
-                    "tuple assignment not supported".to_string(),
-                ))
+                return Err(Error::Other("tuple assignment not supported".to_string()));
             }
         };
         let expr = plan_expr(&assignment.value, &combined_columns, catalog)?;
@@ -1994,13 +2048,13 @@ fn plan_delete(delete: &ast::Delete, catalog: &Catalog) -> Result<Plan> {
         _ => {
             return Err(Error::Other(
                 "only simple table references are supported in DELETE".to_string(),
-            ))
+            ));
         }
     };
 
-    let table_def = catalog.get_table(&table_name).ok_or_else(|| {
-        Error::Other(format!("table not found: {table_name}"))
-    })?;
+    let table_def = catalog
+        .get_table(&table_name)
+        .ok_or_else(|| Error::Other(format!("table not found: {table_name}")))?;
 
     let all_columns: Vec<ColumnRef> = table_def
         .columns

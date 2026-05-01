@@ -73,7 +73,13 @@ pub(super) fn execute_join(
 
             let passes = match condition {
                 Some(cond) => {
-                    let val = super::eval::eval_expr(cond, &combined_row, &combined_columns, pager, catalog)?;
+                    let val = super::eval::eval_expr(
+                        cond,
+                        &combined_row,
+                        &combined_columns,
+                        pager,
+                        catalog,
+                    )?;
                     is_truthy(&val)
                 }
                 None => true,
@@ -86,12 +92,12 @@ pub(super) fn execute_join(
             }
         }
 
-        if !left_matched
-            && (join_type == JoinType::Left || join_type == JoinType::Full)
-        {
+        if !left_matched && (join_type == JoinType::Left || join_type == JoinType::Full) {
             let mut combined_values = left_row.values.clone();
             combined_values.extend_from_slice(&null_right);
-            rows.push(Row { values: combined_values });
+            rows.push(Row {
+                values: combined_values,
+            });
         }
     }
 
@@ -102,7 +108,9 @@ pub(super) fn execute_join(
             }
             let mut combined_values = null_left.clone();
             combined_values.extend_from_slice(&right_row.values);
-            rows.push(Row { values: combined_values });
+            rows.push(Row {
+                values: combined_values,
+            });
         }
     }
 

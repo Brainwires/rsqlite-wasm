@@ -38,7 +38,11 @@ pub(super) fn execute_create_trigger(
 
     let sql = format!(
         "CREATE TRIGGER {name} {timing_str} {event_str} ON {table_name} FOR EACH ROW{when} BEGIN {body_str} END",
-        when = if when_str.is_empty() { String::new() } else { format!(" WHEN {when_str}") },
+        when = if when_str.is_empty() {
+            String::new()
+        } else {
+            format!(" WHEN {when_str}")
+        },
     );
 
     let was_in_txn = pager.in_transaction();
@@ -87,15 +91,20 @@ pub(super) fn fire_triggers(
     pager: &mut Pager,
     catalog: &Catalog,
 ) -> Result<()> {
-    let triggers: Vec<_> = catalog.triggers_for_table(table_name, timing, event)
-        .into_iter().cloned().collect();
+    let triggers: Vec<_> = catalog
+        .triggers_for_table(table_name, timing, event)
+        .into_iter()
+        .cloned()
+        .collect();
     if triggers.is_empty() {
         return Ok(());
     }
 
     let depth = super::state::trigger_depth_get();
     if depth >= 32 {
-        return Err(Error::Other("too many levels of trigger recursion".to_string()));
+        return Err(Error::Other(
+            "too many levels of trigger recursion".to_string(),
+        ));
     }
 
     for trigger in &triggers {
@@ -122,7 +131,9 @@ pub(super) fn fire_triggers(
 
         super::state::trigger_depth_inc();
 
-        let body_stmts: Vec<&str> = trigger.body_sql.split(';')
+        let body_stmts: Vec<&str> = trigger
+            .body_sql
+            .split(';')
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
             .collect();

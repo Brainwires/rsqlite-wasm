@@ -350,6 +350,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // arbitrary float values, not π
     fn real_values() {
         round_trip(&[Value::Real(3.14), Value::Real(-0.0), Value::Real(f64::MAX)]);
     }
@@ -373,6 +374,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // arbitrary float values, not e
     fn mixed_types() {
         round_trip(&[
             Value::Integer(1),

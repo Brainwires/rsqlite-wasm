@@ -4,7 +4,7 @@ use rsqlite_storage::pager::Pager;
 use crate::catalog::Catalog;
 use crate::error::Result;
 use crate::eval_helpers::{compare, is_truthy, value_to_text};
-use crate::planner::{agg_column_name, AggFunc, Plan, PlanExpr};
+use crate::planner::{AggFunc, Plan, PlanExpr, agg_column_name};
 use crate::types::{QueryResult, Row};
 
 pub(super) fn execute_aggregate(
@@ -27,10 +27,7 @@ pub(super) fn execute_aggregate(
             .collect::<Result<Vec<_>>>()?;
 
         let found = groups.iter_mut().find(|(k, _)| {
-            k.len() == key.len()
-                && k.iter()
-                    .zip(key.iter())
-                    .all(|(a, b)| compare(a, b) == 0)
+            k.len() == key.len() && k.iter().zip(key.iter()).all(|(a, b)| compare(a, b) == 0)
         });
 
         if let Some((_, indices)) = found {
@@ -82,14 +79,19 @@ pub(super) fn execute_aggregate(
                     kept
                 }
             };
-            let agg_val =
-                compute_aggregate(func, arg, *distinct, &filtered_rows, input_columns, pager, catalog)?;
+            let agg_val = compute_aggregate(
+                func,
+                arg,
+                *distinct,
+                &filtered_rows,
+                input_columns,
+                pager,
+                catalog,
+            )?;
             row_values.push(agg_val);
         }
 
-        let row = Row {
-            values: row_values,
-        };
+        let row = Row { values: row_values };
 
         if let Some(having_expr) = having {
             let val = super::eval::eval_expr(having_expr, &row, &output_columns, pager, catalog)?;
@@ -277,7 +279,9 @@ fn compute_aggregate(
                 let val = super::eval::eval_expr(arg, row, columns, pager, catalog)?;
                 elements.push(value_to_json(&val));
             }
-            Ok(Value::Text(crate::json::JsonValue::Array(elements).to_string_repr()))
+            Ok(Value::Text(
+                crate::json::JsonValue::Array(elements).to_string_repr(),
+            ))
         }
         AggFunc::JsonGroupObject { key } => {
             let mut entries: Vec<(String, crate::json::JsonValue)> = Vec::new();
@@ -287,7 +291,9 @@ fn compute_aggregate(
                 let key_text = value_to_text(&k);
                 entries.push((key_text, value_to_json(&v)));
             }
-            Ok(Value::Text(crate::json::JsonValue::Object(entries).to_string_repr()))
+            Ok(Value::Text(
+                crate::json::JsonValue::Object(entries).to_string_repr(),
+            ))
         }
     }
 }

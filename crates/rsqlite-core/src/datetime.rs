@@ -218,8 +218,13 @@ fn parse_iso_datetime(s: &str) -> Option<DateTime> {
             let hour = s[11..13].parse::<u32>().ok()?;
             let minute = s[14..16].parse::<u32>().ok()?;
             let second = s[17..19].parse::<u32>().ok()?;
-            if month >= 1 && month <= 12 && day >= 1 && day <= 31
-                && hour <= 23 && minute <= 59 && second <= 59
+            if month >= 1
+                && month <= 12
+                && day >= 1
+                && day <= 31
+                && hour <= 23
+                && minute <= 59
+                && second <= 59
             {
                 return Some(DateTime {
                     year,

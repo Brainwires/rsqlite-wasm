@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use rsqlite_parser::parse::parse_sql;
-use rsqlite_storage::btree::{read_schema, SchemaEntry};
+use rsqlite_storage::btree::{SchemaEntry, read_schema};
 use rsqlite_storage::pager::Pager;
 use sqlparser::ast::{self, ColumnOption, Statement};
 use sqlparser::tokenizer::Token;
@@ -179,7 +179,12 @@ impl Catalog {
             }
         }
 
-        Ok(Catalog { tables, indexes, views, triggers })
+        Ok(Catalog {
+            tables,
+            indexes,
+            views,
+            triggers,
+        })
     }
 
     pub fn get_table(&self, name: &str) -> Option<&TableDef> {
@@ -203,7 +208,9 @@ impl Catalog {
         let lower = table.to_lowercase();
         self.triggers
             .values()
-            .filter(|t| t.table_name.to_lowercase() == lower && t.timing == *timing && t.event == *event)
+            .filter(|t| {
+                t.table_name.to_lowercase() == lower && t.timing == *timing && t.event == *event
+            })
             .collect()
     }
 
@@ -251,7 +258,10 @@ fn parse_table_def(entry: &SchemaEntry) -> Result<Option<TableDef>> {
         // Check for table-level PRIMARY KEY constraint
         let mut table_pk_cols: Vec<String> = Vec::new();
         for constraint in &ct.constraints {
-            if let ast::TableConstraint::PrimaryKey { columns: pk_cols, .. } = constraint {
+            if let ast::TableConstraint::PrimaryKey {
+                columns: pk_cols, ..
+            } = constraint
+            {
                 for col in pk_cols {
                     table_pk_cols.push(col.value.to_lowercase());
                 }
@@ -259,16 +269,17 @@ fn parse_table_def(entry: &SchemaEntry) -> Result<Option<TableDef>> {
         }
 
         for (i, col) in ct.columns.iter().enumerate() {
-            let type_name = col
-                .data_type
-                .to_string();
+            let type_name = col.data_type.to_string();
 
             let affinity = TypeAffinity::from_type_name(&type_name);
 
             let is_pk_inline = col.options.iter().any(|opt| {
                 matches!(
                     opt.option,
-                    ColumnOption::Unique { is_primary: true, .. }
+                    ColumnOption::Unique {
+                        is_primary: true,
+                        ..
+                    }
                 )
             });
             let is_pk_from_table = table_pk_cols.contains(&col.name.value.to_lowercase());
@@ -278,15 +289,22 @@ fn parse_table_def(entry: &SchemaEntry) -> Result<Option<TableDef>> {
                 has_pk_in_columns = true;
             }
 
-            let is_rowid_alias =
-                is_primary_key && affinity == TypeAffinity::Integer;
+            let is_rowid_alias = is_primary_key && affinity == TypeAffinity::Integer;
 
-            let nullable = !col.options.iter().any(|opt| {
-                matches!(opt.option, ColumnOption::NotNull)
-            }) && !is_primary_key;
+            let nullable = !col
+                .options
+                .iter()
+                .any(|opt| matches!(opt.option, ColumnOption::NotNull))
+                && !is_primary_key;
 
             let is_unique = col.options.iter().any(|opt| {
-                matches!(opt.option, ColumnOption::Unique { is_primary: false, .. })
+                matches!(
+                    opt.option,
+                    ColumnOption::Unique {
+                        is_primary: false,
+                        ..
+                    }
+                )
             }) || is_primary_key;
 
             let autoincrement = col.options.iter().any(|opt| {
@@ -437,11 +455,7 @@ fn parse_index_def(entry: &SchemaEntry) -> Result<Option<IndexDef>> {
     };
 
     if let Statement::CreateIndex(ci) = stmt {
-        let columns: Vec<String> = ci
-            .columns
-            .iter()
-            .map(|c| c.expr.to_string())
-            .collect();
+        let columns: Vec<String> = ci.columns.iter().map(|c| c.expr.to_string()).collect();
 
         Ok(Some(IndexDef {
             name: entry.name.clone(),
@@ -469,8 +483,14 @@ fn parse_trigger_def(name: &str, tbl_name: &str, sql: &str) -> Option<TriggerDef
     pos += 1; // skip trigger name
 
     let timing = match tokens.get(pos).copied()? {
-        "BEFORE" => { pos += 1; TriggerTiming::Before }
-        "AFTER" => { pos += 1; TriggerTiming::After }
+        "BEFORE" => {
+            pos += 1;
+            TriggerTiming::Before
+        }
+        "AFTER" => {
+            pos += 1;
+            TriggerTiming::After
+        }
         "INSTEAD" => {
             if tokens.get(pos + 1) == Some(&"OF") {
                 pos += 2;
@@ -483,9 +503,18 @@ fn parse_trigger_def(name: &str, tbl_name: &str, sql: &str) -> Option<TriggerDef
     };
 
     let event = match tokens.get(pos).copied()? {
-        "INSERT" => { pos += 1; TriggerEvent::Insert }
-        "UPDATE" => { pos += 1; TriggerEvent::Update }
-        "DELETE" => { pos += 1; TriggerEvent::Delete }
+        "INSERT" => {
+            pos += 1;
+            TriggerEvent::Insert
+        }
+        "UPDATE" => {
+            pos += 1;
+            TriggerEvent::Update
+        }
+        "DELETE" => {
+            pos += 1;
+            TriggerEvent::Delete
+        }
         _ => return None,
     };
 
@@ -532,20 +561,38 @@ mod tests {
 
     #[test]
     fn type_affinity_rules() {
-        assert_eq!(TypeAffinity::from_type_name("INTEGER"), TypeAffinity::Integer);
+        assert_eq!(
+            TypeAffinity::from_type_name("INTEGER"),
+            TypeAffinity::Integer
+        );
         assert_eq!(TypeAffinity::from_type_name("INT"), TypeAffinity::Integer);
-        assert_eq!(TypeAffinity::from_type_name("TINYINT"), TypeAffinity::Integer);
-        assert_eq!(TypeAffinity::from_type_name("BIGINT"), TypeAffinity::Integer);
+        assert_eq!(
+            TypeAffinity::from_type_name("TINYINT"),
+            TypeAffinity::Integer
+        );
+        assert_eq!(
+            TypeAffinity::from_type_name("BIGINT"),
+            TypeAffinity::Integer
+        );
         assert_eq!(TypeAffinity::from_type_name("TEXT"), TypeAffinity::Text);
-        assert_eq!(TypeAffinity::from_type_name("VARCHAR(255)"), TypeAffinity::Text);
+        assert_eq!(
+            TypeAffinity::from_type_name("VARCHAR(255)"),
+            TypeAffinity::Text
+        );
         assert_eq!(TypeAffinity::from_type_name("CLOB"), TypeAffinity::Text);
         assert_eq!(TypeAffinity::from_type_name("BLOB"), TypeAffinity::Blob);
         assert_eq!(TypeAffinity::from_type_name(""), TypeAffinity::Blob);
         assert_eq!(TypeAffinity::from_type_name("REAL"), TypeAffinity::Real);
         assert_eq!(TypeAffinity::from_type_name("DOUBLE"), TypeAffinity::Real);
         assert_eq!(TypeAffinity::from_type_name("FLOAT"), TypeAffinity::Real);
-        assert_eq!(TypeAffinity::from_type_name("NUMERIC"), TypeAffinity::Numeric);
-        assert_eq!(TypeAffinity::from_type_name("BOOLEAN"), TypeAffinity::Numeric);
+        assert_eq!(
+            TypeAffinity::from_type_name("NUMERIC"),
+            TypeAffinity::Numeric
+        );
+        assert_eq!(
+            TypeAffinity::from_type_name("BOOLEAN"),
+            TypeAffinity::Numeric
+        );
         assert_eq!(TypeAffinity::from_type_name("DATE"), TypeAffinity::Numeric);
     }
 

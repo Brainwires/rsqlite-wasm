@@ -24,7 +24,9 @@ pub(super) fn check_check_constraints(
     }
 
     let col_names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
-    let row = Row { values: values.to_vec() };
+    let row = Row {
+        values: values.to_vec(),
+    };
 
     for check_sql in &table_def.check_constraints {
         let parsed = rsqlite_parser::parse::parse_sql(&format!("SELECT {check_sql}"));
@@ -35,10 +37,18 @@ pub(super) fn check_check_constraints(
                         if let Some(item) = sel.projection.into_iter().next() {
                             if let sqlparser::ast::SelectItem::UnnamedExpr(e) = item {
                                 Some(e)
-                            } else { None }
-                        } else { None }
-                    } else { None }
-                } else { None }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
             }
             Err(_) => None,
         };
@@ -60,12 +70,17 @@ pub(super) fn check_check_constraints(
     Ok(())
 }
 
-pub(super) fn check_not_null_constraints(values: &[Value], columns: &[ColumnRef], table_name: &str) -> Result<()> {
+pub(super) fn check_not_null_constraints(
+    values: &[Value],
+    columns: &[ColumnRef],
+    table_name: &str,
+) -> Result<()> {
     for (i, col) in columns.iter().enumerate() {
         if !col.nullable && !col.is_rowid_alias {
             if let Some(Value::Null) = values.get(i) {
                 return Err(Error::Other(format!(
-                    "NOT NULL constraint failed: {}.{}", table_name, col.name
+                    "NOT NULL constraint failed: {}.{}",
+                    table_name, col.name
                 )));
             }
         }
@@ -93,7 +108,9 @@ pub(super) fn check_unique_constraints(
     }
 
     let mut cursor = BTreeCursor::new(pager, root_page);
-    let rows = cursor.collect_all().map_err(|e| Error::Other(e.to_string()))?;
+    let rows = cursor
+        .collect_all()
+        .map_err(|e| Error::Other(e.to_string()))?;
 
     for (col_idx, col_name) in &unique_cols {
         let new_val = &values[*col_idx];
@@ -109,7 +126,8 @@ pub(super) fn check_unique_constraints(
             if let Some(existing) = row.record.values.get(*col_idx) {
                 if compare(existing, new_val) == 0 {
                     return Err(Error::Other(format!(
-                        "UNIQUE constraint failed: {}.{}", table_name, col_name
+                        "UNIQUE constraint failed: {}.{}",
+                        table_name, col_name
                     )));
                 }
             }
@@ -138,7 +156,9 @@ pub(super) fn find_conflict_by_columns(
         .collect::<Result<_>>()?;
 
     let mut cursor = BTreeCursor::new(pager, root_page);
-    let rows = cursor.collect_all().map_err(|e| Error::Other(e.to_string()))?;
+    let rows = cursor
+        .collect_all()
+        .map_err(|e| Error::Other(e.to_string()))?;
 
     for row in &rows {
         let all_match = col_indices.iter().all(|&ci| {
@@ -180,7 +200,9 @@ pub(super) fn find_unique_conflict_rowid(
     }
 
     let mut cursor = BTreeCursor::new(pager, root_page);
-    let rows = cursor.collect_all().map_err(|e| Error::Other(e.to_string()))?;
+    let rows = cursor
+        .collect_all()
+        .map_err(|e| Error::Other(e.to_string()))?;
 
     for col_idx in &unique_cols {
         let new_val = &values[*col_idx];
@@ -217,11 +239,17 @@ pub(super) fn check_foreign_key_insert(
     }
 
     for fk in &table_def.foreign_keys {
-        let fk_values: Vec<Value> = fk.from_columns.iter().map(|fc| {
-            columns.iter().position(|c| c.name.eq_ignore_ascii_case(fc))
-                .map(|i| values[i].clone())
-                .unwrap_or(Value::Null)
-        }).collect();
+        let fk_values: Vec<Value> = fk
+            .from_columns
+            .iter()
+            .map(|fc| {
+                columns
+                    .iter()
+                    .position(|c| c.name.eq_ignore_ascii_case(fc))
+                    .map(|i| values[i].clone())
+                    .unwrap_or(Value::Null)
+            })
+            .collect();
 
         if fk_values.iter().all(|v| matches!(v, Value::Null)) {
             continue;
@@ -229,26 +257,44 @@ pub(super) fn check_foreign_key_insert(
 
         let parent = match catalog.get_table(&fk.to_table) {
             Some(t) => t,
-            None => return Err(Error::Other(format!("FOREIGN KEY constraint failed: parent table '{}' not found", fk.to_table))),
+            None => {
+                return Err(Error::Other(format!(
+                    "FOREIGN KEY constraint failed: parent table '{}' not found",
+                    fk.to_table
+                )));
+            }
         };
 
-        let parent_col_indices: Vec<usize> = fk.to_columns.iter().map(|tc| {
-            parent.columns.iter().position(|c| c.name.eq_ignore_ascii_case(tc)).unwrap_or(0)
-        }).collect();
+        let parent_col_indices: Vec<usize> = fk
+            .to_columns
+            .iter()
+            .map(|tc| {
+                parent
+                    .columns
+                    .iter()
+                    .position(|c| c.name.eq_ignore_ascii_case(tc))
+                    .unwrap_or(0)
+            })
+            .collect();
 
         let mut cursor = BTreeCursor::new(pager, parent.root_page);
-        let rows = cursor.collect_all().map_err(|e| Error::Other(e.to_string()))?;
+        let rows = cursor
+            .collect_all()
+            .map_err(|e| Error::Other(e.to_string()))?;
         let mut found = false;
         for row in &rows {
-            let match_all = parent_col_indices.iter().zip(fk_values.iter()).all(|(&ci, fk_val)| {
-                let parent_col = &parent.columns[ci];
-                let parent_val = if parent_col.is_rowid_alias {
-                    Value::Integer(row.rowid)
-                } else {
-                    row.record.values.get(ci).cloned().unwrap_or(Value::Null)
-                };
-                super::helpers::values_equal(&parent_val, fk_val)
-            });
+            let match_all = parent_col_indices
+                .iter()
+                .zip(fk_values.iter())
+                .all(|(&ci, fk_val)| {
+                    let parent_col = &parent.columns[ci];
+                    let parent_val = if parent_col.is_rowid_alias {
+                        Value::Integer(row.rowid)
+                    } else {
+                        row.record.values.get(ci).cloned().unwrap_or(Value::Null)
+                    };
+                    super::helpers::values_equal(&parent_val, fk_val)
+                });
             if match_all {
                 found = true;
                 break;
@@ -261,7 +307,10 @@ pub(super) fn check_foreign_key_insert(
                 fk.from_columns.join(", "),
                 fk.to_table,
                 fk.to_columns.join(", "),
-                fk_values.iter().map(|v| format!(" {v:?}")).collect::<String>(),
+                fk_values
+                    .iter()
+                    .map(|v| format!(" {v:?}"))
+                    .collect::<String>(),
             )));
         }
     }
@@ -308,7 +357,11 @@ pub(super) fn apply_foreign_key_delete_actions(
     // mutate the pager (and to allow recursive cascade through clones).
     let child_tables: Vec<crate::catalog::TableDef> = catalog
         .all_tables()
-        .filter(|t| t.foreign_keys.iter().any(|fk| fk.to_table.eq_ignore_ascii_case(table_name)))
+        .filter(|t| {
+            t.foreign_keys
+                .iter()
+                .any(|fk| fk.to_table.eq_ignore_ascii_case(table_name))
+        })
         .cloned()
         .collect();
 
@@ -317,32 +370,56 @@ pub(super) fn apply_foreign_key_delete_actions(
             if !fk.to_table.eq_ignore_ascii_case(table_name) {
                 continue;
             }
-            let parent_col_indices: Vec<usize> = fk.to_columns.iter().map(|tc| {
-                table_columns.iter().position(|c| c.name.eq_ignore_ascii_case(tc)).unwrap_or(0)
-            }).collect();
+            let parent_col_indices: Vec<usize> = fk
+                .to_columns
+                .iter()
+                .map(|tc| {
+                    table_columns
+                        .iter()
+                        .position(|c| c.name.eq_ignore_ascii_case(tc))
+                        .unwrap_or(0)
+                })
+                .collect();
 
-            let parent_vals: Vec<Value> = parent_col_indices.iter().map(|&ci| {
-                let col = &table_columns[ci];
-                if col.is_rowid_alias {
-                    Value::Integer(deleted_rowid)
-                } else {
-                    deleted_values.get(ci).cloned().unwrap_or(Value::Null)
-                }
-            }).collect();
+            let parent_vals: Vec<Value> = parent_col_indices
+                .iter()
+                .map(|&ci| {
+                    let col = &table_columns[ci];
+                    if col.is_rowid_alias {
+                        Value::Integer(deleted_rowid)
+                    } else {
+                        deleted_values.get(ci).cloned().unwrap_or(Value::Null)
+                    }
+                })
+                .collect();
 
-            let child_col_indices: Vec<usize> = fk.from_columns.iter().map(|fc| {
-                child_table.columns.iter().position(|c| c.name.eq_ignore_ascii_case(fc)).unwrap_or(0)
-            }).collect();
+            let child_col_indices: Vec<usize> = fk
+                .from_columns
+                .iter()
+                .map(|fc| {
+                    child_table
+                        .columns
+                        .iter()
+                        .position(|c| c.name.eq_ignore_ascii_case(fc))
+                        .unwrap_or(0)
+                })
+                .collect();
 
             let mut cursor = BTreeCursor::new(pager, child_table.root_page);
-            let rows = cursor.collect_all().map_err(|e| Error::Other(e.to_string()))?;
+            let rows = cursor
+                .collect_all()
+                .map_err(|e| Error::Other(e.to_string()))?;
             let matching_rowids: Vec<i64> = rows
                 .iter()
                 .filter(|row| {
-                    child_col_indices.iter().zip(parent_vals.iter()).all(|(&ci, pv)| {
-                        let child_val = row.record.values.get(ci).cloned().unwrap_or(Value::Null);
-                        super::helpers::values_equal(&child_val, pv)
-                    })
+                    child_col_indices
+                        .iter()
+                        .zip(parent_vals.iter())
+                        .all(|(&ci, pv)| {
+                            let child_val =
+                                row.record.values.get(ci).cloned().unwrap_or(Value::Null);
+                            super::helpers::values_equal(&child_val, pv)
+                        })
                 })
                 .map(|r| r.rowid)
                 .collect();
@@ -360,12 +437,7 @@ pub(super) fn apply_foreign_key_delete_actions(
                     )));
                 }
                 crate::catalog::ReferentialAction::Cascade => {
-                    cascade_delete_child_rows(
-                        &child_table,
-                        &matching_rowids,
-                        pager,
-                        catalog,
-                    )?;
+                    cascade_delete_child_rows(&child_table, &matching_rowids, pager, catalog)?;
                 }
                 crate::catalog::ReferentialAction::SetNull => {
                     set_child_fk_columns(
@@ -377,12 +449,8 @@ pub(super) fn apply_foreign_key_delete_actions(
                     )?;
                 }
                 crate::catalog::ReferentialAction::SetDefault => {
-                    let defaults = evaluate_column_defaults(
-                        &child_table,
-                        &child_col_indices,
-                        pager,
-                        catalog,
-                    )?;
+                    let defaults =
+                        evaluate_column_defaults(&child_table, &child_col_indices, pager, catalog)?;
                     set_child_fk_columns(
                         &child_table,
                         &matching_rowids,
@@ -409,7 +477,9 @@ fn cascade_delete_child_rows(
 
     // Snapshot child rows for recursion before deleting.
     let mut cursor = BTreeCursor::new(pager, child_table.root_page);
-    let rows = cursor.collect_all().map_err(|e| Error::Other(e.to_string()))?;
+    let rows = cursor
+        .collect_all()
+        .map_err(|e| Error::Other(e.to_string()))?;
     let snapshots: Vec<(i64, Vec<Value>)> = rows
         .iter()
         .filter(|r| rowids.contains(&r.rowid))
@@ -433,7 +503,8 @@ fn cascade_delete_child_rows(
 
     for (rowid, values) in &snapshots {
         for (idx_root, idx_col_indices) in &table_indexes {
-            let key = super::helpers::build_index_key(values, idx_col_indices, &plan_columns, *rowid);
+            let key =
+                super::helpers::build_index_key(values, idx_col_indices, &plan_columns, *rowid);
             let _ = btree_index_delete(pager, *idx_root, &key);
         }
         btree_delete(pager, child_table.root_page, *rowid)
@@ -465,7 +536,9 @@ fn set_child_fk_columns(
     use rsqlite_storage::codec::Record;
 
     let mut cursor = BTreeCursor::new(pager, child_table.root_page);
-    let rows = cursor.collect_all().map_err(|e| Error::Other(e.to_string()))?;
+    let rows = cursor
+        .collect_all()
+        .map_err(|e| Error::Other(e.to_string()))?;
     let to_update: Vec<(i64, Vec<Value>)> = rows
         .iter()
         .filter(|r| rowids.contains(&r.rowid))
@@ -483,8 +556,13 @@ fn set_child_fk_columns(
     for (rowid, updated) in to_update {
         btree_delete(pager, child_table.root_page, rowid)
             .map_err(|e| Error::Other(e.to_string()))?;
-        btree_insert(pager, child_table.root_page, rowid, &Record { values: updated })
-            .map_err(|e| Error::Other(e.to_string()))?;
+        btree_insert(
+            pager,
+            child_table.root_page,
+            rowid,
+            &Record { values: updated },
+        )
+        .map_err(|e| Error::Other(e.to_string()))?;
     }
     Ok(())
 }
@@ -564,13 +642,7 @@ fn evaluate_column_defaults(
             values: vec![Value::Null; child_table.columns.len()],
         };
         let col_names: Vec<String> = child_table.columns.iter().map(|c| c.name.clone()).collect();
-        match super::eval::eval_expr(
-            &plan_expr,
-            &placeholder_row,
-            &col_names,
-            pager,
-            catalog,
-        ) {
+        match super::eval::eval_expr(&plan_expr, &placeholder_row, &col_names, pager, catalog) {
             Ok(v) => out.push(v),
             Err(_) => out.push(Value::Null),
         }

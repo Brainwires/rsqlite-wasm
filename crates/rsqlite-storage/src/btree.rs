@@ -54,11 +54,7 @@ pub struct BTreePageHeader {
 
 impl BTreePageHeader {
     pub fn header_size(&self) -> usize {
-        if self.page_type.is_leaf() {
-            8
-        } else {
-            12
-        }
+        if self.page_type.is_leaf() { 8 } else { 12 }
     }
 }
 
@@ -117,7 +113,11 @@ pub struct TableInteriorCell {
     pub rowid: i64,
 }
 
-pub(crate) fn parse_table_leaf_cell(data: &[u8], offset: usize, usable_size: u32) -> Result<TableLeafCell> {
+pub(crate) fn parse_table_leaf_cell(
+    data: &[u8],
+    offset: usize,
+    usable_size: u32,
+) -> Result<TableLeafCell> {
     let (payload_size, n1) = varint::read_varint(&data[offset..]);
     let (rowid, n2) = varint::read_varint(&data[offset + n1..]);
     let payload_start = offset + n1 + n2;
@@ -267,8 +267,7 @@ impl<'a> BTreeCursor<'a> {
         let header = parse_btree_header(&page, offset)?;
         let usable = self.pager.usable_size();
 
-        let pointers =
-            read_cell_pointers(&page, offset + header.header_size(), header.cell_count);
+        let pointers = read_cell_pointers(&page, offset + header.header_size(), header.cell_count);
         let cell_offset = pointers[cell_idx] as usize;
         let cell = parse_table_leaf_cell(&page, cell_offset, usable)?;
 
@@ -345,11 +344,7 @@ impl<'a> BTreeCursor<'a> {
 }
 
 pub(crate) fn btree_header_offset(page_num: u32) -> usize {
-    if page_num == 1 {
-        HEADER_SIZE
-    } else {
-        0
-    }
+    if page_num == 1 { HEADER_SIZE } else { 0 }
 }
 
 pub fn read_schema(pager: &mut Pager) -> Result<Vec<SchemaEntry>> {
@@ -417,7 +412,8 @@ pub fn btree_max_rowid(pager: &mut Pager, root_page: u32) -> Result<i64> {
         if header.cell_count == 0 {
             return Ok(0);
         }
-        let pointers = read_cell_pointers(&page_data, offset + header.header_size(), header.cell_count);
+        let pointers =
+            read_cell_pointers(&page_data, offset + header.header_size(), header.cell_count);
         let last_ptr = pointers[header.cell_count as usize - 1] as usize;
         let usable = pager.usable_size();
         let cell = parse_table_leaf_cell(&page_data, last_ptr, usable)?;
@@ -437,11 +433,7 @@ pub fn btree_row_exists(pager: &mut Pager, root_page: u32, target_rowid: i64) ->
         return Ok(false);
     }
 
-    let pointers = read_cell_pointers(
-        &page_data,
-        offset + header.header_size(),
-        header.cell_count,
-    );
+    let pointers = read_cell_pointers(&page_data, offset + header.header_size(), header.cell_count);
 
     if header.page_type.is_leaf() {
         let usable = pager.usable_size();
@@ -480,7 +472,11 @@ pub(crate) struct IndexInteriorCell {
     pub payload: Vec<u8>,
 }
 
-pub(crate) fn parse_index_leaf_cell(data: &[u8], offset: usize, usable_size: u32) -> Result<IndexLeafCell> {
+pub(crate) fn parse_index_leaf_cell(
+    data: &[u8],
+    offset: usize,
+    usable_size: u32,
+) -> Result<IndexLeafCell> {
     let (payload_size, n1) = varint::read_varint(&data[offset..]);
     let payload_start = offset + n1;
     let payload_size = payload_size as usize;
@@ -501,7 +497,11 @@ pub(crate) fn parse_index_leaf_cell(data: &[u8], offset: usize, usable_size: u32
     Ok(IndexLeafCell { payload })
 }
 
-pub(crate) fn parse_index_interior_cell(data: &[u8], offset: usize, usable_size: u32) -> Result<IndexInteriorCell> {
+pub(crate) fn parse_index_interior_cell(
+    data: &[u8],
+    offset: usize,
+    usable_size: u32,
+) -> Result<IndexInteriorCell> {
     let left_child = u32::from_be_bytes([
         data[offset],
         data[offset + 1],
@@ -552,8 +552,12 @@ fn compare_values(a: &Value, b: &Value) -> std::cmp::Ordering {
         (Value::Null, Value::Null) => std::cmp::Ordering::Equal,
         (Value::Integer(x), Value::Integer(y)) => x.cmp(y),
         (Value::Real(x), Value::Real(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
-        (Value::Integer(x), Value::Real(y)) => (*x as f64).partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
-        (Value::Real(x), Value::Integer(y)) => x.partial_cmp(&(*y as f64)).unwrap_or(std::cmp::Ordering::Equal),
+        (Value::Integer(x), Value::Real(y)) => (*x as f64)
+            .partial_cmp(y)
+            .unwrap_or(std::cmp::Ordering::Equal),
+        (Value::Real(x), Value::Integer(y)) => x
+            .partial_cmp(&(*y as f64))
+            .unwrap_or(std::cmp::Ordering::Equal),
         (Value::Text(x), Value::Text(y)) => x.cmp(y),
         (Value::Blob(x), Value::Blob(y)) => x.cmp(y),
         _ => std::cmp::Ordering::Equal,
@@ -650,8 +654,7 @@ impl<'a> IndexCursor<'a> {
         let header = parse_btree_header(&page, offset)?;
         let usable = self.pager.usable_size();
 
-        let pointers =
-            read_cell_pointers(&page, offset + header.header_size(), header.cell_count);
+        let pointers = read_cell_pointers(&page, offset + header.header_size(), header.cell_count);
         let cell_offset = pointers[cell_idx] as usize;
         let cell = parse_index_leaf_cell(&page, cell_offset, usable)?;
         Record::decode(&cell.payload)

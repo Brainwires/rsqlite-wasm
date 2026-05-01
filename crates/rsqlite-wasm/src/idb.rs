@@ -2,8 +2,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use rsqlite_vfs::{LockType, OpenFlags, SyncFlags, Vfs, VfsError, VfsFile};
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
 const DB_VERSION: u32 = 1;
@@ -47,11 +47,9 @@ async fn idb_transaction_await(tx: &web_sys::IdbTransaction) -> Result<(), JsVal
 
 impl IdbVfs {
     pub async fn new(db_name: &str) -> Result<Self, JsValue> {
-        let factory: web_sys::IdbFactory = js_sys::Reflect::get(
-            &js_sys::global(),
-            &JsValue::from_str("indexedDB"),
-        )?
-        .unchecked_into();
+        let factory: web_sys::IdbFactory =
+            js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("indexedDB"))?
+                .unchecked_into();
 
         let open_req = factory.open_with_u32(db_name, DB_VERSION)?;
 
@@ -95,10 +93,10 @@ impl IdbVfs {
 
     pub fn flush_all_sync(&self) {
         let buffers = self.buffers.borrow();
-        if let Ok(tx) = self.idb.transaction_with_str_and_mode(
-            STORE_NAME,
-            web_sys::IdbTransactionMode::Readwrite,
-        ) {
+        if let Ok(tx) = self
+            .idb
+            .transaction_with_str_and_mode(STORE_NAME, web_sys::IdbTransactionMode::Readwrite)
+        {
             if let Ok(store) = tx.object_store(STORE_NAME) {
                 for (path, data) in buffers.iter() {
                     let arr = js_sys::Uint8Array::from(data.as_slice());

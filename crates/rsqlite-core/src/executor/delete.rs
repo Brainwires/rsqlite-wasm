@@ -1,4 +1,4 @@
-use rsqlite_storage::btree::{btree_delete, btree_index_delete, BTreeCursor};
+use rsqlite_storage::btree::{BTreeCursor, btree_delete, btree_index_delete};
 use rsqlite_storage::codec::Value;
 use rsqlite_storage::pager::Pager;
 
@@ -8,14 +8,20 @@ use crate::eval_helpers::is_truthy;
 use crate::planner::DeletePlan;
 use crate::types::Row;
 
+use super::ExecResult;
 use super::constraints::check_foreign_key_delete;
 use super::eval::eval_expr;
-use super::helpers::{build_index_key, build_returning_result, get_table_indexes, row_values_for_rowid};
+use super::helpers::{
+    build_index_key, build_returning_result, get_table_indexes, row_values_for_rowid,
+};
 use super::state::set_changes;
 use super::trigger::fire_triggers;
-use super::ExecResult;
 
-pub(super) fn execute_delete(plan: &DeletePlan, pager: &mut Pager, catalog: &Catalog) -> Result<ExecResult> {
+pub(super) fn execute_delete(
+    plan: &DeletePlan,
+    pager: &mut Pager,
+    catalog: &Catalog,
+) -> Result<ExecResult> {
     let column_names: Vec<String> = plan.table_columns.iter().map(|c| c.name.clone()).collect();
 
     let mut cursor = BTreeCursor::new(pager, plan.root_page);
@@ -43,9 +49,7 @@ pub(super) fn execute_delete(plan: &DeletePlan, pager: &mut Pager, catalog: &Cat
             }
         }
 
-        let row = Row {
-            values: row_values,
-        };
+        let row = Row { values: row_values };
 
         let matches = match &plan.predicate {
             Some(pred) => {
@@ -80,7 +84,11 @@ pub(super) fn execute_delete(plan: &DeletePlan, pager: &mut Pager, catalog: &Cat
                 } else {
                     std::cmp::Ordering::Equal
                 };
-                let ordering = if sk.descending { ordering.reverse() } else { ordering };
+                let ordering = if sk.descending {
+                    ordering.reverse()
+                } else {
+                    ordering
+                };
                 if ordering != std::cmp::Ordering::Equal {
                     return ordering;
                 }
@@ -100,14 +108,23 @@ pub(super) fn execute_delete(plan: &DeletePlan, pager: &mut Pager, catalog: &Cat
         let table_columns_def = table_def.columns.clone();
         for &rowid in &to_delete {
             let old_values = row_values_for_rowid(&btree_rows, rowid, &plan.table_columns);
-            check_foreign_key_delete(rowid, &old_values, &plan.table_name, &table_columns_def, pager, catalog)?;
+            check_foreign_key_delete(
+                rowid,
+                &old_values,
+                &plan.table_name,
+                &table_columns_def,
+                pager,
+                catalog,
+            )?;
         }
     }
 
     let mut returning_values: Vec<Vec<Value>> = Vec::new();
     for rowid in to_delete {
         let old_values = row_values_for_rowid(&btree_rows, rowid, &plan.table_columns);
-        let old_named: Vec<(String, Value)> = plan.table_columns.iter()
+        let old_named: Vec<(String, Value)> = plan
+            .table_columns
+            .iter()
             .zip(old_values.iter())
             .map(|(c, v)| (c.name.clone(), v.clone()))
             .collect();
@@ -127,8 +144,7 @@ pub(super) fn execute_delete(plan: &DeletePlan, pager: &mut Pager, catalog: &Cat
         }
 
         for (idx_root, idx_col_indices) in &table_indexes {
-            let old_key =
-                build_index_key(&old_values, idx_col_indices, &plan.table_columns, rowid);
+            let old_key = build_index_key(&old_values, idx_col_indices, &plan.table_columns, rowid);
             let _ = btree_index_delete(pager, *idx_root, &old_key);
         }
         btree_delete(pager, plan.root_page, rowid)?;
@@ -150,9 +166,18 @@ pub(super) fn execute_delete(plan: &DeletePlan, pager: &mut Pager, catalog: &Cat
 
     set_changes(rows_affected as i64);
     let returning = if let Some(items) = &plan.returning {
-        Some(build_returning_result(items, &returning_values, &plan.table_columns, pager, catalog)?)
+        Some(build_returning_result(
+            items,
+            &returning_values,
+            &plan.table_columns,
+            pager,
+            catalog,
+        )?)
     } else {
         None
     };
-    Ok(ExecResult { rows_affected, returning })
+    Ok(ExecResult {
+        rows_affected,
+        returning,
+    })
 }

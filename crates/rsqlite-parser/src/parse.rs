@@ -55,8 +55,14 @@ fn parse_create_trigger(sql: &str) -> Option<sqlparser::ast::Statement> {
     pos += 1;
 
     let timing = match tokens.get(pos).copied()? {
-        "BEFORE" => { pos += 1; "BEFORE" }
-        "AFTER" => { pos += 1; "AFTER" }
+        "BEFORE" => {
+            pos += 1;
+            "BEFORE"
+        }
+        "AFTER" => {
+            pos += 1;
+            "AFTER"
+        }
         "INSTEAD" => {
             if tokens.get(pos + 1) == Some(&"OF") {
                 pos += 2;
@@ -69,9 +75,18 @@ fn parse_create_trigger(sql: &str) -> Option<sqlparser::ast::Statement> {
     };
 
     let event = match tokens.get(pos).copied()? {
-        "INSERT" => { pos += 1; "INSERT" }
-        "UPDATE" => { pos += 1; "UPDATE" }
-        "DELETE" => { pos += 1; "DELETE" }
+        "INSERT" => {
+            pos += 1;
+            "INSERT"
+        }
+        "UPDATE" => {
+            pos += 1;
+            "UPDATE"
+        }
+        "DELETE" => {
+            pos += 1;
+            "DELETE"
+        }
         _ => return None,
     };
 
@@ -120,7 +135,12 @@ fn parse_create_trigger(sql: &str) -> Option<sqlparser::ast::Statement> {
     Some(make_pragma_statement("__create_trigger", Some(&encoded)))
 }
 
-fn find_keyword_pos(upper_sql: &str, _start_token: usize, _tokens: &[&str], keyword: &str) -> Option<usize> {
+fn find_keyword_pos(
+    upper_sql: &str,
+    _start_token: usize,
+    _tokens: &[&str],
+    keyword: &str,
+) -> Option<usize> {
     upper_sql.find(keyword)
 }
 
@@ -225,10 +245,16 @@ fn preprocess_pragma(sql: &str) -> String {
         let name = after_pragma[..eq_pos].trim();
         let val = after_pragma[eq_pos + 1..].trim().trim_end_matches(';');
         let val = val.trim();
-        if val.eq_ignore_ascii_case("ON") || val.eq_ignore_ascii_case("YES") || val.eq_ignore_ascii_case("TRUE") {
+        if val.eq_ignore_ascii_case("ON")
+            || val.eq_ignore_ascii_case("YES")
+            || val.eq_ignore_ascii_case("TRUE")
+        {
             return format!("PRAGMA {name} = 1;");
         }
-        if val.eq_ignore_ascii_case("OFF") || val.eq_ignore_ascii_case("NO") || val.eq_ignore_ascii_case("FALSE") {
+        if val.eq_ignore_ascii_case("OFF")
+            || val.eq_ignore_ascii_case("NO")
+            || val.eq_ignore_ascii_case("FALSE")
+        {
             return format!("PRAGMA {name} = 0;");
         }
         if !val.starts_with('\'') && !val.starts_with('"') && val.parse::<i64>().is_err() {

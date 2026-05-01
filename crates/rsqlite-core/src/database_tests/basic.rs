@@ -24,10 +24,7 @@ fn select_star() {
     use rsqlite_storage::codec::Value;
     assert_eq!(result.rows[0].values[0], Value::Integer(1));
     assert_eq!(result.rows[0].values[1], Value::Text("red".to_string()));
-    assert_eq!(
-        result.rows[0].values[2],
-        Value::Text("#FF0000".to_string())
-    );
+    assert_eq!(result.rows[0].values[2], Value::Text("#FF0000".to_string()));
 
     let _ = std::fs::remove_file(db_path);
 }
@@ -113,7 +110,9 @@ fn select_with_null_handling() {
     let vfs = rsqlite_vfs::native::NativeVfs::new();
     let mut db = Database::open(&vfs, db_path).unwrap();
 
-    let result = db.query("SELECT * FROM data WHERE val IS NOT NULL").unwrap();
+    let result = db
+        .query("SELECT * FROM data WHERE val IS NOT NULL")
+        .unwrap();
     assert_eq!(result.rows.len(), 2);
 
     let result = db.query("SELECT * FROM data WHERE val IS NULL").unwrap();
@@ -129,9 +128,7 @@ fn select_with_null_handling() {
 #[test]
 fn select_200_rows_with_filter() {
     let db_path = "/tmp/rsqlite_db_200_filter.db";
-    let mut sql = String::from(
-        "CREATE TABLE nums (id INTEGER PRIMARY KEY, val INTEGER);",
-    );
+    let mut sql = String::from("CREATE TABLE nums (id INTEGER PRIMARY KEY, val INTEGER);");
     for i in 1..=200 {
         sql.push_str(&format!("INSERT INTO nums VALUES ({i}, {});", i * 10));
     }
@@ -156,10 +153,8 @@ fn create_table_and_insert() {
     let vfs = rsqlite_vfs::native::NativeVfs::new();
     let mut db = Database::create(&vfs, db_path).unwrap();
 
-    db.execute(
-        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)",
-    )
-    .unwrap();
+    db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")
+        .unwrap();
 
     assert!(db.catalog().get_table("users").is_some());
     let table = db.catalog().get_table("users").unwrap();
@@ -195,10 +190,8 @@ fn create_table_insert_and_verify_with_sqlite3() {
     let vfs = rsqlite_vfs::native::NativeVfs::new();
     let mut db = Database::create(&vfs, db_path).unwrap();
 
-    db.execute(
-        "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, price REAL)",
-    )
-    .unwrap();
+    db.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT, price REAL)")
+        .unwrap();
 
     db.execute("INSERT INTO items VALUES (1, 'Widget', 9.99)")
         .unwrap();
@@ -214,9 +207,7 @@ fn create_table_insert_and_verify_with_sqlite3() {
         .arg("SELECT * FROM items ORDER BY id;")
         .output()
     {
-        Ok(o) if o.status.success() => {
-            String::from_utf8_lossy(&o.stdout).to_string()
-        }
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
         _ => {
             eprintln!("sqlite3 not available, skipping verification");
             let _ = std::fs::remove_file(db_path);
@@ -245,7 +236,10 @@ fn create_table_if_not_exists() {
         .unwrap();
 
     // Should fail without IF NOT EXISTS
-    assert!(db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)").is_err());
+    assert!(
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+            .is_err()
+    );
 
     // Should succeed with IF NOT EXISTS
     db.execute("CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY)")
@@ -262,10 +256,8 @@ fn insert_with_column_list() {
     let vfs = rsqlite_vfs::native::NativeVfs::new();
     let mut db = Database::create(&vfs, db_path).unwrap();
 
-    db.execute(
-        "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, score INTEGER)",
-    )
-    .unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, score INTEGER)")
+        .unwrap();
 
     db.execute("INSERT INTO t (name, score) VALUES ('Alice', 100)")
         .unwrap();
@@ -292,10 +284,8 @@ fn insert_multiple_values() {
     db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT)")
         .unwrap();
 
-    db.execute(
-        "INSERT INTO t VALUES (1, 'one'), (2, 'two'), (3, 'three')",
-    )
-    .unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'one'), (2, 'two'), (3, 'three')")
+        .unwrap();
 
     let result = db.query("SELECT * FROM t").unwrap();
     assert_eq!(result.rows.len(), 3);
@@ -356,9 +346,12 @@ fn update_rows() {
         .unwrap();
     db.execute("INSERT INTO t VALUES (1, 'Alice', 80)").unwrap();
     db.execute("INSERT INTO t VALUES (2, 'Bob', 90)").unwrap();
-    db.execute("INSERT INTO t VALUES (3, 'Charlie', 70)").unwrap();
+    db.execute("INSERT INTO t VALUES (3, 'Charlie', 70)")
+        .unwrap();
 
-    let result = db.execute("UPDATE t SET score = 100 WHERE name = 'Bob'").unwrap();
+    let result = db
+        .execute("UPDATE t SET score = 100 WHERE name = 'Bob'")
+        .unwrap();
     assert_eq!(result.rows_affected, 1);
 
     let result = db.query("SELECT * FROM t WHERE name = 'Bob'").unwrap();
@@ -366,7 +359,9 @@ fn update_rows() {
     assert_eq!(result.rows[0].values[2], Value::Integer(100));
 
     // Other rows unchanged
-    let result = db.query("SELECT score FROM t WHERE name = 'Alice'").unwrap();
+    let result = db
+        .query("SELECT score FROM t WHERE name = 'Alice'")
+        .unwrap();
     assert_eq!(result.rows[0].values[0], Value::Integer(80));
 
     let _ = std::fs::remove_file(db_path);
@@ -493,9 +488,7 @@ fn full_crud_cycle() {
         .arg("SELECT * FROM products ORDER BY id;")
         .output()
     {
-        Ok(o) if o.status.success() => {
-            String::from_utf8_lossy(&o.stdout).to_string()
-        }
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
         _ => {
             let _ = std::fs::remove_file(db_path);
             return;
@@ -547,7 +540,8 @@ fn transaction_rollback() {
 
     db.execute("BEGIN").unwrap();
     db.execute("INSERT INTO t VALUES (2, 'discard')").unwrap();
-    db.execute("INSERT INTO t VALUES (3, 'also discard')").unwrap();
+    db.execute("INSERT INTO t VALUES (3, 'also discard')")
+        .unwrap();
     db.execute("ROLLBACK").unwrap();
 
     let result = db.query("SELECT * FROM t").unwrap();
@@ -630,7 +624,8 @@ fn transaction_rollback_not_persisted() {
         db.execute("INSERT INTO t VALUES (1, 'original')").unwrap();
 
         db.execute("BEGIN").unwrap();
-        db.execute("INSERT INTO t VALUES (2, 'rolled_back')").unwrap();
+        db.execute("INSERT INTO t VALUES (2, 'rolled_back')")
+            .unwrap();
         db.execute("ROLLBACK").unwrap();
     }
 
@@ -659,7 +654,8 @@ fn order_by_asc() {
 
     db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, score INTEGER)")
         .unwrap();
-    db.execute("INSERT INTO t VALUES (1, 'Charlie', 70)").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'Charlie', 70)")
+        .unwrap();
     db.execute("INSERT INTO t VALUES (2, 'Alice', 90)").unwrap();
     db.execute("INSERT INTO t VALUES (3, 'Bob', 80)").unwrap();
 
@@ -722,7 +718,9 @@ fn limit_and_offset() {
     assert_eq!(result.rows[2].values[1], Value::Integer(8));
 
     // ORDER BY + LIMIT
-    let result = db.query("SELECT * FROM t ORDER BY val DESC LIMIT 2").unwrap();
+    let result = db
+        .query("SELECT * FROM t ORDER BY val DESC LIMIT 2")
+        .unwrap();
     assert_eq!(result.rows.len(), 2);
     assert_eq!(result.rows[0].values[1], Value::Integer(10));
     assert_eq!(result.rows[1].values[1], Value::Integer(9));
@@ -812,11 +810,15 @@ fn inner_join() {
 
     db.execute("INSERT INTO users VALUES (1, 'Alice')").unwrap();
     db.execute("INSERT INTO users VALUES (2, 'Bob')").unwrap();
-    db.execute("INSERT INTO users VALUES (3, 'Charlie')").unwrap();
+    db.execute("INSERT INTO users VALUES (3, 'Charlie')")
+        .unwrap();
 
-    db.execute("INSERT INTO orders VALUES (1, 1, 'Widget')").unwrap();
-    db.execute("INSERT INTO orders VALUES (2, 1, 'Gadget')").unwrap();
-    db.execute("INSERT INTO orders VALUES (3, 2, 'Doohickey')").unwrap();
+    db.execute("INSERT INTO orders VALUES (1, 1, 'Widget')")
+        .unwrap();
+    db.execute("INSERT INTO orders VALUES (2, 1, 'Gadget')")
+        .unwrap();
+    db.execute("INSERT INTO orders VALUES (3, 2, 'Doohickey')")
+        .unwrap();
 
     let result = db
         .query(
@@ -828,7 +830,10 @@ fn inner_join() {
 
     assert_eq!(result.rows.len(), 3);
     use rsqlite_storage::codec::Value;
-    assert_eq!(result.rows[0].values[1], Value::Text("Doohickey".to_string()));
+    assert_eq!(
+        result.rows[0].values[1],
+        Value::Text("Doohickey".to_string())
+    );
     assert_eq!(result.rows[0].values[0], Value::Text("Bob".to_string()));
     assert_eq!(result.rows[1].values[1], Value::Text("Gadget".to_string()));
     assert_eq!(result.rows[1].values[0], Value::Text("Alice".to_string()));
@@ -852,9 +857,11 @@ fn left_join() {
 
     db.execute("INSERT INTO users VALUES (1, 'Alice')").unwrap();
     db.execute("INSERT INTO users VALUES (2, 'Bob')").unwrap();
-    db.execute("INSERT INTO users VALUES (3, 'Charlie')").unwrap();
+    db.execute("INSERT INTO users VALUES (3, 'Charlie')")
+        .unwrap();
 
-    db.execute("INSERT INTO orders VALUES (1, 1, 'Widget')").unwrap();
+    db.execute("INSERT INTO orders VALUES (1, 1, 'Widget')")
+        .unwrap();
 
     let result = db
         .query(
@@ -898,9 +905,7 @@ fn cross_join() {
     db.execute("INSERT INTO b VALUES (2, 'b2')").unwrap();
     db.execute("INSERT INTO b VALUES (3, 'b3')").unwrap();
 
-    let result = db
-        .query("SELECT a.x, b.y FROM a CROSS JOIN b")
-        .unwrap();
+    let result = db.query("SELECT a.x, b.y FROM a CROSS JOIN b").unwrap();
 
     // 2 * 3 = 6 rows
     assert_eq!(result.rows.len(), 6);
@@ -1033,15 +1038,18 @@ fn group_by() {
     let vfs = rsqlite_vfs::native::NativeVfs::new();
     let mut db = Database::create(&vfs, db_path).unwrap();
 
-    db.execute(
-        "CREATE TABLE emp (id INTEGER PRIMARY KEY, dept TEXT, salary INTEGER)",
-    )
-    .unwrap();
-    db.execute("INSERT INTO emp VALUES (1, 'eng', 100)").unwrap();
-    db.execute("INSERT INTO emp VALUES (2, 'eng', 120)").unwrap();
-    db.execute("INSERT INTO emp VALUES (3, 'sales', 80)").unwrap();
-    db.execute("INSERT INTO emp VALUES (4, 'sales', 90)").unwrap();
-    db.execute("INSERT INTO emp VALUES (5, 'eng', 110)").unwrap();
+    db.execute("CREATE TABLE emp (id INTEGER PRIMARY KEY, dept TEXT, salary INTEGER)")
+        .unwrap();
+    db.execute("INSERT INTO emp VALUES (1, 'eng', 100)")
+        .unwrap();
+    db.execute("INSERT INTO emp VALUES (2, 'eng', 120)")
+        .unwrap();
+    db.execute("INSERT INTO emp VALUES (3, 'sales', 80)")
+        .unwrap();
+    db.execute("INSERT INTO emp VALUES (4, 'sales', 90)")
+        .unwrap();
+    db.execute("INSERT INTO emp VALUES (5, 'eng', 110)")
+        .unwrap();
 
     let result = db
         .query("SELECT dept, COUNT(*), SUM(salary) FROM emp GROUP BY dept ORDER BY dept")
@@ -1069,20 +1077,21 @@ fn group_by_having() {
     let vfs = rsqlite_vfs::native::NativeVfs::new();
     let mut db = Database::create(&vfs, db_path).unwrap();
 
-    db.execute(
-        "CREATE TABLE emp (id INTEGER PRIMARY KEY, dept TEXT, salary INTEGER)",
-    )
-    .unwrap();
-    db.execute("INSERT INTO emp VALUES (1, 'eng', 100)").unwrap();
-    db.execute("INSERT INTO emp VALUES (2, 'eng', 120)").unwrap();
-    db.execute("INSERT INTO emp VALUES (3, 'sales', 80)").unwrap();
-    db.execute("INSERT INTO emp VALUES (4, 'sales', 90)").unwrap();
-    db.execute("INSERT INTO emp VALUES (5, 'eng', 110)").unwrap();
+    db.execute("CREATE TABLE emp (id INTEGER PRIMARY KEY, dept TEXT, salary INTEGER)")
+        .unwrap();
+    db.execute("INSERT INTO emp VALUES (1, 'eng', 100)")
+        .unwrap();
+    db.execute("INSERT INTO emp VALUES (2, 'eng', 120)")
+        .unwrap();
+    db.execute("INSERT INTO emp VALUES (3, 'sales', 80)")
+        .unwrap();
+    db.execute("INSERT INTO emp VALUES (4, 'sales', 90)")
+        .unwrap();
+    db.execute("INSERT INTO emp VALUES (5, 'eng', 110)")
+        .unwrap();
 
     let result = db
-        .query(
-            "SELECT dept, COUNT(*) FROM emp GROUP BY dept HAVING COUNT(*) > 2",
-        )
+        .query("SELECT dept, COUNT(*) FROM emp GROUP BY dept HAVING COUNT(*) > 2")
         .unwrap();
 
     assert_eq!(result.rows.len(), 1);
@@ -1173,7 +1182,8 @@ fn scalar_upper_lower() {
 
     db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, s TEXT)")
         .unwrap();
-    db.execute("INSERT INTO t VALUES (1, 'Hello World')").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'Hello World')")
+        .unwrap();
 
     let result = db.query("SELECT UPPER(s), LOWER(s) FROM t").unwrap();
     use rsqlite_storage::codec::Value;
@@ -1199,7 +1209,8 @@ fn scalar_substr() {
 
     db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, s TEXT)")
         .unwrap();
-    db.execute("INSERT INTO t VALUES (1, 'Hello World')").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'Hello World')")
+        .unwrap();
 
     let result = db.query("SELECT SUBSTR(s, 1, 5) FROM t").unwrap();
     use rsqlite_storage::codec::Value;
@@ -1225,8 +1236,10 @@ fn scalar_coalesce_ifnull() {
 
     db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, a TEXT, b TEXT)")
         .unwrap();
-    db.execute("INSERT INTO t VALUES (1, NULL, 'fallback')").unwrap();
-    db.execute("INSERT INTO t VALUES (2, 'primary', 'fallback')").unwrap();
+    db.execute("INSERT INTO t VALUES (1, NULL, 'fallback')")
+        .unwrap();
+    db.execute("INSERT INTO t VALUES (2, 'primary', 'fallback')")
+        .unwrap();
 
     let result = db.query("SELECT COALESCE(a, b) FROM t").unwrap();
     use rsqlite_storage::codec::Value;
@@ -1234,20 +1247,14 @@ fn scalar_coalesce_ifnull() {
         result.rows[0].values[0],
         Value::Text("fallback".to_string())
     );
-    assert_eq!(
-        result.rows[1].values[0],
-        Value::Text("primary".to_string())
-    );
+    assert_eq!(result.rows[1].values[0], Value::Text("primary".to_string()));
 
     let result = db.query("SELECT IFNULL(a, b) FROM t").unwrap();
     assert_eq!(
         result.rows[0].values[0],
         Value::Text("fallback".to_string())
     );
-    assert_eq!(
-        result.rows[1].values[0],
-        Value::Text("primary".to_string())
-    );
+    assert_eq!(result.rows[1].values[0], Value::Text("primary".to_string()));
 
     let _ = std::fs::remove_file(db_path);
 }
@@ -1269,10 +1276,7 @@ fn scalar_typeof() {
 
     let result = db.query("SELECT TYPEOF(val) FROM t").unwrap();
     use rsqlite_storage::codec::Value;
-    assert_eq!(
-        result.rows[0].values[0],
-        Value::Text("integer".to_string())
-    );
+    assert_eq!(result.rows[0].values[0], Value::Text("integer".to_string()));
     assert_eq!(result.rows[1].values[0], Value::Text("text".to_string()));
     assert_eq!(result.rows[2].values[0], Value::Text("null".to_string()));
     assert_eq!(result.rows[3].values[0], Value::Text("real".to_string()));
@@ -1313,7 +1317,8 @@ fn scalar_replace_instr() {
 
     db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, s TEXT)")
         .unwrap();
-    db.execute("INSERT INTO t VALUES (1, 'hello world')").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'hello world')")
+        .unwrap();
 
     let result = db
         .query("SELECT REPLACE(s, 'world', 'rust') FROM t")
@@ -1350,16 +1355,10 @@ fn scalar_trim() {
     assert_eq!(result.rows[0].values[0], Value::Text("hello".to_string()));
 
     let result = db.query("SELECT LTRIM(s) FROM t").unwrap();
-    assert_eq!(
-        result.rows[0].values[0],
-        Value::Text("hello  ".to_string())
-    );
+    assert_eq!(result.rows[0].values[0], Value::Text("hello  ".to_string()));
 
     let result = db.query("SELECT RTRIM(s) FROM t").unwrap();
-    assert_eq!(
-        result.rows[0].values[0],
-        Value::Text("  hello".to_string())
-    );
+    assert_eq!(result.rows[0].values[0], Value::Text("  hello".to_string()));
 
     let _ = std::fs::remove_file(db_path);
 }

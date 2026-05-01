@@ -27,7 +27,12 @@ pub(super) fn value_to_sql_literal(val: &Value) -> String {
         Value::Integer(i) => i.to_string(),
         Value::Real(f) => f.to_string(),
         Value::Text(s) => format!("'{}'", s.replace('\'', "''")),
-        Value::Blob(b) => format!("X'{}'", b.iter().map(|byte| format!("{byte:02x}")).collect::<String>()),
+        Value::Blob(b) => format!(
+            "X'{}'",
+            b.iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        ),
     }
 }
 
@@ -198,9 +203,7 @@ pub(super) fn eval_insert_row(
                 let col_idx = table_columns
                     .iter()
                     .position(|c| c.name.eq_ignore_ascii_case(target_name))
-                    .ok_or_else(|| {
-                        Error::Other(format!("unknown column: {target_name}"))
-                    })?;
+                    .ok_or_else(|| Error::Other(format!("unknown column: {target_name}")))?;
                 if i < row_exprs.len() {
                     values[col_idx] = eval_literal(&row_exprs[i])?;
                     explicitly_set[col_idx] = true;
@@ -225,7 +228,9 @@ pub(super) fn build_returning_result(
     let col_names: Vec<String> = table_columns.iter().map(|c| c.name.clone()).collect();
     let mut rows = Vec::with_capacity(affected.len());
     for values in affected {
-        let row = crate::types::Row { values: values.clone() };
+        let row = crate::types::Row {
+            values: values.clone(),
+        };
         let mut out_values = Vec::with_capacity(returning.len());
         for proj in returning {
             let v = super::eval::eval_expr(&proj.expr, &row, &col_names, pager, catalog)?;
@@ -250,7 +255,9 @@ pub(super) fn apply_column_defaults(
     };
 
     let col_names: Vec<String> = table_columns.iter().map(|c| c.name.clone()).collect();
-    let placeholder_row = crate::types::Row { values: values.to_vec() };
+    let placeholder_row = crate::types::Row {
+        values: values.to_vec(),
+    };
 
     for (i, col) in table_columns.iter().enumerate() {
         if explicitly_set[i] {

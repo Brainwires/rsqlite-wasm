@@ -25,7 +25,8 @@ impl JsonValue {
                 }
             }
             JsonValue::String(s) => {
-                let escaped = s.replace('\\', "\\\\")
+                let escaped = s
+                    .replace('\\', "\\\\")
                     .replace('"', "\\\"")
                     .replace('\n', "\\n")
                     .replace('\r', "\\r")
@@ -37,7 +38,8 @@ impl JsonValue {
                 format!("[{}]", parts.join(","))
             }
             JsonValue::Object(obj) => {
-                let parts: Vec<String> = obj.iter()
+                let parts: Vec<String> = obj
+                    .iter()
                     .map(|(k, v)| {
                         let ek = k.replace('\\', "\\\\").replace('"', "\\\"");
                         format!("\"{}\":{}", ek, v.to_string_repr())
@@ -74,7 +76,9 @@ impl JsonValue {
                     chars.next();
                     let mut key = String::new();
                     while let Some(&c) = chars.peek() {
-                        if c == '.' || c == '[' { break; }
+                        if c == '.' || c == '[' {
+                            break;
+                        }
                         key.push(c);
                         chars.next();
                     }
@@ -88,11 +92,15 @@ impl JsonValue {
                     chars.next();
                     let mut idx_str = String::new();
                     while let Some(&c) = chars.peek() {
-                        if c == ']' { break; }
+                        if c == ']' {
+                            break;
+                        }
                         idx_str.push(c);
                         chars.next();
                     }
-                    if chars.peek() == Some(&']') { chars.next(); }
+                    if chars.peek() == Some(&']') {
+                        chars.next();
+                    }
                     let idx: usize = idx_str.parse().ok()?;
                     if let JsonValue::Array(arr) = current {
                         current = arr.get(idx)?;
@@ -150,32 +158,30 @@ fn parse_string_raw(s: &str) -> Result<(String, &str)> {
                 let rest = &s[pos + 1..];
                 return Ok((result, rest));
             }
-            Some((_, '\\')) => {
-                match chars.next() {
-                    Some((_, '"')) => result.push('"'),
-                    Some((_, '\\')) => result.push('\\'),
-                    Some((_, '/')) => result.push('/'),
-                    Some((_, 'n')) => result.push('\n'),
-                    Some((_, 'r')) => result.push('\r'),
-                    Some((_, 't')) => result.push('\t'),
-                    Some((_, 'b')) => result.push('\u{0008}'),
-                    Some((_, 'f')) => result.push('\u{000C}'),
-                    Some((_, 'u')) => {
-                        let mut hex = String::new();
-                        for _ in 0..4 {
-                            if let Some((_, c)) = chars.next() {
-                                hex.push(c);
-                            }
-                        }
-                        if let Ok(cp) = u32::from_str_radix(&hex, 16) {
-                            if let Some(c) = char::from_u32(cp) {
-                                result.push(c);
-                            }
+            Some((_, '\\')) => match chars.next() {
+                Some((_, '"')) => result.push('"'),
+                Some((_, '\\')) => result.push('\\'),
+                Some((_, '/')) => result.push('/'),
+                Some((_, 'n')) => result.push('\n'),
+                Some((_, 'r')) => result.push('\r'),
+                Some((_, 't')) => result.push('\t'),
+                Some((_, 'b')) => result.push('\u{0008}'),
+                Some((_, 'f')) => result.push('\u{000C}'),
+                Some((_, 'u')) => {
+                    let mut hex = String::new();
+                    for _ in 0..4 {
+                        if let Some((_, c)) = chars.next() {
+                            hex.push(c);
                         }
                     }
-                    _ => {}
+                    if let Ok(cp) = u32::from_str_radix(&hex, 16) {
+                        if let Some(c) = char::from_u32(cp) {
+                            result.push(c);
+                        }
+                    }
                 }
-            }
+                _ => {}
+            },
             Some((_, c)) => result.push(c),
         }
     }
@@ -276,22 +282,34 @@ fn parse_null(s: &str) -> Result<(JsonValue, &str)> {
 fn parse_number(s: &str) -> Result<(JsonValue, &str)> {
     let mut end = 0;
     let bytes = s.as_bytes();
-    if end < bytes.len() && bytes[end] == b'-' { end += 1; }
-    while end < bytes.len() && bytes[end].is_ascii_digit() { end += 1; }
+    if end < bytes.len() && bytes[end] == b'-' {
+        end += 1;
+    }
+    while end < bytes.len() && bytes[end].is_ascii_digit() {
+        end += 1;
+    }
     if end < bytes.len() && bytes[end] == b'.' {
         end += 1;
-        while end < bytes.len() && bytes[end].is_ascii_digit() { end += 1; }
+        while end < bytes.len() && bytes[end].is_ascii_digit() {
+            end += 1;
+        }
     }
     if end < bytes.len() && (bytes[end] == b'e' || bytes[end] == b'E') {
         end += 1;
-        if end < bytes.len() && (bytes[end] == b'+' || bytes[end] == b'-') { end += 1; }
-        while end < bytes.len() && bytes[end].is_ascii_digit() { end += 1; }
+        if end < bytes.len() && (bytes[end] == b'+' || bytes[end] == b'-') {
+            end += 1;
+        }
+        while end < bytes.len() && bytes[end].is_ascii_digit() {
+            end += 1;
+        }
     }
     if end == 0 {
         return Err(Error::Other("expected number".into()));
     }
     let num_str = &s[..end];
-    let n: f64 = num_str.parse().map_err(|_| Error::Other(format!("invalid number: {num_str}")))?;
+    let n: f64 = num_str
+        .parse()
+        .map_err(|_| Error::Other(format!("invalid number: {num_str}")))?;
     Ok((JsonValue::Number(n), &s[end..]))
 }
 
@@ -342,7 +360,9 @@ fn parse_path_segments(path: &str) -> Option<Vec<PathSegment>> {
                 chars.next();
                 let mut key = String::new();
                 while let Some(&c) = chars.peek() {
-                    if c == '.' || c == '[' { break; }
+                    if c == '.' || c == '[' {
+                        break;
+                    }
                     key.push(c);
                     chars.next();
                 }
@@ -352,11 +372,15 @@ fn parse_path_segments(path: &str) -> Option<Vec<PathSegment>> {
                 chars.next();
                 let mut idx_str = String::new();
                 while let Some(&c) = chars.peek() {
-                    if c == ']' { break; }
+                    if c == ']' {
+                        break;
+                    }
                     idx_str.push(c);
                     chars.next();
                 }
-                if chars.peek() == Some(&']') { chars.next(); }
+                if chars.peek() == Some(&']') {
+                    chars.next();
+                }
                 let idx: usize = idx_str.parse().ok()?;
                 segments.push(PathSegment::Index(idx));
             }
@@ -403,7 +427,9 @@ fn set_path(root: &mut JsonValue, path: &str, val: JsonValue, insert: bool, repl
         PathSegment::Key(k) => {
             if let JsonValue::Object(obj) = current {
                 if let Some(pos) = obj.iter().position(|(key, _)| key == k) {
-                    if replace { obj[pos].1 = val; }
+                    if replace {
+                        obj[pos].1 = val;
+                    }
                 } else if insert {
                     obj.push((k.clone(), val));
                 }
@@ -412,7 +438,9 @@ fn set_path(root: &mut JsonValue, path: &str, val: JsonValue, insert: bool, repl
         PathSegment::Index(i) => {
             if let JsonValue::Array(arr) = current {
                 if *i < arr.len() {
-                    if replace { arr[*i] = val; }
+                    if replace {
+                        arr[*i] = val;
+                    }
                 } else if insert && *i >= arr.len() {
                     arr.push(val);
                 }
@@ -503,7 +531,9 @@ fn json_merge_patch(target: &mut JsonValue, patch: JsonValue) {
 pub(crate) fn eval_json_function(name: &str, args: &[Value]) -> Result<Value> {
     match name {
         "JSON" => {
-            if args.len() != 1 { return Err(Error::Other("json() requires 1 argument".into())); }
+            if args.len() != 1 {
+                return Err(Error::Other("json() requires 1 argument".into()));
+            }
             match &args[0] {
                 Value::Null => Ok(Value::Null),
                 Value::Text(s) => {
@@ -514,7 +544,11 @@ pub(crate) fn eval_json_function(name: &str, args: &[Value]) -> Result<Value> {
             }
         }
         "JSON_EXTRACT" => {
-            if args.len() < 2 { return Err(Error::Other("json_extract() requires at least 2 arguments".into())); }
+            if args.len() < 2 {
+                return Err(Error::Other(
+                    "json_extract() requires at least 2 arguments".into(),
+                ));
+            }
             match &args[0] {
                 Value::Null => Ok(Value::Null),
                 Value::Text(s) => {
@@ -533,7 +567,11 @@ pub(crate) fn eval_json_function(name: &str, args: &[Value]) -> Result<Value> {
                         for arg in &args[1..] {
                             let path = match arg {
                                 Value::Text(p) => p.as_str(),
-                                _ => return Err(Error::Other("json_extract path must be text".into())),
+                                _ => {
+                                    return Err(Error::Other(
+                                        "json_extract path must be text".into(),
+                                    ));
+                                }
                             };
                             match jv.extract_path(path) {
                                 Some(v) => results.push(v.to_string_repr()),
@@ -543,11 +581,15 @@ pub(crate) fn eval_json_function(name: &str, args: &[Value]) -> Result<Value> {
                         Ok(Value::Text(format!("[{}]", results.join(","))))
                     }
                 }
-                _ => Err(Error::Other("json_extract() requires a TEXT argument".into())),
+                _ => Err(Error::Other(
+                    "json_extract() requires a TEXT argument".into(),
+                )),
             }
         }
         "JSON_TYPE" => {
-            if args.is_empty() { return Err(Error::Other("json_type() requires 1-2 arguments".into())); }
+            if args.is_empty() {
+                return Err(Error::Other("json_type() requires 1-2 arguments".into()));
+            }
             match &args[0] {
                 Value::Null => Ok(Value::Null),
                 Value::Text(s) => {
@@ -569,7 +611,9 @@ pub(crate) fn eval_json_function(name: &str, args: &[Value]) -> Result<Value> {
             }
         }
         "JSON_VALID" => {
-            if args.len() != 1 { return Err(Error::Other("json_valid() requires 1 argument".into())); }
+            if args.len() != 1 {
+                return Err(Error::Other("json_valid() requires 1 argument".into()));
+            }
             match &args[0] {
                 Value::Null => Ok(Value::Null),
                 Value::Text(s) => Ok(Value::Integer(if parse_json(s).is_ok() { 1 } else { 0 })),
@@ -582,7 +626,9 @@ pub(crate) fn eval_json_function(name: &str, args: &[Value]) -> Result<Value> {
         }
         "JSON_OBJECT" => {
             if args.len() % 2 != 0 {
-                return Err(Error::Other("json_object() requires an even number of arguments".into()));
+                return Err(Error::Other(
+                    "json_object() requires an even number of arguments".into(),
+                ));
             }
             let mut entries = Vec::new();
             for chunk in args.chunks(2) {
@@ -596,7 +642,11 @@ pub(crate) fn eval_json_function(name: &str, args: &[Value]) -> Result<Value> {
             Ok(Value::Text(JsonValue::Object(entries).to_string_repr()))
         }
         "JSON_ARRAY_LENGTH" => {
-            if args.is_empty() { return Err(Error::Other("json_array_length() requires 1-2 arguments".into())); }
+            if args.is_empty() {
+                return Err(Error::Other(
+                    "json_array_length() requires 1-2 arguments".into(),
+                ));
+            }
             match &args[0] {
                 Value::Null => Ok(Value::Null),
                 Value::Text(s) => {
@@ -604,7 +654,11 @@ pub(crate) fn eval_json_function(name: &str, args: &[Value]) -> Result<Value> {
                     let target = if args.len() > 1 {
                         let path = match &args[1] {
                             Value::Text(p) => p.as_str(),
-                            _ => return Err(Error::Other("json_array_length path must be text".into())),
+                            _ => {
+                                return Err(Error::Other(
+                                    "json_array_length path must be text".into(),
+                                ));
+                            }
                         };
                         jv.extract_path(path)
                     } else {
@@ -620,13 +674,17 @@ pub(crate) fn eval_json_function(name: &str, args: &[Value]) -> Result<Value> {
             }
         }
         "JSON_QUOTE" => {
-            if args.len() != 1 { return Err(Error::Other("json_quote() requires 1 argument".into())); }
+            if args.len() != 1 {
+                return Err(Error::Other("json_quote() requires 1 argument".into()));
+            }
             let jv = sql_to_json_value(&args[0]);
             Ok(Value::Text(jv.to_string_repr()))
         }
         "JSON_INSERT" | "JSON_REPLACE" | "JSON_SET" => {
             if args.len() < 3 || args.len() % 2 != 1 {
-                return Err(Error::Other(format!("{name}() requires odd number of arguments >= 3")));
+                return Err(Error::Other(format!(
+                    "{name}() requires odd number of arguments >= 3"
+                )));
             }
             match &args[0] {
                 Value::Null => Ok(Value::Null),
@@ -644,11 +702,17 @@ pub(crate) fn eval_json_function(name: &str, args: &[Value]) -> Result<Value> {
                     }
                     Ok(Value::Text(jv.to_string_repr()))
                 }
-                _ => Err(Error::Other(format!("{name}() requires TEXT first argument"))),
+                _ => Err(Error::Other(format!(
+                    "{name}() requires TEXT first argument"
+                ))),
             }
         }
         "JSON_REMOVE" => {
-            if args.is_empty() { return Err(Error::Other("json_remove() requires at least 1 argument".into())); }
+            if args.is_empty() {
+                return Err(Error::Other(
+                    "json_remove() requires at least 1 argument".into(),
+                ));
+            }
             match &args[0] {
                 Value::Null => Ok(Value::Null),
                 Value::Text(s) => {
@@ -662,11 +726,15 @@ pub(crate) fn eval_json_function(name: &str, args: &[Value]) -> Result<Value> {
                     }
                     Ok(Value::Text(jv.to_string_repr()))
                 }
-                _ => Err(Error::Other("json_remove() requires TEXT first argument".into())),
+                _ => Err(Error::Other(
+                    "json_remove() requires TEXT first argument".into(),
+                )),
             }
         }
         "JSON_PATCH" => {
-            if args.len() != 2 { return Err(Error::Other("json_patch() requires 2 arguments".into())); }
+            if args.len() != 2 {
+                return Err(Error::Other("json_patch() requires 2 arguments".into()));
+            }
             match (&args[0], &args[1]) {
                 (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
                 (Value::Text(base_s), Value::Text(patch_s)) => {
@@ -691,7 +759,10 @@ mod tests {
         assert_eq!(parse_json("null").unwrap(), JsonValue::Null);
         assert_eq!(parse_json("true").unwrap(), JsonValue::Bool(true));
         assert_eq!(parse_json("42").unwrap(), JsonValue::Number(42.0));
-        assert_eq!(parse_json("\"hello\"").unwrap(), JsonValue::String("hello".into()));
+        assert_eq!(
+            parse_json("\"hello\"").unwrap(),
+            JsonValue::String("hello".into())
+        );
     }
 
     #[test]
@@ -707,9 +778,14 @@ mod tests {
     fn extract_path() {
         let jv = parse_json(r#"{"a": {"b": [10, 20, 30]}}"#).unwrap();
         assert_eq!(jv.extract_path("$.a.b[1]"), Some(&JsonValue::Number(20.0)));
-        assert_eq!(jv.extract_path("$.a.b"), Some(&JsonValue::Array(vec![
-            JsonValue::Number(10.0), JsonValue::Number(20.0), JsonValue::Number(30.0)
-        ])));
+        assert_eq!(
+            jv.extract_path("$.a.b"),
+            Some(&JsonValue::Array(vec![
+                JsonValue::Number(10.0),
+                JsonValue::Number(20.0),
+                JsonValue::Number(30.0)
+            ]))
+        );
         assert_eq!(jv.extract_path("$.nonexistent"), None);
     }
 

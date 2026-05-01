@@ -139,11 +139,7 @@ pub(crate) fn eval_scalar_function(name: &str, args: &[Value]) -> Result<Value> 
                 };
                 (idx, len)
             };
-            let result: String = chars
-                .iter()
-                .skip(start_idx)
-                .take(take_len)
-                .collect();
+            let result: String = chars.iter().skip(start_idx).take(take_len).collect();
             Ok(Value::Text(result))
         }
         "REPLACE" => {
@@ -286,7 +282,11 @@ pub(crate) fn eval_scalar_function(name: &str, args: &[Value]) -> Result<Value> 
             }
             let pattern = value_to_text(&args[0]);
             let value = value_to_text(&args[1]);
-            Ok(Value::Integer(if glob_match(&pattern, &value) { 1 } else { 0 }))
+            Ok(Value::Integer(if glob_match(&pattern, &value) {
+                1
+            } else {
+                0
+            }))
         }
         "ROUND" => {
             if args.is_empty() {
@@ -316,15 +316,9 @@ pub(crate) fn eval_scalar_function(name: &str, args: &[Value]) -> Result<Value> 
                 Ok(Value::Real(rounded))
             }
         }
-        "LAST_INSERT_ROWID" => {
-            Ok(Value::Integer(super::executor::get_last_insert_rowid_pub()))
-        }
-        "CHANGES" => {
-            Ok(Value::Integer(super::executor::get_changes_pub()))
-        }
-        "TOTAL_CHANGES" => {
-            Ok(Value::Integer(super::executor::get_total_changes_pub()))
-        }
+        "LAST_INSERT_ROWID" => Ok(Value::Integer(super::executor::get_last_insert_rowid_pub())),
+        "CHANGES" => Ok(Value::Integer(super::executor::get_changes_pub())),
+        "TOTAL_CHANGES" => Ok(Value::Integer(super::executor::get_total_changes_pub())),
         "PRINTF" | "FORMAT" => {
             if args.is_empty() {
                 return Err(Error::Other("PRINTF requires at least 1 argument".into()));
@@ -367,9 +361,7 @@ pub(crate) fn eval_scalar_function(name: &str, args: &[Value]) -> Result<Value> 
             }
         }
         "SQLITE_VERSION" => Ok(Value::Text("3.42.0".to_string())),
-        "SQLITE_SOURCE_ID" => Ok(Value::Text(
-            "2023-05-16 12:36:15 rsqlite-wasm".to_string(),
-        )),
+        "SQLITE_SOURCE_ID" => Ok(Value::Text("2023-05-16 12:36:15 rsqlite-wasm".to_string())),
         "RANDOMBLOB" => {
             if args.is_empty() {
                 return Err(Error::Other("RANDOMBLOB requires 1 argument".into()));
@@ -406,7 +398,9 @@ pub(crate) fn eval_scalar_function(name: &str, args: &[Value]) -> Result<Value> 
         }
         "VEC_DISTANCE_COSINE" => {
             if args.len() != 2 {
-                return Err(Error::Other("VEC_DISTANCE_COSINE requires 2 arguments".into()));
+                return Err(Error::Other(
+                    "VEC_DISTANCE_COSINE requires 2 arguments".into(),
+                ));
             }
             let (v1, v2) = blob_pair_to_f32(args)?;
             Ok(Value::Real(cosine_distance(&v1, &v2)))
@@ -423,7 +417,11 @@ pub(crate) fn eval_scalar_function(name: &str, args: &[Value]) -> Result<Value> 
                 return Err(Error::Other("VEC_DISTANCE_DOT requires 2 arguments".into()));
             }
             let (v1, v2) = blob_pair_to_f32(args)?;
-            let dot: f64 = v1.iter().zip(&v2).map(|(a, b)| (*a as f64) * (*b as f64)).sum();
+            let dot: f64 = v1
+                .iter()
+                .zip(&v2)
+                .map(|(a, b)| (*a as f64) * (*b as f64))
+                .sum();
             Ok(Value::Real(-dot))
         }
         "VEC_LENGTH" => {
@@ -434,7 +432,9 @@ pub(crate) fn eval_scalar_function(name: &str, args: &[Value]) -> Result<Value> 
                 Value::Null => Ok(Value::Null),
                 Value::Blob(b) => {
                     if b.len() % 4 != 0 {
-                        return Err(Error::Other("VEC_LENGTH: BLOB length must be a multiple of 4".into()));
+                        return Err(Error::Other(
+                            "VEC_LENGTH: BLOB length must be a multiple of 4".into(),
+                        ));
                     }
                     Ok(Value::Integer((b.len() / 4) as i64))
                 }
@@ -449,16 +449,23 @@ pub(crate) fn eval_scalar_function(name: &str, args: &[Value]) -> Result<Value> 
                 Value::Null => Ok(Value::Null),
                 Value::Blob(b) => {
                     let v = blob_to_f32_vec(b)?;
-                    let norm: f64 = v.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>().sqrt();
+                    let norm: f64 = v
+                        .iter()
+                        .map(|x| (*x as f64) * (*x as f64))
+                        .sum::<f64>()
+                        .sqrt();
                     if norm == 0.0 {
                         return Ok(args[0].clone());
                     }
-                    let normalized: Vec<u8> = v.iter()
+                    let normalized: Vec<u8> = v
+                        .iter()
                         .flat_map(|x| ((*x as f64 / norm) as f32).to_le_bytes())
                         .collect();
                     Ok(Value::Blob(normalized))
                 }
-                _ => Err(Error::Other("VEC_NORMALIZE requires a BLOB argument".into())),
+                _ => Err(Error::Other(
+                    "VEC_NORMALIZE requires a BLOB argument".into(),
+                )),
             }
         }
         "VEC_FROM_JSON" => {
@@ -472,7 +479,9 @@ pub(crate) fn eval_scalar_function(name: &str, args: &[Value]) -> Result<Value> 
                     let blob: Vec<u8> = floats.iter().flat_map(|f| f.to_le_bytes()).collect();
                     Ok(Value::Blob(blob))
                 }
-                _ => Err(Error::Other("VEC_FROM_JSON requires a TEXT argument".into())),
+                _ => Err(Error::Other(
+                    "VEC_FROM_JSON requires a TEXT argument".into(),
+                )),
             }
         }
         "VEC_TO_JSON" => {
@@ -519,11 +528,9 @@ pub(crate) fn eval_scalar_function(name: &str, args: &[Value]) -> Result<Value> 
             }
             Ok(max.clone())
         }
-        "JSON" | "JSON_EXTRACT" | "JSON_TYPE" | "JSON_VALID" | "JSON_ARRAY"
-        | "JSON_OBJECT" | "JSON_ARRAY_LENGTH" | "JSON_QUOTE" | "JSON_INSERT"
-        | "JSON_REPLACE" | "JSON_SET" | "JSON_REMOVE" | "JSON_PATCH" => {
-            crate::json::eval_json_function(name, args)
-        }
+        "JSON" | "JSON_EXTRACT" | "JSON_TYPE" | "JSON_VALID" | "JSON_ARRAY" | "JSON_OBJECT"
+        | "JSON_ARRAY_LENGTH" | "JSON_QUOTE" | "JSON_INSERT" | "JSON_REPLACE" | "JSON_SET"
+        | "JSON_REMOVE" | "JSON_PATCH" => crate::json::eval_json_function(name, args),
         _ => Err(Error::Other(format!("unknown function: {name}"))),
     }
 }
@@ -538,21 +545,13 @@ pub(crate) fn value_to_text(val: &Value) -> String {
     }
 }
 
-pub(crate) fn like_match_with_escape(
-    pattern: &str,
-    value: &str,
-    escape: Option<char>,
-) -> bool {
+pub(crate) fn like_match_with_escape(pattern: &str, value: &str, escape: Option<char>) -> bool {
     let pat: Vec<char> = pattern.chars().collect();
     let val: Vec<char> = value.chars().collect();
     like_match_inner(&pat, &val, escape)
 }
 
-pub(crate) fn like_match_inner(
-    pattern: &[char],
-    value: &[char],
-    escape: Option<char>,
-) -> bool {
+pub(crate) fn like_match_inner(pattern: &[char], value: &[char], escape: Option<char>) -> bool {
     let mut pi = 0;
     let mut vi = 0;
     let mut star_pi = usize::MAX;
@@ -621,9 +620,7 @@ fn glob_match_inner(pattern: &[char], value: &[char]) -> bool {
             star_pi = pi;
             star_vi = vi;
             pi += 1;
-        } else if pi < pattern.len()
-            && (pattern[pi] == '?' || pattern[pi] == value[vi])
-        {
+        } else if pi < pattern.len() && (pattern[pi] == '?' || pattern[pi] == value[vi]) {
             pi += 1;
             vi += 1;
         } else if pi < pattern.len() && pattern[pi] == '[' {
@@ -788,13 +785,11 @@ pub(crate) fn eval_binop(op: BinOp, left: &Value, right: &Value) -> Result<Value
             }
             BinOp::Is => {
                 // NULL IS NULL = 1; NULL IS x or x IS NULL = 0
-                let both_null =
-                    matches!(left, Value::Null) && matches!(right, Value::Null);
+                let both_null = matches!(left, Value::Null) && matches!(right, Value::Null);
                 Ok(Value::Integer(if both_null { 1 } else { 0 }))
             }
             BinOp::IsNot => {
-                let both_null =
-                    matches!(left, Value::Null) && matches!(right, Value::Null);
+                let both_null = matches!(left, Value::Null) && matches!(right, Value::Null);
                 Ok(Value::Integer(if both_null { 0 } else { 1 }))
             }
             _ => Ok(Value::Null),
@@ -802,36 +797,56 @@ pub(crate) fn eval_binop(op: BinOp, left: &Value, right: &Value) -> Result<Value
     }
 
     match op {
-        BinOp::Eq => Ok(Value::Integer(if compare(left, right) == 0 { 1 } else { 0 })),
-        BinOp::NotEq => Ok(Value::Integer(if compare(left, right) != 0 { 1 } else { 0 })),
+        BinOp::Eq => Ok(Value::Integer(if compare(left, right) == 0 {
+            1
+        } else {
+            0
+        })),
+        BinOp::NotEq => Ok(Value::Integer(if compare(left, right) != 0 {
+            1
+        } else {
+            0
+        })),
         BinOp::Lt => Ok(Value::Integer(if compare(left, right) < 0 { 1 } else { 0 })),
-        BinOp::LtEq => Ok(Value::Integer(if compare(left, right) <= 0 { 1 } else { 0 })),
+        BinOp::LtEq => Ok(Value::Integer(if compare(left, right) <= 0 {
+            1
+        } else {
+            0
+        })),
         BinOp::Gt => Ok(Value::Integer(if compare(left, right) > 0 { 1 } else { 0 })),
-        BinOp::GtEq => Ok(Value::Integer(if compare(left, right) >= 0 { 1 } else { 0 })),
-        BinOp::And => Ok(Value::Integer(
-            if is_truthy(left) && is_truthy(right) {
-                1
-            } else {
-                0
-            },
-        )),
-        BinOp::Or => Ok(Value::Integer(
-            if is_truthy(left) || is_truthy(right) {
-                1
-            } else {
-                0
-            },
-        )),
+        BinOp::GtEq => Ok(Value::Integer(if compare(left, right) >= 0 {
+            1
+        } else {
+            0
+        })),
+        BinOp::And => Ok(Value::Integer(if is_truthy(left) && is_truthy(right) {
+            1
+        } else {
+            0
+        })),
+        BinOp::Or => Ok(Value::Integer(if is_truthy(left) || is_truthy(right) {
+            1
+        } else {
+            0
+        })),
         BinOp::Add => numeric_op(left, right, |a, b| a + b, |a, b| a + b),
         BinOp::Sub => numeric_op(left, right, |a, b| a - b, |a, b| a - b),
         BinOp::Mul => numeric_op(left, right, |a, b| a * b, |a, b| a * b),
         BinOp::Div => {
             // Integer division truncates
-            numeric_op(left, right, |a, b| if b != 0 { a / b } else { 0 }, |a, b| a / b)
+            numeric_op(
+                left,
+                right,
+                |a, b| if b != 0 { a / b } else { 0 },
+                |a, b| a / b,
+            )
         }
-        BinOp::Mod => {
-            numeric_op(left, right, |a, b| if b != 0 { a % b } else { 0 }, |a, b| a % b)
-        }
+        BinOp::Mod => numeric_op(
+            left,
+            right,
+            |a, b| if b != 0 { a % b } else { 0 },
+            |a, b| a % b,
+        ),
         BinOp::Concat => {
             if matches!(left, Value::Null) || matches!(right, Value::Null) {
                 return Ok(Value::Null);
@@ -865,7 +880,10 @@ pub(crate) fn eval_binop(op: BinOp, left: &Value, right: &Value) -> Result<Value
             // NULL was already returned above, so neither side is NULL here.
             // Fall through to plain equality.
             let eq = compare(left, right) == 0;
-            let result = match op { BinOp::Is => eq, _ => !eq };
+            let result = match op {
+                BinOp::Is => eq,
+                _ => !eq,
+            };
             Ok(Value::Integer(if result { 1 } else { 0 }))
         }
         BinOp::JsonArrow | BinOp::JsonLongArrow => {
@@ -982,36 +1000,63 @@ pub(crate) fn numeric_op(
 
 fn blob_to_f32_vec(blob: &[u8]) -> Result<Vec<f32>> {
     if blob.len() % 4 != 0 {
-        return Err(Error::Other("vector BLOB length must be a multiple of 4 bytes".into()));
+        return Err(Error::Other(
+            "vector BLOB length must be a multiple of 4 bytes".into(),
+        ));
     }
-    Ok(blob.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+    Ok(blob
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect())
 }
 
 fn blob_pair_to_f32(args: &[Value]) -> Result<(Vec<f32>, Vec<f32>)> {
     let b1 = match &args[0] {
         Value::Blob(b) => b,
         Value::Null => return Err(Error::Other("vector argument must not be NULL".into())),
-        _ => return Err(Error::Other("vector distance requires BLOB arguments".into())),
+        _ => {
+            return Err(Error::Other(
+                "vector distance requires BLOB arguments".into(),
+            ));
+        }
     };
     let b2 = match &args[1] {
         Value::Blob(b) => b,
         Value::Null => return Err(Error::Other("vector argument must not be NULL".into())),
-        _ => return Err(Error::Other("vector distance requires BLOB arguments".into())),
+        _ => {
+            return Err(Error::Other(
+                "vector distance requires BLOB arguments".into(),
+            ));
+        }
     };
     let v1 = blob_to_f32_vec(b1)?;
     let v2 = blob_to_f32_vec(b2)?;
     if v1.len() != v2.len() {
         return Err(Error::Other(format!(
-            "vector dimension mismatch: {} vs {}", v1.len(), v2.len()
+            "vector dimension mismatch: {} vs {}",
+            v1.len(),
+            v2.len()
         )));
     }
     Ok((v1, v2))
 }
 
 fn cosine_distance(v1: &[f32], v2: &[f32]) -> f64 {
-    let dot: f64 = v1.iter().zip(v2).map(|(a, b)| (*a as f64) * (*b as f64)).sum();
-    let norm1: f64 = v1.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>().sqrt();
-    let norm2: f64 = v2.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>().sqrt();
+    let dot: f64 = v1
+        .iter()
+        .zip(v2)
+        .map(|(a, b)| (*a as f64) * (*b as f64))
+        .sum();
+    let norm1: f64 = v1
+        .iter()
+        .map(|x| (*x as f64) * (*x as f64))
+        .sum::<f64>()
+        .sqrt();
+    let norm2: f64 = v2
+        .iter()
+        .map(|x| (*x as f64) * (*x as f64))
+        .sum::<f64>()
+        .sqrt();
     if norm1 == 0.0 || norm2 == 0.0 {
         return 1.0;
     }
@@ -1019,24 +1064,32 @@ fn cosine_distance(v1: &[f32], v2: &[f32]) -> f64 {
 }
 
 fn l2_distance(v1: &[f32], v2: &[f32]) -> f64 {
-    v1.iter().zip(v2).map(|(a, b)| {
-        let d = (*a as f64) - (*b as f64);
-        d * d
-    }).sum::<f64>().sqrt()
+    v1.iter()
+        .zip(v2)
+        .map(|(a, b)| {
+            let d = (*a as f64) - (*b as f64);
+            d * d
+        })
+        .sum::<f64>()
+        .sqrt()
 }
 
 fn parse_json_float_array(s: &str) -> Result<Vec<f32>> {
     let trimmed = s.trim();
     if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
-        return Err(Error::Other("VEC_FROM_JSON: expected JSON array like [1.0, 2.0, ...]".into()));
+        return Err(Error::Other(
+            "VEC_FROM_JSON: expected JSON array like [1.0, 2.0, ...]".into(),
+        ));
     }
-    let inner = &trimmed[1..trimmed.len()-1];
+    let inner = &trimmed[1..trimmed.len() - 1];
     if inner.trim().is_empty() {
         return Ok(Vec::new());
     }
-    inner.split(',')
+    inner
+        .split(',')
         .map(|part| {
-            part.trim().parse::<f32>()
+            part.trim()
+                .parse::<f32>()
                 .map_err(|_| Error::Other(format!("VEC_FROM_JSON: invalid float: {}", part.trim())))
         })
         .collect()

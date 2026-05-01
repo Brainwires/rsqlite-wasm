@@ -3,8 +3,8 @@ use rsqlite_storage::codec::Value;
 use rsqlite_storage::pager::Pager;
 
 use crate::catalog::Catalog;
-use crate::eval_helpers::compare;
 use crate::error::{Error, Result};
+use crate::eval_helpers::compare;
 use crate::planner::{ColumnRef, PlanExpr};
 use crate::types::{QueryResult, Row};
 
@@ -25,7 +25,9 @@ pub(super) fn execute_scan(
         .collect();
 
     let mut cursor = BTreeCursor::new(pager, root_page);
-    let btree_rows = cursor.collect_all().map_err(|e| Error::Other(e.to_string()))?;
+    let btree_rows = cursor
+        .collect_all()
+        .map_err(|e| Error::Other(e.to_string()))?;
 
     let mut rows = Vec::with_capacity(btree_rows.len());
     for btree_row in &btree_rows {
@@ -44,9 +46,7 @@ pub(super) fn execute_scan(
             }
         }
 
-        rows.push(Row {
-            values: row_values,
-        });
+        rows.push(Row { values: row_values });
     }
 
     Ok(QueryResult {
@@ -81,7 +81,9 @@ pub(super) fn execute_index_scan(
         .collect::<Result<_>>()?;
 
     let mut index_cursor = IndexCursor::new(pager, index_root_page);
-    let index_entries = index_cursor.collect_all().map_err(|e| Error::Other(e.to_string()))?;
+    let index_entries = index_cursor
+        .collect_all()
+        .map_err(|e| Error::Other(e.to_string()))?;
 
     let mut matching_rowids = Vec::new();
     for entry in &index_entries {
@@ -104,7 +106,9 @@ pub(super) fn execute_index_scan(
     }
 
     let mut table_cursor = BTreeCursor::new(pager, table_root_page);
-    let all_rows = table_cursor.collect_all().map_err(|e| Error::Other(e.to_string()))?;
+    let all_rows = table_cursor
+        .collect_all()
+        .map_err(|e| Error::Other(e.to_string()))?;
 
     let mut rows = Vec::with_capacity(matching_rowids.len());
     for rowid in &matching_rowids {

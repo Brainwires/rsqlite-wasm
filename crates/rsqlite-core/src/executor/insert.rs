@@ -10,6 +10,7 @@ use crate::error::{Error, Result};
 use crate::planner::{InsertPlan, OnConflictPlan};
 use crate::types::Row;
 
+use super::ExecResult;
 use super::autoincrement::{compute_autoincrement_rowid, update_autoincrement_seq};
 use super::constraints::{
     check_check_constraints, check_foreign_key_insert, check_not_null_constraints,
@@ -22,9 +23,12 @@ use super::helpers::{
 };
 use super::state::{set_changes, set_last_insert_rowid};
 use super::trigger::fire_triggers;
-use super::ExecResult;
 
-pub(super) fn execute_insert(plan: &InsertPlan, pager: &mut Pager, catalog: &Catalog) -> Result<ExecResult> {
+pub(super) fn execute_insert(
+    plan: &InsertPlan,
+    pager: &mut Pager,
+    catalog: &Catalog,
+) -> Result<ExecResult> {
     let result = execute_insert_inner(plan, pager, catalog);
     // INSERT OR ROLLBACK: on any failure, roll the active transaction back
     // before propagating. Without an active transaction this is a no-op.
@@ -37,7 +41,11 @@ pub(super) fn execute_insert(plan: &InsertPlan, pager: &mut Pager, catalog: &Cat
     result
 }
 
-fn execute_insert_inner(plan: &InsertPlan, pager: &mut Pager, catalog: &Catalog) -> Result<ExecResult> {
+fn execute_insert_inner(
+    plan: &InsertPlan,
+    pager: &mut Pager,
+    catalog: &Catalog,
+) -> Result<ExecResult> {
     let table_indexes = get_table_indexes(catalog, &plan.table_name);
     let mut rows_affected = 0u64;
     let mut current_root = plan.root_page;
@@ -50,11 +58,8 @@ fn execute_insert_inner(plan: &InsertPlan, pager: &mut Pager, catalog: &Catalog)
     if let Some(source) = &plan.source_query {
         let query_result = super::execute(source, pager, catalog)?;
         for row in &query_result.rows {
-            let (mut values, explicitly_set) = map_query_row_to_insert(
-                &row.values,
-                &plan.table_columns,
-                &plan.target_columns,
-            )?;
+            let (mut values, explicitly_set) =
+                map_query_row_to_insert(&row.values, &plan.table_columns, &plan.target_columns)?;
             apply_column_defaults(
                 &mut values,
                 &explicitly_set,
@@ -74,15 +79,38 @@ fn execute_insert_inner(plan: &InsertPlan, pager: &mut Pager, catalog: &Catalog)
             }
             let rowid = match rowid {
                 Some(id) => id,
-                None if is_autoincrement => compute_autoincrement_rowid(pager, catalog, &plan.table_name, current_root)?,
+                None if is_autoincrement => {
+                    compute_autoincrement_rowid(pager, catalog, &plan.table_name, current_root)?
+                }
                 None => btree_max_rowid(pager, current_root)? + 1,
             };
 
             check_not_null_constraints(&values, &plan.table_columns, &plan.table_name)?;
-            check_unique_constraints(&values, &plan.table_columns, &plan.table_name, pager, current_root, None)?;
-            check_check_constraints(&values, &plan.table_columns, &plan.table_name, pager, catalog)?;
-            check_foreign_key_insert(&values, &plan.table_columns, &plan.table_name, pager, catalog)?;
-            let record = Record { values: values.clone() };
+            check_unique_constraints(
+                &values,
+                &plan.table_columns,
+                &plan.table_name,
+                pager,
+                current_root,
+                None,
+            )?;
+            check_check_constraints(
+                &values,
+                &plan.table_columns,
+                &plan.table_name,
+                pager,
+                catalog,
+            )?;
+            check_foreign_key_insert(
+                &values,
+                &plan.table_columns,
+                &plan.table_name,
+                pager,
+                catalog,
+            )?;
+            let record = Record {
+                values: values.clone(),
+            };
             current_root = btree_insert(pager, current_root, rowid, &record)?;
             if rowid > max_rowid_inserted {
                 max_rowid_inserted = rowid;
@@ -107,11 +135,20 @@ fn execute_insert_inner(plan: &InsertPlan, pager: &mut Pager, catalog: &Catalog)
         }
         set_changes(rows_affected as i64);
         let returning = if let Some(items) = &plan.returning {
-            Some(build_returning_result(items, &returning_values, &plan.table_columns, pager, catalog)?)
+            Some(build_returning_result(
+                items,
+                &returning_values,
+                &plan.table_columns,
+                pager,
+                catalog,
+            )?)
         } else {
             None
         };
-        return Ok(ExecResult { rows_affected, returning });
+        return Ok(ExecResult {
+            rows_affected,
+            returning,
+        });
     }
 
     let mut last_rowid = 0i64;
@@ -138,31 +175,23 @@ fn execute_insert_inner(plan: &InsertPlan, pager: &mut Pager, catalog: &Catalog)
 
         let rowid = match rowid {
             Some(id) => id,
-            None if is_autoincrement => compute_autoincrement_rowid(pager, catalog, &plan.table_name, current_root)?,
+            None if is_autoincrement => {
+                compute_autoincrement_rowid(pager, catalog, &plan.table_name, current_root)?
+            }
             None => btree_max_rowid(pager, current_root)? + 1,
         };
 
         if plan.or_replace && btree_row_exists(pager, current_root, rowid)? {
-            let old_values =
-                read_row_by_rowid(pager, current_root, rowid, &plan.table_columns)?;
+            let old_values = read_row_by_rowid(pager, current_root, rowid, &plan.table_columns)?;
             for (idx_root, idx_col_indices) in &table_indexes {
-                let old_key = build_index_key(
-                    &old_values,
-                    idx_col_indices,
-                    &plan.table_columns,
-                    rowid,
-                );
+                let old_key =
+                    build_index_key(&old_values, idx_col_indices, &plan.table_columns, rowid);
                 let _ = btree_index_delete(pager, *idx_root, &old_key);
             }
-            btree_delete(pager, current_root, rowid)
-                .map_err(|e| Error::Other(e.to_string()))?;
+            btree_delete(pager, current_root, rowid).map_err(|e| Error::Other(e.to_string()))?;
         } else if plan.or_replace {
-            let conflict_rowid = find_unique_conflict_rowid(
-                &values,
-                &plan.table_columns,
-                pager,
-                current_root,
-            )?;
+            let conflict_rowid =
+                find_unique_conflict_rowid(&values, &plan.table_columns, pager, current_root)?;
             if let Some(existing_rowid) = conflict_rowid {
                 let old_values =
                     read_row_by_rowid(pager, current_root, existing_rowid, &plan.table_columns)?;
@@ -194,7 +223,9 @@ fn execute_insert_inner(plan: &InsertPlan, pager: &mut Pager, catalog: &Catalog)
                         )?
                     }
                 }
-                OnConflictPlan::DoUpdate { conflict_columns, .. } => {
+                OnConflictPlan::DoUpdate {
+                    conflict_columns, ..
+                } => {
                     if conflict_columns.is_empty() {
                         if btree_row_exists(pager, current_root, rowid)? {
                             Some(rowid)
@@ -221,7 +252,11 @@ fn execute_insert_inner(plan: &InsertPlan, pager: &mut Pager, catalog: &Catalog)
             if let Some(existing_rowid) = conflict_rowid {
                 match on_conflict {
                     OnConflictPlan::DoNothing => continue,
-                    OnConflictPlan::DoUpdate { assignments, where_clause, .. } => {
+                    OnConflictPlan::DoUpdate {
+                        assignments,
+                        where_clause,
+                        ..
+                    } => {
                         let old_values = read_row_by_rowid(
                             pager,
                             current_root,
@@ -234,12 +269,11 @@ fn execute_insert_inner(plan: &InsertPlan, pager: &mut Pager, catalog: &Catalog)
                         // the just-attempted INSERT values.
                         let mut combined_values = old_values.clone();
                         combined_values.extend_from_slice(&values);
-                        let combined_row = Row { values: combined_values };
-                        let mut combined_col_names: Vec<String> = plan
-                            .table_columns
-                            .iter()
-                            .map(|c| c.name.clone())
-                            .collect();
+                        let combined_row = Row {
+                            values: combined_values,
+                        };
+                        let mut combined_col_names: Vec<String> =
+                            plan.table_columns.iter().map(|c| c.name.clone()).collect();
                         for c in &plan.table_columns {
                             combined_col_names.push(format!("excluded.{}", c.name));
                         }
@@ -310,11 +344,32 @@ fn execute_insert_inner(plan: &InsertPlan, pager: &mut Pager, catalog: &Catalog)
         }
 
         check_not_null_constraints(&values, &plan.table_columns, &plan.table_name)?;
-        check_unique_constraints(&values, &plan.table_columns, &plan.table_name, pager, current_root, None)?;
-        check_check_constraints(&values, &plan.table_columns, &plan.table_name, pager, catalog)?;
-        check_foreign_key_insert(&values, &plan.table_columns, &plan.table_name, pager, catalog)?;
+        check_unique_constraints(
+            &values,
+            &plan.table_columns,
+            &plan.table_name,
+            pager,
+            current_root,
+            None,
+        )?;
+        check_check_constraints(
+            &values,
+            &plan.table_columns,
+            &plan.table_name,
+            pager,
+            catalog,
+        )?;
+        check_foreign_key_insert(
+            &values,
+            &plan.table_columns,
+            &plan.table_name,
+            pager,
+            catalog,
+        )?;
 
-        let new_named: Vec<(String, Value)> = plan.table_columns.iter()
+        let new_named: Vec<(String, Value)> = plan
+            .table_columns
+            .iter()
             .zip(values.iter())
             .map(|(c, v)| (c.name.clone(), v.clone()))
             .collect();
@@ -339,8 +394,7 @@ fn execute_insert_inner(plan: &InsertPlan, pager: &mut Pager, catalog: &Catalog)
 
         for (idx_root, idx_col_indices) in &table_indexes {
             let key = build_index_key(&values, idx_col_indices, &plan.table_columns, rowid);
-            btree_index_insert(pager, *idx_root, &key)
-                .map_err(|e| Error::Other(e.to_string()))?;
+            btree_index_insert(pager, *idx_root, &key).map_err(|e| Error::Other(e.to_string()))?;
         }
 
         fire_triggers(
@@ -370,11 +424,20 @@ fn execute_insert_inner(plan: &InsertPlan, pager: &mut Pager, catalog: &Catalog)
     set_last_insert_rowid(last_rowid);
     set_changes(rows_affected as i64);
     let returning = if let Some(items) = &plan.returning {
-        Some(build_returning_result(items, &returning_values, &plan.table_columns, pager, catalog)?)
+        Some(build_returning_result(
+            items,
+            &returning_values,
+            &plan.table_columns,
+            pager,
+            catalog,
+        )?)
     } else {
         None
     };
-    Ok(ExecResult { rows_affected, returning })
+    Ok(ExecResult {
+        rows_affected,
+        returning,
+    })
 }
 
 /// Build a row whose rowid-alias columns carry the actual rowid (rather than

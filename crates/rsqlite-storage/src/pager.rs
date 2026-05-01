@@ -261,15 +261,24 @@ impl Pager {
     }
 
     pub fn release_savepoint(&mut self, name: &str) -> Result<()> {
-        let pos = self.savepoints.iter().rposition(|s| s.name.eq_ignore_ascii_case(name));
+        let pos = self
+            .savepoints
+            .iter()
+            .rposition(|s| s.name.eq_ignore_ascii_case(name));
         match pos {
-            Some(i) => { self.savepoints.truncate(i); Ok(()) }
+            Some(i) => {
+                self.savepoints.truncate(i);
+                Ok(())
+            }
             None => Err(StorageError::Other(format!("no such savepoint: {name}"))),
         }
     }
 
     pub fn rollback_to_savepoint(&mut self, name: &str) -> Result<()> {
-        let pos = self.savepoints.iter().rposition(|s| s.name.eq_ignore_ascii_case(name));
+        let pos = self
+            .savepoints
+            .iter()
+            .rposition(|s| s.name.eq_ignore_ascii_case(name));
         let pos = match pos {
             Some(i) => i,
             None => return Err(StorageError::Other(format!("no such savepoint: {name}"))),

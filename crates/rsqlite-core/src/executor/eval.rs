@@ -7,10 +7,16 @@ use crate::eval_helpers::{
     eval_binop, eval_cast, eval_scalar_function, eval_unaryop, is_truthy, like_match_with_escape,
     literal_to_value, value_to_text,
 };
-use crate::planner::{agg_column_name, PlanExpr};
+use crate::planner::{PlanExpr, agg_column_name};
 use crate::types::Row;
 
-pub(super) fn eval_expr(expr: &PlanExpr, row: &Row, columns: &[String], pager: &mut Pager, catalog: &Catalog) -> Result<Value> {
+pub(super) fn eval_expr(
+    expr: &PlanExpr,
+    row: &Row,
+    columns: &[String],
+    pager: &mut Pager,
+    catalog: &Catalog,
+) -> Result<Value> {
     match expr {
         PlanExpr::Column(col_ref) => {
             let qualified = col_ref
@@ -19,9 +25,7 @@ pub(super) fn eval_expr(expr: &PlanExpr, row: &Row, columns: &[String], pager: &
                 .map(|t| format!("{}.{}", t, col_ref.name));
 
             let idx = if let Some(ref qname) = qualified {
-                columns
-                    .iter()
-                    .position(|c| c.eq_ignore_ascii_case(qname))
+                columns.iter().position(|c| c.eq_ignore_ascii_case(qname))
             } else {
                 None
             }
@@ -32,9 +36,9 @@ pub(super) fn eval_expr(expr: &PlanExpr, row: &Row, columns: &[String], pager: &
             })
             .or_else(|| {
                 columns.iter().position(|c| {
-                    c.rsplit('.').next().is_some_and(|suffix| {
-                        suffix.eq_ignore_ascii_case(&col_ref.name)
-                    })
+                    c.rsplit('.')
+                        .next()
+                        .is_some_and(|suffix| suffix.eq_ignore_ascii_case(&col_ref.name))
                 })
             })
             .ok_or_else(|| {
@@ -45,11 +49,9 @@ pub(super) fn eval_expr(expr: &PlanExpr, row: &Row, columns: &[String], pager: &
             })?;
             Ok(row.values.get(idx).cloned().unwrap_or(Value::Null))
         }
-        PlanExpr::Rowid => {
-            Err(Error::Other(
-                "bare ROWID reference not yet supported".to_string(),
-            ))
-        }
+        PlanExpr::Rowid => Err(Error::Other(
+            "bare ROWID reference not yet supported".to_string(),
+        )),
         PlanExpr::Literal(lit) => Ok(literal_to_value(lit)),
         PlanExpr::BinaryOp { left, op, right } => {
             let l = eval_expr(left, row, columns, pager, catalog)?;
@@ -69,29 +71,24 @@ pub(super) fn eval_expr(expr: &PlanExpr, row: &Row, columns: &[String], pager: &
         }
         PlanExpr::IsNull(inner) => {
             let v = eval_expr(inner, row, columns, pager, catalog)?;
-            Ok(Value::Integer(if matches!(v, Value::Null) {
-                1
-            } else {
-                0
-            }))
+            Ok(Value::Integer(if matches!(v, Value::Null) { 1 } else { 0 }))
         }
         PlanExpr::IsNotNull(inner) => {
             let v = eval_expr(inner, row, columns, pager, catalog)?;
-            Ok(Value::Integer(if matches!(v, Value::Null) {
-                0
-            } else {
-                1
-            }))
+            Ok(Value::Integer(if matches!(v, Value::Null) { 0 } else { 1 }))
         }
         PlanExpr::Wildcard => Err(Error::Other("wildcard in expression context".to_string())),
-        PlanExpr::Aggregate { func, arg, distinct, .. } => {
+        PlanExpr::Aggregate {
+            func,
+            arg,
+            distinct,
+            ..
+        } => {
             let name = agg_column_name(func, arg, *distinct);
             let idx = columns
                 .iter()
                 .position(|c| c.eq_ignore_ascii_case(&name))
-                .ok_or_else(|| {
-                    Error::Other(format!("aggregate column not found: {name}"))
-                })?;
+                .ok_or_else(|| Error::Other(format!("aggregate column not found: {name}")))?;
             Ok(row.values.get(idx).cloned().unwrap_or(Value::Null))
         }
         PlanExpr::Function { name, args } => {
@@ -128,11 +125,19 @@ pub(super) fn eval_expr(expr: &PlanExpr, row: &Row, columns: &[String], pager: &
                 return Ok(Value::Null);
             }
             let nocase = has_nocase_collation(expr);
-            let val_cmp = if nocase { fold_nocase(&val) } else { val.clone() };
+            let val_cmp = if nocase {
+                fold_nocase(&val)
+            } else {
+                val.clone()
+            };
             let mut found = false;
             for item in list {
                 let item_val = eval_expr(item, row, columns, pager, catalog)?;
-                let item_cmp = if nocase { fold_nocase(&item_val) } else { item_val };
+                let item_cmp = if nocase {
+                    fold_nocase(&item_val)
+                } else {
+                    item_val
+                };
                 if super::helpers::values_equal(&val_cmp, &item_cmp) {
                     found = true;
                     break;
@@ -208,12 +213,10 @@ pub(super) fn eval_expr(expr: &PlanExpr, row: &Row, columns: &[String], pager: &
             Ok(Value::Integer(if result { 1 } else { 0 }))
         }
         PlanExpr::Param(index) => Ok(super::state::get_param(*index)),
-        PlanExpr::WindowFunction { .. } => {
-            Err(Error::Other("window function should not be evaluated directly".into()))
-        }
-        PlanExpr::Collate { expr, .. } => {
-            eval_expr(expr, row, columns, pager, catalog)
-        }
+        PlanExpr::WindowFunction { .. } => Err(Error::Other(
+            "window function should not be evaluated directly".into(),
+        )),
+        PlanExpr::Collate { expr, .. } => eval_expr(expr, row, columns, pager, catalog),
     }
 }
 

@@ -274,9 +274,7 @@ pub fn plan_expr(expr: &Expr, columns: &[ColumnRef], catalog: &Catalog) -> Resul
                         .iter()
                         .find(|c| c.name.eq_ignore_ascii_case(col_name))
                 })
-                .ok_or_else(|| {
-                    Error::Other(format!("unknown column: {table}.{col_name}"))
-                })?;
+                .ok_or_else(|| Error::Other(format!("unknown column: {table}.{col_name}")))?;
             Ok(PlanExpr::Column(col.clone()))
         }
         Expr::Value(val) => {
@@ -305,11 +303,7 @@ pub fn plan_expr(expr: &Expr, columns: &[ColumnRef], catalog: &Catalog) -> Resul
                 ast::UnaryOperator::Not => UnaryOp::Not,
                 ast::UnaryOperator::Minus => UnaryOp::Neg,
                 ast::UnaryOperator::PGBitwiseNot => UnaryOp::BitNot,
-                _ => {
-                    return Err(Error::Other(format!(
-                        "unsupported unary operator: {op}"
-                    )))
-                }
+                _ => return Err(Error::Other(format!("unsupported unary operator: {op}"))),
             };
             Ok(PlanExpr::UnaryOp {
                 op,
@@ -381,9 +375,7 @@ pub fn plan_expr(expr: &Expr, columns: &[ColumnRef], catalog: &Catalog) -> Resul
         } => {
             let e = plan_expr(like_expr, columns, catalog)?;
             let p = plan_expr(pattern, columns, catalog)?;
-            let esc = escape_char
-                .as_ref()
-                .and_then(|s| s.chars().next());
+            let esc = escape_char.as_ref().and_then(|s| s.chars().next());
             Ok(PlanExpr::Like {
                 expr: Box::new(e),
                 pattern: Box::new(p),
@@ -400,9 +392,7 @@ pub fn plan_expr(expr: &Expr, columns: &[ColumnRef], catalog: &Catalog) -> Resul
         } => {
             let e = plan_expr(like_expr, columns, catalog)?;
             let p = plan_expr(pattern, columns, catalog)?;
-            let esc = escape_char
-                .as_ref()
-                .and_then(|s| s.chars().next());
+            let esc = escape_char.as_ref().and_then(|s| s.chars().next());
             Ok(PlanExpr::Like {
                 expr: Box::new(e),
                 pattern: Box::new(p),
@@ -504,7 +494,8 @@ pub fn plan_expr(expr: &Expr, columns: &[ColumnRef], catalog: &Catalog) -> Resul
             negated,
         } => {
             let e = plan_expr(in_expr, columns, catalog)?;
-            let sub_plan = super::plan_select(subquery, catalog, &std::collections::HashMap::new())?;
+            let sub_plan =
+                super::plan_select(subquery, catalog, &std::collections::HashMap::new())?;
             Ok(PlanExpr::InSubquery {
                 expr: Box::new(e),
                 subquery: Box::new(sub_plan),
@@ -516,19 +507,22 @@ pub fn plan_expr(expr: &Expr, columns: &[ColumnRef], catalog: &Catalog) -> Resul
             Ok(PlanExpr::Subquery(Box::new(sub_plan)))
         }
         Expr::Exists { subquery, negated } => {
-            let sub_plan = super::plan_select(subquery, catalog, &std::collections::HashMap::new())?;
+            let sub_plan =
+                super::plan_select(subquery, catalog, &std::collections::HashMap::new())?;
             Ok(PlanExpr::Exists {
                 subquery: Box::new(sub_plan),
                 negated: *negated,
             })
         }
-        _ => Err(Error::Other(format!(
-            "unsupported expression: {expr}"
-        ))),
+        _ => Err(Error::Other(format!("unsupported expression: {expr}"))),
     }
 }
 
-fn plan_function_expr(func: &ast::Function, columns: &[ColumnRef], catalog: &Catalog) -> Result<PlanExpr> {
+fn plan_function_expr(
+    func: &ast::Function,
+    columns: &[ColumnRef],
+    catalog: &Catalog,
+) -> Result<PlanExpr> {
     let name = func.name.to_string().to_uppercase();
 
     let filter = func
@@ -544,16 +538,21 @@ fn plan_function_expr(func: &ast::Function, columns: &[ColumnRef], catalog: &Cat
     if name == "GROUP_CONCAT" {
         let (arg, separator, distinct) = match &func.args {
             ast::FunctionArguments::List(list) => {
-                let distinct = list.duplicate_treatment
-                    == Some(ast::DuplicateTreatment::Distinct);
+                let distinct = list.duplicate_treatment == Some(ast::DuplicateTreatment::Distinct);
                 let first_arg = match list.args.first() {
                     Some(ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(e))) => {
                         plan_expr(e, columns, catalog)?
                     }
-                    _ => return Err(Error::Other("GROUP_CONCAT requires at least 1 argument".into())),
+                    _ => {
+                        return Err(Error::Other(
+                            "GROUP_CONCAT requires at least 1 argument".into(),
+                        ));
+                    }
                 };
                 let sep = if list.args.len() > 1 {
-                    if let Some(ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(e))) = list.args.get(1) {
+                    if let Some(ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(e))) =
+                        list.args.get(1)
+                    {
                         if let Expr::Value(v) = e {
                             if let ast::Value::SingleQuotedString(s) = &v.value {
                                 Some(s.clone())
@@ -587,13 +586,9 @@ fn plan_function_expr(func: &ast::Function, columns: &[ColumnRef], catalog: &Cat
                 Some(ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(e))) => {
                     plan_expr(e, columns, catalog)?
                 }
-                _ => return Err(Error::Other(
-                    "json_group_array requires 1 argument".into(),
-                )),
+                _ => return Err(Error::Other("json_group_array requires 1 argument".into())),
             },
-            _ => return Err(Error::Other(
-                "json_group_array requires 1 argument".into(),
-            )),
+            _ => return Err(Error::Other("json_group_array requires 1 argument".into())),
         };
         return Ok(PlanExpr::Aggregate {
             func: AggFunc::JsonGroupArray,
@@ -618,9 +613,11 @@ fn plan_function_expr(func: &ast::Function, columns: &[ColumnRef], catalog: &Cat
                 };
                 (parse_at(0)?, parse_at(1)?)
             }
-            _ => return Err(Error::Other(
-                "json_group_object requires 2 arguments (key, value)".into(),
-            )),
+            _ => {
+                return Err(Error::Other(
+                    "json_group_object requires 2 arguments (key, value)".into(),
+                ));
+            }
         };
         return Ok(PlanExpr::Aggregate {
             func: AggFunc::JsonGroupObject { key: Box::new(key) },
@@ -648,8 +645,7 @@ fn plan_function_expr(func: &ast::Function, columns: &[ColumnRef], catalog: &Cat
     if let Some(func_type) = agg_func {
         let (arg, distinct) = match &func.args {
             ast::FunctionArguments::List(list) => {
-                let distinct = list.duplicate_treatment
-                    == Some(ast::DuplicateTreatment::Distinct);
+                let distinct = list.duplicate_treatment == Some(ast::DuplicateTreatment::Distinct);
                 if list.args.is_empty() {
                     (PlanExpr::Wildcard, distinct)
                 } else {
@@ -664,7 +660,7 @@ fn plan_function_expr(func: &ast::Function, columns: &[ColumnRef], catalog: &Cat
                             return Err(Error::Other(format!(
                                 "unsupported aggregate argument: {}",
                                 func
-                            )))
+                            )));
                         }
                     }
                 }
@@ -674,7 +670,7 @@ fn plan_function_expr(func: &ast::Function, columns: &[ColumnRef], catalog: &Cat
                 return Err(Error::Other(format!(
                     "unsupported aggregate arguments: {}",
                     func
-                )))
+                )));
             }
         };
 
@@ -712,21 +708,70 @@ fn plan_function_expr(func: &ast::Function, columns: &[ColumnRef], catalog: &Cat
     };
 
     static KNOWN_SCALARS: &[&str] = &[
-        "LENGTH", "SUBSTR", "SUBSTRING", "UPPER", "LOWER", "TRIM", "LTRIM", "RTRIM",
-        "REPLACE", "INSTR", "COALESCE", "IFNULL", "NULLIF", "TYPEOF", "ABS", "RANDOM",
-        "HEX", "QUOTE", "ZEROBLOB", "UNICODE", "CHAR", "GLOB", "ROUND",
-        "LAST_INSERT_ROWID", "CHANGES", "TOTAL_CHANGES",
-        "PRINTF", "FORMAT",
-        "LIKELY", "UNLIKELY", "LIKELIHOOD",
-        "SIGN", "SQLITE_VERSION", "SQLITE_SOURCE_ID", "RANDOMBLOB",
-        "MIN", "MAX",
-        "DATE", "TIME", "DATETIME", "JULIANDAY", "UNIXEPOCH", "STRFTIME",
+        "LENGTH",
+        "SUBSTR",
+        "SUBSTRING",
+        "UPPER",
+        "LOWER",
+        "TRIM",
+        "LTRIM",
+        "RTRIM",
+        "REPLACE",
+        "INSTR",
+        "COALESCE",
+        "IFNULL",
+        "NULLIF",
+        "TYPEOF",
+        "ABS",
+        "RANDOM",
+        "HEX",
+        "QUOTE",
+        "ZEROBLOB",
+        "UNICODE",
+        "CHAR",
+        "GLOB",
+        "ROUND",
+        "LAST_INSERT_ROWID",
+        "CHANGES",
+        "TOTAL_CHANGES",
+        "PRINTF",
+        "FORMAT",
+        "LIKELY",
+        "UNLIKELY",
+        "LIKELIHOOD",
+        "SIGN",
+        "SQLITE_VERSION",
+        "SQLITE_SOURCE_ID",
+        "RANDOMBLOB",
+        "MIN",
+        "MAX",
+        "DATE",
+        "TIME",
+        "DATETIME",
+        "JULIANDAY",
+        "UNIXEPOCH",
+        "STRFTIME",
         "IIF",
-        "VEC_DISTANCE_COSINE", "VEC_DISTANCE_L2", "VEC_DISTANCE_DOT",
-        "VEC_LENGTH", "VEC_NORMALIZE", "VEC_FROM_JSON", "VEC_TO_JSON",
-        "JSON", "JSON_EXTRACT", "JSON_TYPE", "JSON_VALID", "JSON_ARRAY", "JSON_OBJECT",
-        "JSON_ARRAY_LENGTH", "JSON_INSERT", "JSON_REPLACE", "JSON_SET", "JSON_REMOVE",
-        "JSON_QUOTE", "JSON_PATCH",
+        "VEC_DISTANCE_COSINE",
+        "VEC_DISTANCE_L2",
+        "VEC_DISTANCE_DOT",
+        "VEC_LENGTH",
+        "VEC_NORMALIZE",
+        "VEC_FROM_JSON",
+        "VEC_TO_JSON",
+        "JSON",
+        "JSON_EXTRACT",
+        "JSON_TYPE",
+        "JSON_VALID",
+        "JSON_ARRAY",
+        "JSON_OBJECT",
+        "JSON_ARRAY_LENGTH",
+        "JSON_INSERT",
+        "JSON_REPLACE",
+        "JSON_SET",
+        "JSON_REMOVE",
+        "JSON_QUOTE",
+        "JSON_PATCH",
     ];
 
     if KNOWN_SCALARS.contains(&name.as_str()) {
@@ -839,10 +884,7 @@ pub(super) fn plan_order_expr(
         {
             return Ok(PlanExpr::Column(col.clone()));
         }
-        if output_names
-            .iter()
-            .any(|n| n.eq_ignore_ascii_case(name))
-        {
+        if output_names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
             let col_ref = ColumnRef {
                 name: name.clone(),
                 column_index: 0,
@@ -861,9 +903,9 @@ pub(super) fn plan_order_expr(
 pub(super) fn plan_limit_expr(expr: &Expr) -> Result<u64> {
     match expr {
         Expr::Value(val) => match &val.value {
-            ast::Value::Number(n, _) => n.parse::<u64>().map_err(|_| {
-                Error::Other(format!("invalid LIMIT/OFFSET value: {n}"))
-            }),
+            ast::Value::Number(n, _) => n
+                .parse::<u64>()
+                .map_err(|_| Error::Other(format!("invalid LIMIT/OFFSET value: {n}"))),
             _ => Err(Error::Other(format!(
                 "LIMIT/OFFSET must be a number, got: {val}"
             ))),
@@ -898,9 +940,7 @@ pub(super) fn contains_aggregate(expr: &PlanExpr) -> bool {
                 || when_clauses
                     .iter()
                     .any(|(c, r)| contains_aggregate(c) || contains_aggregate(r))
-                || else_result
-                    .as_ref()
-                    .is_some_and(|e| contains_aggregate(e))
+                || else_result.as_ref().is_some_and(|e| contains_aggregate(e))
         }
         PlanExpr::Cast { expr, .. } => contains_aggregate(expr),
         PlanExpr::InSubquery { expr, .. } => contains_aggregate(expr),
@@ -921,7 +961,12 @@ pub(super) fn collect_aggregates(
     out: &mut Vec<(AggFunc, PlanExpr, bool, Option<PlanExpr>)>,
 ) {
     match expr {
-        PlanExpr::Aggregate { func, arg, distinct, filter } => {
+        PlanExpr::Aggregate {
+            func,
+            arg,
+            distinct,
+            filter,
+        } => {
             out.push((
                 func.clone(),
                 arg.as_ref().clone(),
@@ -973,7 +1018,8 @@ fn plan_window_function(
                 }
                 None => {
                     return Err(Error::Other(format!(
-                        "unknown named window: {}", name.value
+                        "unknown named window: {}",
+                        name.value
                     )));
                 }
             }
@@ -1017,10 +1063,23 @@ fn plan_window_function(
     };
 
     static KNOWN_WINDOW_FUNCS: &[&str] = &[
-        "ROW_NUMBER", "RANK", "DENSE_RANK", "NTILE",
-        "LAG", "LEAD", "FIRST_VALUE", "LAST_VALUE", "NTH_VALUE",
-        "PERCENT_RANK", "CUME_DIST",
-        "COUNT", "SUM", "AVG", "MIN", "MAX", "TOTAL",
+        "ROW_NUMBER",
+        "RANK",
+        "DENSE_RANK",
+        "NTILE",
+        "LAG",
+        "LEAD",
+        "FIRST_VALUE",
+        "LAST_VALUE",
+        "NTH_VALUE",
+        "PERCENT_RANK",
+        "CUME_DIST",
+        "COUNT",
+        "SUM",
+        "AVG",
+        "MIN",
+        "MAX",
+        "TOTAL",
     ];
 
     if !KNOWN_WINDOW_FUNCS.contains(&name) {
@@ -1075,9 +1134,10 @@ fn eval_static_int(expr: &Expr) -> Option<i64> {
             ast::Value::Number(n, _) => n.parse::<i64>().ok(),
             _ => None,
         },
-        Expr::UnaryOp { op: ast::UnaryOperator::Minus, expr: inner } => {
-            eval_static_int(inner).map(|n| -n)
-        }
+        Expr::UnaryOp {
+            op: ast::UnaryOperator::Minus,
+            expr: inner,
+        } => eval_static_int(inner).map(|n| -n),
         _ => None,
     }
 }
@@ -1094,10 +1154,20 @@ pub(super) fn contains_window_function(expr: &PlanExpr) -> bool {
         PlanExpr::Like { expr, pattern, .. } => {
             contains_window_function(expr) || contains_window_function(pattern)
         }
-        PlanExpr::Case { operand, when_clauses, else_result } => {
-            operand.as_ref().is_some_and(|e| contains_window_function(e))
-                || when_clauses.iter().any(|(c, r)| contains_window_function(c) || contains_window_function(r))
-                || else_result.as_ref().is_some_and(|e| contains_window_function(e))
+        PlanExpr::Case {
+            operand,
+            when_clauses,
+            else_result,
+        } => {
+            operand
+                .as_ref()
+                .is_some_and(|e| contains_window_function(e))
+                || when_clauses
+                    .iter()
+                    .any(|(c, r)| contains_window_function(c) || contains_window_function(r))
+                || else_result
+                    .as_ref()
+                    .is_some_and(|e| contains_window_function(e))
         }
         PlanExpr::Cast { expr, .. } => contains_window_function(expr),
         _ => false,

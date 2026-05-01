@@ -41,10 +41,7 @@ fn read_real_sqlite_database() {
             let mut pager = Pager::open(&vfs, test_db).unwrap();
 
             let schema = read_schema(&mut pager).unwrap();
-            assert!(
-                !schema.is_empty(),
-                "schema should have at least one entry"
-            );
+            assert!(!schema.is_empty(), "schema should have at least one entry");
             let table_entry = schema.iter().find(|e| e.name == "users").unwrap();
             assert_eq!(table_entry.entry_type, "table");
             assert_eq!(table_entry.tbl_name, "users");
@@ -103,14 +100,8 @@ fn read_schema_from_real_db() {
             let mut pager = Pager::open(&vfs, test_db).unwrap();
             let schema = read_schema(&mut pager).unwrap();
 
-            let tables: Vec<_> = schema
-                .iter()
-                .filter(|e| e.entry_type == "table")
-                .collect();
-            let indexes: Vec<_> = schema
-                .iter()
-                .filter(|e| e.entry_type == "index")
-                .collect();
+            let tables: Vec<_> = schema.iter().filter(|e| e.entry_type == "table").collect();
+            let indexes: Vec<_> = schema.iter().filter(|e| e.entry_type == "index").collect();
 
             assert_eq!(tables.len(), 2);
             assert!(tables.iter().any(|t| t.name == "t1"));

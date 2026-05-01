@@ -72,11 +72,20 @@ impl Database {
             return Ok(result);
         }
         let plan = self.get_or_plan(sql)?;
-        if let Plan::Pragma { ref name, ref argument } = plan {
+        if let Plan::Pragma {
+            ref name,
+            ref argument,
+        } = plan
+        {
             if name == "database_list" {
                 return Ok(self.pragma_database_list());
             }
-            return executor::execute_pragma(name, argument.as_deref(), &mut self.pager, &self.catalog);
+            return executor::execute_pragma(
+                name,
+                argument.as_deref(),
+                &mut self.pager,
+                &self.catalog,
+            );
         }
         if plan_has_returning(&plan) {
             let result = executor::execute_mut(&plan, &mut self.pager, &mut self.catalog)?;
@@ -89,14 +98,27 @@ impl Database {
 
     pub fn execute(&mut self, sql: &str) -> Result<ExecResult> {
         let plan = self.get_or_plan(sql)?;
-        if let Plan::Pragma { ref name, ref argument } = plan {
+        if let Plan::Pragma {
+            ref name,
+            ref argument,
+        } = plan
+        {
             if name == "database_list" {
                 return Ok(ExecResult::affected(0));
             }
-            let _ = executor::execute_pragma(name, argument.as_deref(), &mut self.pager, &self.catalog)?;
+            let _ = executor::execute_pragma(
+                name,
+                argument.as_deref(),
+                &mut self.pager,
+                &self.catalog,
+            )?;
             return Ok(ExecResult::affected(0));
         }
-        if let Plan::AttachDatabase { ref schema_name, ref file_path } = plan {
+        if let Plan::AttachDatabase {
+            ref schema_name,
+            ref file_path,
+        } = plan
+        {
             return self.execute_attach(schema_name, file_path);
         }
         if let Plan::DetachDatabase { ref schema_name } = plan {
@@ -133,7 +155,12 @@ impl Database {
         if stmts.is_empty() {
             return Ok(None);
         }
-        if let Statement::Explain { query_plan: true, statement, .. } = &stmts[0] {
+        if let Statement::Explain {
+            query_plan: true,
+            statement,
+            ..
+        } = &stmts[0]
+        {
             let plan = planner::plan_statement(statement, &self.catalog)?;
             return Ok(Some(describe_plan(&plan)));
         }
@@ -163,7 +190,11 @@ impl Database {
         let is_query = is_query_statement(stmt);
         let plan = self.get_or_plan(sql)?;
 
-        if let Plan::Pragma { ref name, ref argument } = plan {
+        if let Plan::Pragma {
+            ref name,
+            ref argument,
+        } = plan
+        {
             if name == "database_list" {
                 return Ok(SqlResult::Query(self.pragma_database_list()));
             }
@@ -175,8 +206,14 @@ impl Database {
             )?));
         }
 
-        if let Plan::AttachDatabase { ref schema_name, ref file_path } = plan {
-            return Ok(SqlResult::Execute(self.execute_attach(schema_name, file_path)?));
+        if let Plan::AttachDatabase {
+            ref schema_name,
+            ref file_path,
+        } = plan
+        {
+            return Ok(SqlResult::Execute(
+                self.execute_attach(schema_name, file_path)?,
+            ));
         }
         if let Plan::DetachDatabase { ref schema_name } = plan {
             return Ok(SqlResult::Execute(self.execute_detach(schema_name)?));
@@ -210,11 +247,7 @@ impl Database {
                     | Plan::CreateTrigger { .. }
                     | Plan::DropTrigger { .. }
             );
-            let result = executor::execute_mut(
-                &plan,
-                &mut self.pager,
-                &mut self.catalog,
-            )?;
+            let result = executor::execute_mut(&plan, &mut self.pager, &mut self.catalog)?;
             if is_ddl {
                 self.plan_cache.clear();
             }
@@ -263,7 +296,8 @@ impl Database {
         }
         let mut pager = Pager::open(&*self.vfs, file_path)?;
         let catalog = Catalog::load(&mut pager)?;
-        self.attached.insert(schema_name.to_string(), AttachedDb { pager, catalog });
+        self.attached
+            .insert(schema_name.to_string(), AttachedDb { pager, catalog });
         Ok(ExecResult::affected(0))
     }
 
@@ -322,23 +356,45 @@ fn describe_plan_recursive(
 
     match plan {
         Plan::Scan { table, .. } => {
-            rows.push(Row { values: vec![
-                Value::Integer(my_id), Value::Integer(parent),
-                Value::Integer(0), Value::Text(format!("{indent}SCAN TABLE {table}")),
-            ]});
+            rows.push(Row {
+                values: vec![
+                    Value::Integer(my_id),
+                    Value::Integer(parent),
+                    Value::Integer(0),
+                    Value::Text(format!("{indent}SCAN TABLE {table}")),
+                ],
+            });
         }
-        Plan::IndexScan { table, index_columns, .. } => {
+        Plan::IndexScan {
+            table,
+            index_columns,
+            ..
+        } => {
             let cols = index_columns.join(", ");
-            rows.push(Row { values: vec![
-                Value::Integer(my_id), Value::Integer(parent),
-                Value::Integer(0), Value::Text(format!("{indent}SEARCH TABLE {table} USING INDEX ({cols})")),
-            ]});
+            rows.push(Row {
+                values: vec![
+                    Value::Integer(my_id),
+                    Value::Integer(parent),
+                    Value::Integer(0),
+                    Value::Text(format!("{indent}SEARCH TABLE {table} USING INDEX ({cols})")),
+                ],
+            });
         }
-        Plan::IndexRangeScan { table, index_column, .. } => {
-            rows.push(Row { values: vec![
-                Value::Integer(my_id), Value::Integer(parent),
-                Value::Integer(0), Value::Text(format!("{indent}SEARCH TABLE {table} USING INDEX ({index_column} range)")),
-            ]});
+        Plan::IndexRangeScan {
+            table,
+            index_column,
+            ..
+        } => {
+            rows.push(Row {
+                values: vec![
+                    Value::Integer(my_id),
+                    Value::Integer(parent),
+                    Value::Integer(0),
+                    Value::Text(format!(
+                        "{indent}SEARCH TABLE {table} USING INDEX ({index_column} range)"
+                    )),
+                ],
+            });
         }
         Plan::Filter { input, .. } => {
             describe_plan_recursive(input, rows, id, parent, depth);
@@ -347,23 +403,36 @@ fn describe_plan_recursive(
             describe_plan_recursive(input, rows, id, parent, depth);
         }
         Plan::Sort { input, .. } => {
-            rows.push(Row { values: vec![
-                Value::Integer(my_id), Value::Integer(parent),
-                Value::Integer(0), Value::Text(format!("{indent}USE TEMP B-TREE FOR ORDER BY")),
-            ]});
+            rows.push(Row {
+                values: vec![
+                    Value::Integer(my_id),
+                    Value::Integer(parent),
+                    Value::Integer(0),
+                    Value::Text(format!("{indent}USE TEMP B-TREE FOR ORDER BY")),
+                ],
+            });
             describe_plan_recursive(input, rows, id, my_id, depth + 1);
         }
         Plan::Limit { input, .. } => {
             describe_plan_recursive(input, rows, id, parent, depth);
         }
         Plan::Aggregate { input, .. } => {
-            rows.push(Row { values: vec![
-                Value::Integer(my_id), Value::Integer(parent),
-                Value::Integer(0), Value::Text(format!("{indent}USE TEMP B-TREE FOR GROUP BY")),
-            ]});
+            rows.push(Row {
+                values: vec![
+                    Value::Integer(my_id),
+                    Value::Integer(parent),
+                    Value::Integer(0),
+                    Value::Text(format!("{indent}USE TEMP B-TREE FOR GROUP BY")),
+                ],
+            });
             describe_plan_recursive(input, rows, id, my_id, depth + 1);
         }
-        Plan::NestedLoopJoin { left, right, join_type, .. } => {
+        Plan::NestedLoopJoin {
+            left,
+            right,
+            join_type,
+            ..
+        } => {
             let jt = match join_type {
                 planner::JoinType::Inner => "INNER",
                 planner::JoinType::Left => "LEFT",
@@ -371,76 +440,116 @@ fn describe_plan_recursive(
                 planner::JoinType::Full => "FULL OUTER",
                 planner::JoinType::Cross => "CROSS",
             };
-            rows.push(Row { values: vec![
-                Value::Integer(my_id), Value::Integer(parent),
-                Value::Integer(0), Value::Text(format!("{indent}NESTED LOOP {jt} JOIN")),
-            ]});
+            rows.push(Row {
+                values: vec![
+                    Value::Integer(my_id),
+                    Value::Integer(parent),
+                    Value::Integer(0),
+                    Value::Text(format!("{indent}NESTED LOOP {jt} JOIN")),
+                ],
+            });
             describe_plan_recursive(left, rows, id, my_id, depth + 1);
             describe_plan_recursive(right, rows, id, my_id, depth + 1);
         }
         Plan::Union { left, right, all } => {
             let op = if *all { "UNION ALL" } else { "UNION" };
-            rows.push(Row { values: vec![
-                Value::Integer(my_id), Value::Integer(parent),
-                Value::Integer(0), Value::Text(format!("{indent}COMPOUND QUERY ({op})")),
-            ]});
+            rows.push(Row {
+                values: vec![
+                    Value::Integer(my_id),
+                    Value::Integer(parent),
+                    Value::Integer(0),
+                    Value::Text(format!("{indent}COMPOUND QUERY ({op})")),
+                ],
+            });
             describe_plan_recursive(left, rows, id, my_id, depth + 1);
             describe_plan_recursive(right, rows, id, my_id, depth + 1);
         }
         Plan::Intersect { left, right, all } => {
             let op = if *all { "INTERSECT ALL" } else { "INTERSECT" };
-            rows.push(Row { values: vec![
-                Value::Integer(my_id), Value::Integer(parent),
-                Value::Integer(0), Value::Text(format!("{indent}COMPOUND QUERY ({op})")),
-            ]});
+            rows.push(Row {
+                values: vec![
+                    Value::Integer(my_id),
+                    Value::Integer(parent),
+                    Value::Integer(0),
+                    Value::Text(format!("{indent}COMPOUND QUERY ({op})")),
+                ],
+            });
             describe_plan_recursive(left, rows, id, my_id, depth + 1);
             describe_plan_recursive(right, rows, id, my_id, depth + 1);
         }
         Plan::Except { left, right, all } => {
             let op = if *all { "EXCEPT ALL" } else { "EXCEPT" };
-            rows.push(Row { values: vec![
-                Value::Integer(my_id), Value::Integer(parent),
-                Value::Integer(0), Value::Text(format!("{indent}COMPOUND QUERY ({op})")),
-            ]});
+            rows.push(Row {
+                values: vec![
+                    Value::Integer(my_id),
+                    Value::Integer(parent),
+                    Value::Integer(0),
+                    Value::Text(format!("{indent}COMPOUND QUERY ({op})")),
+                ],
+            });
             describe_plan_recursive(left, rows, id, my_id, depth + 1);
             describe_plan_recursive(right, rows, id, my_id, depth + 1);
         }
         Plan::Window { input, .. } => {
-            rows.push(Row { values: vec![
-                Value::Integer(my_id), Value::Integer(parent),
-                Value::Integer(0), Value::Text(format!("{indent}WINDOW FUNCTION")),
-            ]});
+            rows.push(Row {
+                values: vec![
+                    Value::Integer(my_id),
+                    Value::Integer(parent),
+                    Value::Integer(0),
+                    Value::Text(format!("{indent}WINDOW FUNCTION")),
+                ],
+            });
             describe_plan_recursive(input, rows, id, my_id, depth + 1);
         }
         Plan::Insert(p) => {
-            rows.push(Row { values: vec![
-                Value::Integer(my_id), Value::Integer(parent),
-                Value::Integer(0), Value::Text(format!("{indent}INSERT INTO {}", p.table_name)),
-            ]});
+            rows.push(Row {
+                values: vec![
+                    Value::Integer(my_id),
+                    Value::Integer(parent),
+                    Value::Integer(0),
+                    Value::Text(format!("{indent}INSERT INTO {}", p.table_name)),
+                ],
+            });
         }
         Plan::Update(p) => {
-            rows.push(Row { values: vec![
-                Value::Integer(my_id), Value::Integer(parent),
-                Value::Integer(0), Value::Text(format!("{indent}UPDATE {}", p.table_name)),
-            ]});
+            rows.push(Row {
+                values: vec![
+                    Value::Integer(my_id),
+                    Value::Integer(parent),
+                    Value::Integer(0),
+                    Value::Text(format!("{indent}UPDATE {}", p.table_name)),
+                ],
+            });
         }
         Plan::Delete(p) => {
-            rows.push(Row { values: vec![
-                Value::Integer(my_id), Value::Integer(parent),
-                Value::Integer(0), Value::Text(format!("{indent}DELETE FROM {}", p.table_name)),
-            ]});
+            rows.push(Row {
+                values: vec![
+                    Value::Integer(my_id),
+                    Value::Integer(parent),
+                    Value::Integer(0),
+                    Value::Text(format!("{indent}DELETE FROM {}", p.table_name)),
+                ],
+            });
         }
         Plan::SingleRow => {
-            rows.push(Row { values: vec![
-                Value::Integer(my_id), Value::Integer(parent),
-                Value::Integer(0), Value::Text(format!("{indent}SCAN CONSTANT ROW")),
-            ]});
+            rows.push(Row {
+                values: vec![
+                    Value::Integer(my_id),
+                    Value::Integer(parent),
+                    Value::Integer(0),
+                    Value::Text(format!("{indent}SCAN CONSTANT ROW")),
+                ],
+            });
         }
         _ => {
-            rows.push(Row { values: vec![
-                Value::Integer(my_id), Value::Integer(parent),
-                Value::Integer(0), Value::Text(format!("{indent}PLAN NODE")),
-            ]});
+            rows.push(Row {
+                values: vec![
+                    Value::Integer(my_id),
+                    Value::Integer(parent),
+                    Value::Integer(0),
+                    Value::Text(format!("{indent}PLAN NODE")),
+                ],
+            });
         }
     }
 }

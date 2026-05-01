@@ -1,6 +1,6 @@
 use rsqlite_storage::btree::{
-    btree_create_index, btree_create_table, btree_delete, btree_index_insert, btree_insert,
-    delete_schema_entries, insert_schema_entry, BTreeCursor,
+    BTreeCursor, btree_create_index, btree_create_table, btree_delete, btree_index_insert,
+    btree_insert, delete_schema_entries, insert_schema_entry,
 };
 use rsqlite_storage::codec::{Record, Value};
 use rsqlite_storage::pager::Pager;
@@ -69,9 +69,7 @@ pub(super) fn execute_create_table_as_select(
     }
 
     if catalog.get_table(table_name).is_some() {
-        return Err(Error::Other(format!(
-            "table {table_name} already exists"
-        )));
+        return Err(Error::Other(format!("table {table_name} already exists")));
     }
 
     let query_result = super::execute(query, pager, catalog)?;
@@ -84,14 +82,18 @@ pub(super) fn execute_create_table_as_select(
             format!("{clean} TEXT")
         })
         .collect();
-    let create_sql = format!(
-        "CREATE TABLE {table_name} ({})",
-        col_defs.join(", ")
-    );
+    let create_sql = format!("CREATE TABLE {table_name} ({})", col_defs.join(", "));
 
     let root_page = btree_create_table(pager)?;
 
-    insert_schema_entry(pager, "table", table_name, table_name, root_page, &create_sql)?;
+    insert_schema_entry(
+        pager,
+        "table",
+        table_name,
+        table_name,
+        root_page,
+        &create_sql,
+    )?;
 
     if !pager.in_transaction() {
         pager.flush()?;
@@ -122,20 +124,27 @@ pub(super) fn execute_create_index(
     pager: &mut Pager,
     catalog: &mut Catalog,
 ) -> Result<ExecResult> {
-    if plan.if_not_exists && catalog.indexes.contains_key(&plan.index_name.to_lowercase()) {
+    if plan.if_not_exists
+        && catalog
+            .indexes
+            .contains_key(&plan.index_name.to_lowercase())
+    {
         return Ok(ExecResult::affected(0));
     }
 
-    if catalog.indexes.contains_key(&plan.index_name.to_lowercase()) {
+    if catalog
+        .indexes
+        .contains_key(&plan.index_name.to_lowercase())
+    {
         return Err(Error::Other(format!(
             "index {} already exists",
             plan.index_name
         )));
     }
 
-    let table_def = catalog.get_table(&plan.table_name).ok_or_else(|| {
-        Error::Other(format!("table not found: {}", plan.table_name))
-    })?;
+    let table_def = catalog
+        .get_table(&plan.table_name)
+        .ok_or_else(|| Error::Other(format!("table not found: {}", plan.table_name)))?;
     let table_root = table_def.root_page;
 
     let col_indices: Vec<usize> = plan
@@ -155,15 +164,14 @@ pub(super) fn execute_create_index(
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let has_rowid_alias = table_def
-        .columns
-        .iter()
-        .any(|c| c.is_rowid_alias);
+    let has_rowid_alias = table_def.columns.iter().any(|c| c.is_rowid_alias);
 
     let root_page = btree_create_index(pager)?;
 
     let mut cursor = BTreeCursor::new(pager, table_root);
-    let rows = cursor.collect_all().map_err(|e| Error::Other(e.to_string()))?;
+    let rows = cursor
+        .collect_all()
+        .map_err(|e| Error::Other(e.to_string()))?;
 
     let mut current_root = root_page;
     for row in &rows {
@@ -173,7 +181,9 @@ pub(super) fn execute_create_index(
             if table_col.is_rowid_alias {
                 key_values.push(Value::Integer(row.rowid));
             } else {
-                let val = row.record.values
+                let val = row
+                    .record
+                    .values
                     .get(col_idx)
                     .cloned()
                     .unwrap_or(Value::Null);
@@ -255,8 +265,8 @@ pub(super) fn execute_alter_rename(
         }
         let new_record = Record { values: new_values };
         btree_delete(pager, 1, *rowid).map_err(|e| Error::Other(e.to_string()))?;
-        let new_root = btree_insert(pager, 1, *rowid, &new_record)
-            .map_err(|e| Error::Other(e.to_string()))?;
+        let new_root =
+            btree_insert(pager, 1, *rowid, &new_record).map_err(|e| Error::Other(e.to_string()))?;
         if new_root != 1 {
             return Err(Error::Other(
                 "sqlite_schema root page split — not yet supported".to_string(),
@@ -293,9 +303,9 @@ pub(super) fn execute_alter_add_column(
     pager: &mut Pager,
     catalog: &mut Catalog,
 ) -> Result<ExecResult> {
-    let table = catalog.get_table(table_name).ok_or_else(|| {
-        Error::Other(format!("no such table: {table_name}"))
-    })?;
+    let table = catalog
+        .get_table(table_name)
+        .ok_or_else(|| Error::Other(format!("no such table: {table_name}")))?;
 
     if table
         .columns
@@ -334,18 +344,13 @@ pub(super) fn execute_alter_add_column(
         has_row = cursor.next().map_err(|e| Error::Other(e.to_string()))?;
     }
 
-    let rowid = target_rowid.ok_or_else(|| {
-        Error::Other(format!("schema entry not found for table: {table_name}"))
-    })?;
+    let rowid = target_rowid
+        .ok_or_else(|| Error::Other(format!("schema entry not found for table: {table_name}")))?;
     let record = original_record.unwrap();
 
     let old_sql = match &record.values[4] {
         Value::Text(s) => s.clone(),
-        _ => {
-            return Err(Error::Other(
-                "invalid schema SQL".to_string(),
-            ))
-        }
+        _ => return Err(Error::Other("invalid schema SQL".to_string())),
     };
 
     let col_def = if column_type.is_empty() {
@@ -364,8 +369,8 @@ pub(super) fn execute_alter_add_column(
     let new_record = Record { values: new_values };
 
     btree_delete(pager, 1, rowid).map_err(|e| Error::Other(e.to_string()))?;
-    let new_root = btree_insert(pager, 1, rowid, &new_record)
-        .map_err(|e| Error::Other(e.to_string()))?;
+    let new_root =
+        btree_insert(pager, 1, rowid, &new_record).map_err(|e| Error::Other(e.to_string()))?;
     if new_root != 1 {
         return Err(Error::Other(
             "sqlite_schema root page split — not yet supported".to_string(),

@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
-use rsqlite_vfs::Vfs;
 use rsqlite_storage::btree::{
-    btree_create_index, btree_create_table, btree_insert, insert_schema_entry,
-    read_schema, BTreeCursor, IndexCursor,
+    BTreeCursor, IndexCursor, btree_create_index, btree_create_table, btree_insert,
+    insert_schema_entry, read_schema,
 };
 use rsqlite_storage::pager::Pager;
+use rsqlite_vfs::Vfs;
 
 use crate::catalog::Catalog;
 use crate::error::{Error, Result};
@@ -48,11 +48,7 @@ pub(super) fn execute_vacuum(pager: &mut Pager, catalog: &mut Catalog) -> Result
                 let mut cursor = IndexCursor::new(pager, entry.rootpage);
                 let records = cursor.collect_all()?;
                 for rec in &records {
-                    rsqlite_storage::btree::btree_index_insert(
-                        &mut temp_pager,
-                        new_root,
-                        rec,
-                    )?;
+                    rsqlite_storage::btree::btree_index_insert(&mut temp_pager, new_root, rec)?;
                 }
             }
             _ => {}
@@ -74,14 +70,16 @@ pub(super) fn execute_vacuum(pager: &mut Pager, catalog: &mut Catalog) -> Result
 
     temp_pager.flush()?;
 
-    let temp_file = temp_vfs.open(
-        "__vacuum_temp.db",
-        rsqlite_vfs::OpenFlags {
-            create: false,
-            read_write: false,
-            delete_on_close: false,
-        },
-    ).map_err(|e| Error::Other(format!("vacuum: failed to read temp db: {e}")))?;
+    let temp_file = temp_vfs
+        .open(
+            "__vacuum_temp.db",
+            rsqlite_vfs::OpenFlags {
+                create: false,
+                read_write: false,
+                delete_on_close: false,
+            },
+        )
+        .map_err(|e| Error::Other(format!("vacuum: failed to read temp db: {e}")))?;
 
     let size = temp_file
         .file_size()

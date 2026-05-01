@@ -15,12 +15,17 @@ pub(super) fn compare_rows_by_keys(
     catalog: &Catalog,
 ) -> std::cmp::Ordering {
     for key in keys {
-        let va = super::eval::eval_expr(&key.expr, a, columns, pager, catalog).unwrap_or(Value::Null);
-        let vb = super::eval::eval_expr(&key.expr, b, columns, pager, catalog).unwrap_or(Value::Null);
+        let va =
+            super::eval::eval_expr(&key.expr, a, columns, pager, catalog).unwrap_or(Value::Null);
+        let vb =
+            super::eval::eval_expr(&key.expr, b, columns, pager, catalog).unwrap_or(Value::Null);
 
         let nocase = super::eval::has_nocase_collation(&key.expr);
         let cmp_val = if nocase {
-            compare(&super::eval::fold_nocase(&va), &super::eval::fold_nocase(&vb))
+            compare(
+                &super::eval::fold_nocase(&va),
+                &super::eval::fold_nocase(&vb),
+            )
         } else {
             compare(&va, &vb)
         };

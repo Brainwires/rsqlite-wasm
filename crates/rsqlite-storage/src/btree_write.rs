@@ -1,9 +1,8 @@
 use crate::btree::{
-    btree_header_offset, build_index_leaf_cell, compare_records, init_leaf_index_page,
-    init_leaf_page, init_interior_index_page, init_interior_page,
-    parse_btree_header, parse_index_interior_cell, parse_index_leaf_cell,
-    parse_table_interior_cell, parse_table_leaf_cell, read_cell_pointers,
-    write_cell_pointers, BTreeCursor, IndexCursor, PageType,
+    BTreeCursor, IndexCursor, PageType, btree_header_offset, build_index_leaf_cell,
+    compare_records, init_interior_index_page, init_interior_page, init_leaf_index_page,
+    init_leaf_page, parse_btree_header, parse_index_interior_cell, parse_index_leaf_cell,
+    parse_table_interior_cell, parse_table_leaf_cell, read_cell_pointers, write_cell_pointers,
 };
 use crate::codec::{Record, Value};
 use crate::error::{Result, StorageError};
@@ -70,7 +69,8 @@ fn insert_into_page(pager: &mut Pager, page_num: u32, rowid: i64, cell: &[u8]) -
             }
         }
     } else {
-        let pointers = read_cell_pointers(&page_data, offset + header.header_size(), header.cell_count);
+        let pointers =
+            read_cell_pointers(&page_data, offset + header.header_size(), header.cell_count);
         let mut child_page = header.right_most_pointer.unwrap();
 
         for i in 0..header.cell_count as usize {
@@ -95,7 +95,8 @@ fn insert_into_page(pager: &mut Pager, page_num: u32, rowid: i64, cell: &[u8]) -
                     median_rowid,
                 } => {
                     let interior_cell = build_table_interior_cell(child_page, median_rowid);
-                    let int_result = try_insert_cell_into_interior(pager, page_num, &interior_cell, new_page)?;
+                    let int_result =
+                        try_insert_cell_into_interior(pager, page_num, &interior_cell, new_page)?;
                     match int_result {
                         InsertResult::Ok => Ok(page_num),
                         InsertResult::Split {
@@ -377,7 +378,11 @@ fn try_insert_cell_into_interior(
             let data = &mut page.data;
             let off = btree_header_offset(page_num);
             data[off..page_size].fill(0);
-            init_interior_page(data, page_num, parse_table_interior_cell(&promoted.1, 0).left_child_page);
+            init_interior_page(
+                data,
+                page_num,
+                parse_table_interior_cell(&promoted.1, 0).left_child_page,
+            );
 
             let mut content_end = page_size;
             let ptr_start = off + 12;
@@ -528,7 +533,8 @@ fn index_insert_into_page(
             }
         }
     } else {
-        let pointers = read_cell_pointers(&page_data, offset + header.header_size(), header.cell_count);
+        let pointers =
+            read_cell_pointers(&page_data, offset + header.header_size(), header.cell_count);
         let mut child_page = header.right_most_pointer.unwrap();
 
         for i in 0..header.cell_count as usize {
@@ -630,8 +636,14 @@ fn split_index_leaf(
     cells.sort_by(|(a, _), (b, _)| compare_records(a, b));
 
     let mid = cells.len() / 2;
-    let left_cells: Vec<(i64, Vec<u8>)> = cells[..mid].iter().map(|(_, raw)| (0, raw.clone())).collect();
-    let right_cells: Vec<(i64, Vec<u8>)> = cells[mid..].iter().map(|(_, raw)| (0, raw.clone())).collect();
+    let left_cells: Vec<(i64, Vec<u8>)> = cells[..mid]
+        .iter()
+        .map(|(_, raw)| (0, raw.clone()))
+        .collect();
+    let right_cells: Vec<(i64, Vec<u8>)> = cells[mid..]
+        .iter()
+        .map(|(_, raw)| (0, raw.clone()))
+        .collect();
 
     rewrite_index_leaf_page(pager, page_num, &left_cells)?;
 
@@ -648,7 +660,11 @@ fn split_index_leaf(
     })
 }
 
-fn rewrite_index_leaf_page(pager: &mut Pager, page_num: u32, cells: &[(i64, Vec<u8>)]) -> Result<()> {
+fn rewrite_index_leaf_page(
+    pager: &mut Pager,
+    page_num: u32,
+    cells: &[(i64, Vec<u8>)],
+) -> Result<()> {
     let page_size = pager.page_size() as usize;
     let page = pager.get_page_mut(page_num)?;
     let data = &mut page.data;
@@ -709,9 +725,14 @@ pub fn btree_delete(pager: &mut Pager, root_page: u32, rowid: i64) -> Result<()>
         has_row = cursor.next()?;
     }
 
-    rewrite_leaf_page(pager, root_page, &rows.iter().map(|(r, p)| {
-        (*r, build_table_leaf_cell(*r, p))
-    }).collect::<Vec<_>>())?;
+    rewrite_leaf_page(
+        pager,
+        root_page,
+        &rows
+            .iter()
+            .map(|(r, p)| (*r, build_table_leaf_cell(*r, p)))
+            .collect::<Vec<_>>(),
+    )?;
 
     Ok(())
 }

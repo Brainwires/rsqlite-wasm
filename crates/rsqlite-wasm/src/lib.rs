@@ -1,8 +1,8 @@
 mod idb;
 mod opfs;
 
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 
 use rsqlite_core::database::Database;
 use rsqlite_core::types::Value;
@@ -62,7 +62,9 @@ impl WasmDatabase {
         let db = if exists {
             Database::open(&vfs, &db_path).map_err(to_js_error)?
         } else {
-            vfs.open_file(&db_path, true).await.map_err(jsval_to_js_error)?;
+            vfs.open_file(&db_path, true)
+                .await
+                .map_err(jsval_to_js_error)?;
             Database::create(&vfs, &db_path).map_err(to_js_error)?
         };
 
@@ -76,7 +78,9 @@ impl WasmDatabase {
     #[wasm_bindgen(js_name = "openWithIdb")]
     pub async fn open_with_idb(name: &str) -> Result<WasmDatabase, JsError> {
         let idb_name = format!("rsqlite_{name}");
-        let vfs = idb::IdbVfs::new(&idb_name).await.map_err(jsval_to_js_error)?;
+        let vfs = idb::IdbVfs::new(&idb_name)
+            .await
+            .map_err(jsval_to_js_error)?;
         let db_path = if name.ends_with(".db") {
             name.to_string()
         } else {
@@ -138,14 +142,20 @@ impl WasmDatabase {
     #[wasm_bindgen(js_name = "execParams")]
     pub fn exec_params(&mut self, sql: &str, params: JsValue) -> Result<u64, JsError> {
         let params = js_params_to_values(params)?;
-        let result = self.db.execute_with_params(sql, params).map_err(to_js_error)?;
+        let result = self
+            .db
+            .execute_with_params(sql, params)
+            .map_err(to_js_error)?;
         Ok(result.rows_affected)
     }
 
     #[wasm_bindgen(js_name = "queryParams")]
     pub fn query_params(&mut self, sql: &str, params: JsValue) -> Result<JsValue, JsError> {
         let params = js_params_to_values(params)?;
-        let result = self.db.query_with_params(sql, params).map_err(to_js_error)?;
+        let result = self
+            .db
+            .query_with_params(sql, params)
+            .map_err(to_js_error)?;
         return query_result_to_js(&result);
     }
 
@@ -313,7 +323,11 @@ fn split_statements(sql: &str) -> Vec<String> {
         if depth == 0 {
             let stmt = current.trim().to_string();
             if !stmt.is_empty() {
-                let terminated = if stmt.ends_with(';') { stmt } else { format!("{stmt};") };
+                let terminated = if stmt.ends_with(';') {
+                    stmt
+                } else {
+                    format!("{stmt};")
+                };
                 result.push(terminated);
             }
             current.clear();
@@ -322,7 +336,11 @@ fn split_statements(sql: &str) -> Vec<String> {
 
     if !current.trim().is_empty() {
         let stmt = current.trim().to_string();
-        let terminated = if stmt.ends_with(';') { stmt } else { format!("{stmt};") };
+        let terminated = if stmt.ends_with(';') {
+            stmt
+        } else {
+            format!("{stmt};")
+        };
         result.push(terminated);
     }
 
