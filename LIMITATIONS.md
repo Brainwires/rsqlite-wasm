@@ -35,9 +35,11 @@ Inherited from `sqlparser-rs` 0.55's `SQLiteDialect`:
   VIRTUAL aren't yet implemented. Functionally correct, slightly
   larger storage footprint.
 - **Bare `rowid` references on tables without `INTEGER PRIMARY KEY`.**
-  Errors with "bare ROWID reference not yet supported". Workaround:
-  add `INTEGER PRIMARY KEY` to the table — bare `rowid` then resolves
-  to that column.
+  Now supported — the executor threads each row's btree rowid through
+  to `eval_expr`, so `SELECT rowid FROM t` and `WHERE rowid = ?` work
+  even when the table has no rowid alias. Computed result rows
+  (aggregates, projections, joins) leave `rowid` unset, so referencing
+  `rowid` on those still errors.
 - **`sqlite_schema` root-page split.** Schemas with very many CREATE
   TABLE / INDEX statements (large enough that the schema metadata
   itself outgrows page 1) error during DDL. Workaround: keep the
@@ -69,8 +71,12 @@ Inherited from `sqlparser-rs` 0.55's `SQLiteDialect`:
   doesn't suffer from the corruption modes (collation changes, etc.)
   that real SQLite uses REINDEX to recover from. Tools that issue
   REINDEX won't error, but no work is done.
-- **`ANALYZE`** is accepted as a no-op. Our planner is rule-based,
-  not cost-based, so there's no `sqlite_stat1` to populate.
+- **`ANALYZE`** populates `sqlite_stat1` with one row per table (row
+  count) and one row per index (`<row_count> 1` placeholder for the
+  per-distinct-prefix average). The schema matches SQLite's, so external
+  tools that read `sqlite_stat1` work. The planner itself is still
+  rule-based and doesn't yet consume the stats — that's tracked under
+  cost-aware planning.
 
 ## Not implemented at all
 
@@ -99,7 +105,7 @@ These are tracked as v0.2 candidates:
    `is_false()`, `is_not_true()`, `is_not_false()` function forms work.
 7. Partial-index implication beyond the verbatim-conjunct case
    (e.g. tighter range proves looser range).
-8. Cost-aware planner / `ANALYZE` populating `sqlite_stat1`.
+8. Cost-aware planner consuming the `sqlite_stat1` rows ANALYZE writes.
 9. Virtual tables / FTS5 / R-Tree / HNSW vector index — major
    subsystems deferred to v0.2.
 10. WITHOUT ROWID tables — storage layer rewrite deferred to v0.2.

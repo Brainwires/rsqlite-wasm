@@ -49,7 +49,7 @@ pub(super) fn execute_delete(
             }
         }
 
-        let row = Row { values: row_values };
+        let row = Row::with_rowid(row_values, btree_row.rowid);
 
         let matches = match &plan.predicate {
             Some(pred) => {

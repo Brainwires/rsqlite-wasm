@@ -24,9 +24,7 @@ pub(super) fn check_check_constraints(
     }
 
     let col_names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
-    let row = Row {
-        values: values.to_vec(),
-    };
+    let row = Row { values: values.to_vec(), rowid: None };
 
     for check_sql in &table_def.check_constraints {
         let parsed = rsqlite_parser::parse::parse_sql(&format!("SELECT {check_sql}"));
@@ -845,9 +843,7 @@ fn evaluate_column_defaults(
                 continue;
             }
         };
-        let placeholder_row = crate::types::Row {
-            values: vec![Value::Null; child_table.columns.len()],
-        };
+        let placeholder_row = crate::types::Row { values: vec![Value::Null; child_table.columns.len()], rowid: None };
         let col_names: Vec<String> = child_table.columns.iter().map(|c| c.name.clone()).collect();
         match super::eval::eval_expr(&plan_expr, &placeholder_row, &col_names, pager, catalog) {
             Ok(v) => out.push(v),

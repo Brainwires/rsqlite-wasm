@@ -208,9 +208,7 @@ pub(super) fn index_predicate_matches(
         Ok(pe) => pe,
         Err(_) => return Ok(true),
     };
-    let row = crate::types::Row {
-        values: values.to_vec(),
-    };
+    let row = crate::types::Row { values: values.to_vec(), rowid: None };
     let col_names: Vec<String> = table_columns.iter().map(|c| c.name.clone()).collect();
     let v = super::eval::eval_expr(&plan_expr, &row, &col_names, pager, catalog)?;
     Ok(crate::eval_helpers::is_truthy(&v))
@@ -286,15 +284,13 @@ pub(super) fn build_returning_result(
     let col_names: Vec<String> = table_columns.iter().map(|c| c.name.clone()).collect();
     let mut rows = Vec::with_capacity(affected.len());
     for values in affected {
-        let row = crate::types::Row {
-            values: values.clone(),
-        };
+        let row = crate::types::Row { values: values.clone(), rowid: None };
         let mut out_values = Vec::with_capacity(returning.len());
         for proj in returning {
             let v = super::eval::eval_expr(&proj.expr, &row, &col_names, pager, catalog)?;
             out_values.push(v);
         }
-        rows.push(crate::types::Row { values: out_values });
+        rows.push(crate::types::Row::new(out_values));
     }
     Ok(QueryResult { columns, rows })
 }
@@ -364,9 +360,7 @@ pub(super) fn apply_generated_columns(
         // can reference sibling columns. Generated columns reading other
         // generated columns aren't well-defined; SQLite forbids forward
         // references but here we just use whatever values are populated.
-        let row = crate::types::Row {
-            values: values.to_vec(),
-        };
+        let row = crate::types::Row { values: values.to_vec(), rowid: None };
         if let Ok(v) = super::eval::eval_expr(&plan_expr, &row, &col_names, pager, catalog) {
             values[i] = v;
         }
@@ -388,9 +382,7 @@ pub(super) fn apply_column_defaults(
     };
 
     let col_names: Vec<String> = table_columns.iter().map(|c| c.name.clone()).collect();
-    let placeholder_row = crate::types::Row {
-        values: values.to_vec(),
-    };
+    let placeholder_row = crate::types::Row { values: values.to_vec(), rowid: None };
 
     for (i, col) in table_columns.iter().enumerate() {
         if explicitly_set[i] {

@@ -38,8 +38,7 @@ pub fn execute_pragma(
                         Value::Integer(if col.nullable { 0 } else { 1 }),
                         Value::Null,
                         Value::Integer(if col.is_primary_key { 1 } else { 0 }),
-                    ],
-                })
+                    ], rowid: None })
                 .collect();
             Ok(QueryResult { columns, rows })
         }
@@ -48,13 +47,11 @@ pub fn execute_pragma(
             let mut rows: Vec<Row> = catalog
                 .tables
                 .values()
-                .map(|t| Row {
-                    values: vec![
+                .map(|t| Row { values: vec![
                         Value::Text("main".to_string()),
                         Value::Text(t.name.clone()),
                         Value::Text("table".to_string()),
-                    ],
-                })
+                    ], rowid: None })
                 .collect();
             rows.sort_by(|a, b| a.values[1].to_string().cmp(&b.values[1].to_string()));
             Ok(QueryResult { columns, rows })
@@ -74,15 +71,13 @@ pub fn execute_pragma(
             let mut seq = 0i64;
             for idx in catalog.indexes.values() {
                 if idx.table_name.eq_ignore_ascii_case(table_name) {
-                    rows.push(Row {
-                        values: vec![
+                    rows.push(Row { values: vec![
                             Value::Integer(seq),
                             Value::Text(idx.name.clone()),
                             Value::Integer(0),
                             Value::Text("c".to_string()),
                             Value::Integer(0),
-                        ],
-                    });
+                        ], rowid: None });
                     seq += 1;
                 }
             }
@@ -111,44 +106,34 @@ pub fn execute_pragma(
                         })
                         .map(|p| p as i64)
                         .unwrap_or(-1);
-                    Row {
-                        values: vec![
+                    Row { values: vec![
                             Value::Integer(i as i64),
                             Value::Integer(cid),
                             Value::Text(col_name.clone()),
-                        ],
-                    }
+                        ], rowid: None }
                 })
                 .collect();
             Ok(QueryResult { columns, rows })
         }
         "page_size" => Ok(QueryResult {
             columns: vec!["page_size".to_string()],
-            rows: vec![Row {
-                values: vec![Value::Integer(pager.page_size() as i64)],
-            }],
+            rows: vec![Row { values: vec![Value::Integer(pager.page_size() as i64)], rowid: None }],
         }),
         "page_count" => Ok(QueryResult {
             columns: vec!["page_count".to_string()],
-            rows: vec![Row {
-                values: vec![Value::Integer(pager.page_count() as i64)],
-            }],
+            rows: vec![Row { values: vec![Value::Integer(pager.page_count() as i64)], rowid: None }],
         }),
         "database_list" => Ok(QueryResult {
             columns: vec!["seq".to_string(), "name".to_string(), "file".to_string()],
-            rows: vec![Row {
-                values: vec![
+            rows: vec![Row { values: vec![
                     Value::Integer(0),
                     Value::Text("main".to_string()),
                     Value::Text(String::new()),
-                ],
-            }],
+                ], rowid: None }],
         }),
         "journal_mode" => Ok(QueryResult {
             columns: vec!["journal_mode".to_string()],
-            rows: vec![Row {
-                values: vec![Value::Text("delete".to_string())],
-            }],
+            rows: vec![Row { values: vec![Value::Text("delete".to_string())], rowid: None }],
         }),
         "foreign_keys" | "foreign_key_list" if name == "foreign_keys" => match argument {
             Some(val) => {
@@ -160,8 +145,7 @@ pub fn execute_pragma(
                 Ok(QueryResult {
                     columns: vec!["foreign_keys".to_string()],
                     rows: vec![Row {
-                        values: vec![Value::Integer(if enabled { 1 } else { 0 })],
-                    }],
+                        values: vec![Value::Integer(if enabled { 1 } else { 0 })], rowid: None }],
                 })
             }
             None => Ok(QueryResult {
@@ -171,15 +155,12 @@ pub fn execute_pragma(
                         1
                     } else {
                         0
-                    })],
-                }],
+                    })], rowid: None }],
             }),
         },
         "encoding" => Ok(QueryResult {
             columns: vec!["encoding".to_string()],
-            rows: vec![Row {
-                values: vec![Value::Text("UTF-8".to_string())],
-            }],
+            rows: vec![Row { values: vec![Value::Text("UTF-8".to_string())], rowid: None }],
         }),
         "compile_options" => Ok(QueryResult {
             columns: vec!["compile_options".to_string()],
@@ -187,61 +168,43 @@ pub fn execute_pragma(
         }),
         "auto_vacuum" => Ok(QueryResult {
             columns: vec!["auto_vacuum".to_string()],
-            rows: vec![Row {
-                values: vec![Value::Integer(0)],
-            }],
+            rows: vec![Row { values: vec![Value::Integer(0)], rowid: None }],
         }),
         "cache_size" => Ok(QueryResult {
             columns: vec!["cache_size".to_string()],
-            rows: vec![Row {
-                values: vec![Value::Integer(-2000)],
-            }],
+            rows: vec![Row { values: vec![Value::Integer(-2000)], rowid: None }],
         }),
         "collation_list" => Ok(QueryResult {
             columns: vec!["seq".to_string(), "name".to_string()],
             rows: vec![
-                Row {
-                    values: vec![Value::Integer(0), Value::Text("BINARY".to_string())],
-                },
-                Row {
-                    values: vec![Value::Integer(1), Value::Text("NOCASE".to_string())],
-                },
-                Row {
-                    values: vec![Value::Integer(2), Value::Text("RTRIM".to_string())],
-                },
+                Row { values: vec![Value::Integer(0), Value::Text("BINARY".to_string())], rowid: None },
+                Row { values: vec![Value::Integer(1), Value::Text("NOCASE".to_string())], rowid: None },
+                Row { values: vec![Value::Integer(2), Value::Text("RTRIM".to_string())], rowid: None },
             ],
         }),
         "integrity_check" | "quick_check" => Ok(QueryResult {
             columns: vec![name.to_string()],
-            rows: vec![Row {
-                values: vec![Value::Text("ok".to_string())],
-            }],
+            rows: vec![Row { values: vec![Value::Text("ok".to_string())], rowid: None }],
         }),
         "user_version" => {
             let user_version = read_header_u32(pager, 60)?;
             Ok(QueryResult {
                 columns: vec!["user_version".to_string()],
-                rows: vec![Row {
-                    values: vec![Value::Integer(user_version as i64)],
-                }],
+                rows: vec![Row { values: vec![Value::Integer(user_version as i64)], rowid: None }],
             })
         }
         "application_id" => {
             let app_id = read_header_u32(pager, 68)?;
             Ok(QueryResult {
                 columns: vec!["application_id".to_string()],
-                rows: vec![Row {
-                    values: vec![Value::Integer(app_id as i64)],
-                }],
+                rows: vec![Row { values: vec![Value::Integer(app_id as i64)], rowid: None }],
             })
         }
         "schema_version" => {
             let schema_version = read_header_u32(pager, 40)?;
             Ok(QueryResult {
                 columns: vec!["schema_version".to_string()],
-                rows: vec![Row {
-                    values: vec![Value::Integer(schema_version as i64)],
-                }],
+                rows: vec![Row { values: vec![Value::Integer(schema_version as i64)], rowid: None }],
             })
         }
         "table_xinfo" => {
@@ -283,8 +246,7 @@ pub fn execute_pragma(
                                 .unwrap_or(Value::Null),
                             Value::Integer(if col.is_primary_key { 1 } else { 0 }),
                             Value::Integer(hidden),
-                        ],
-                    }
+                        ], rowid: None }
                 })
                 .collect();
             Ok(QueryResult { columns, rows })
@@ -311,8 +273,7 @@ pub fn execute_pragma(
                 for (seq, (from_col, to_col)) in
                     fk.from_columns.iter().zip(fk.to_columns.iter()).enumerate()
                 {
-                    rows.push(Row {
-                        values: vec![
+                    rows.push(Row { values: vec![
                             Value::Integer(id as i64),
                             Value::Integer(seq as i64),
                             Value::Text(fk.to_table.clone()),
@@ -321,8 +282,7 @@ pub fn execute_pragma(
                             Value::Text("NO ACTION".to_string()),
                             Value::Text("NO ACTION".to_string()),
                             Value::Text("NONE".to_string()),
-                        ],
-                    });
+                        ], rowid: None });
                 }
             }
             Ok(QueryResult { columns, rows })

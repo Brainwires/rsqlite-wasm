@@ -91,7 +91,7 @@ pub(super) fn execute_aggregate(
             row_values.push(agg_val);
         }
 
-        let row = Row { values: row_values };
+        let row = Row::new(row_values);
 
         if let Some(having_expr) = having {
             let val = super::eval::eval_expr(having_expr, &row, &output_columns, pager, catalog)?;

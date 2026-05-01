@@ -274,21 +274,17 @@ impl Database {
 
     fn pragma_database_list(&self) -> QueryResult {
         use crate::types::Row;
-        let mut rows = vec![Row {
-            values: vec![
+        let mut rows = vec![Row { values: vec![
                 Value::Integer(0),
                 Value::Text("main".to_string()),
                 Value::Text(String::new()),
-            ],
-        }];
+            ], rowid: None }];
         for (i, name) in self.attached.keys().enumerate() {
-            rows.push(Row {
-                values: vec![
+            rows.push(Row { values: vec![
                     Value::Integer((i + 1) as i64),
                     Value::Text(name.clone()),
                     Value::Text(String::new()),
-                ],
-            });
+                ], rowid: None });
         }
         QueryResult {
             columns: vec!["seq".to_string(), "name".to_string(), "file".to_string()],
@@ -375,8 +371,7 @@ fn describe_plan_recursive(
                     Value::Integer(parent),
                     Value::Integer(0),
                     Value::Text(format!("{indent}SCAN TABLE {table}")),
-                ],
-            });
+                ], rowid: None });
         }
         Plan::IndexScan {
             table,
@@ -390,8 +385,7 @@ fn describe_plan_recursive(
                     Value::Integer(parent),
                     Value::Integer(0),
                     Value::Text(format!("{indent}SEARCH TABLE {table} USING INDEX ({cols})")),
-                ],
-            });
+                ], rowid: None });
         }
         Plan::IndexRangeScan {
             table,
@@ -406,8 +400,7 @@ fn describe_plan_recursive(
                     Value::Text(format!(
                         "{indent}SEARCH TABLE {table} USING INDEX ({index_column} range)"
                     )),
-                ],
-            });
+                ], rowid: None });
         }
         Plan::Filter { input, .. } => {
             describe_plan_recursive(input, rows, id, parent, depth);
@@ -422,8 +415,7 @@ fn describe_plan_recursive(
                     Value::Integer(parent),
                     Value::Integer(0),
                     Value::Text(format!("{indent}USE TEMP B-TREE FOR ORDER BY")),
-                ],
-            });
+                ], rowid: None });
             describe_plan_recursive(input, rows, id, my_id, depth + 1);
         }
         Plan::Limit { input, .. } => {
@@ -436,8 +428,7 @@ fn describe_plan_recursive(
                     Value::Integer(parent),
                     Value::Integer(0),
                     Value::Text(format!("{indent}USE TEMP B-TREE FOR GROUP BY")),
-                ],
-            });
+                ], rowid: None });
             describe_plan_recursive(input, rows, id, my_id, depth + 1);
         }
         Plan::NestedLoopJoin {
@@ -459,8 +450,7 @@ fn describe_plan_recursive(
                     Value::Integer(parent),
                     Value::Integer(0),
                     Value::Text(format!("{indent}NESTED LOOP {jt} JOIN")),
-                ],
-            });
+                ], rowid: None });
             describe_plan_recursive(left, rows, id, my_id, depth + 1);
             describe_plan_recursive(right, rows, id, my_id, depth + 1);
         }
@@ -472,8 +462,7 @@ fn describe_plan_recursive(
                     Value::Integer(parent),
                     Value::Integer(0),
                     Value::Text(format!("{indent}COMPOUND QUERY ({op})")),
-                ],
-            });
+                ], rowid: None });
             describe_plan_recursive(left, rows, id, my_id, depth + 1);
             describe_plan_recursive(right, rows, id, my_id, depth + 1);
         }
@@ -485,8 +474,7 @@ fn describe_plan_recursive(
                     Value::Integer(parent),
                     Value::Integer(0),
                     Value::Text(format!("{indent}COMPOUND QUERY ({op})")),
-                ],
-            });
+                ], rowid: None });
             describe_plan_recursive(left, rows, id, my_id, depth + 1);
             describe_plan_recursive(right, rows, id, my_id, depth + 1);
         }
@@ -498,8 +486,7 @@ fn describe_plan_recursive(
                     Value::Integer(parent),
                     Value::Integer(0),
                     Value::Text(format!("{indent}COMPOUND QUERY ({op})")),
-                ],
-            });
+                ], rowid: None });
             describe_plan_recursive(left, rows, id, my_id, depth + 1);
             describe_plan_recursive(right, rows, id, my_id, depth + 1);
         }
@@ -510,8 +497,7 @@ fn describe_plan_recursive(
                     Value::Integer(parent),
                     Value::Integer(0),
                     Value::Text(format!("{indent}WINDOW FUNCTION")),
-                ],
-            });
+                ], rowid: None });
             describe_plan_recursive(input, rows, id, my_id, depth + 1);
         }
         Plan::Insert(p) => {
@@ -521,8 +507,7 @@ fn describe_plan_recursive(
                     Value::Integer(parent),
                     Value::Integer(0),
                     Value::Text(format!("{indent}INSERT INTO {}", p.table_name)),
-                ],
-            });
+                ], rowid: None });
         }
         Plan::Update(p) => {
             rows.push(Row {
@@ -531,8 +516,7 @@ fn describe_plan_recursive(
                     Value::Integer(parent),
                     Value::Integer(0),
                     Value::Text(format!("{indent}UPDATE {}", p.table_name)),
-                ],
-            });
+                ], rowid: None });
         }
         Plan::Delete(p) => {
             rows.push(Row {
@@ -541,8 +525,7 @@ fn describe_plan_recursive(
                     Value::Integer(parent),
                     Value::Integer(0),
                     Value::Text(format!("{indent}DELETE FROM {}", p.table_name)),
-                ],
-            });
+                ], rowid: None });
         }
         Plan::SingleRow => {
             rows.push(Row {
@@ -551,8 +534,7 @@ fn describe_plan_recursive(
                     Value::Integer(parent),
                     Value::Integer(0),
                     Value::Text(format!("{indent}SCAN CONSTANT ROW")),
-                ],
-            });
+                ], rowid: None });
         }
         _ => {
             rows.push(Row {
@@ -561,8 +543,7 @@ fn describe_plan_recursive(
                     Value::Integer(parent),
                     Value::Integer(0),
                     Value::Text(format!("{indent}PLAN NODE")),
-                ],
-            });
+                ], rowid: None });
         }
     }
 }

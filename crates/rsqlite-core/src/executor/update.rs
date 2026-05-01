@@ -128,9 +128,7 @@ pub(super) fn execute_update(
             for from_row in &from_rows {
                 let mut combined = row_values.clone();
                 combined.extend_from_slice(from_row);
-                let combined_row = Row {
-                    values: combined.clone(),
-                };
+                let combined_row = Row { values: combined.clone(), rowid: None };
 
                 let matches = match &plan.predicate {
                     Some(pred) => {
@@ -145,7 +143,7 @@ pub(super) fn execute_update(
                 }
             }
             if let Some(combined) = last_match_combined {
-                let combined_row = Row { values: combined };
+                let combined_row = Row::with_rowid(combined, btree_row.rowid);
                 let mut new_values = row_values.clone();
                 for (col_name, expr) in &plan.assignments {
                     let col_idx = column_names
@@ -191,7 +189,7 @@ pub(super) fn execute_update(
             continue;
         }
 
-        let row = Row { values: row_values };
+        let row = Row::with_rowid(row_values, btree_row.rowid);
 
         let matches = match &plan.predicate {
             Some(pred) => {

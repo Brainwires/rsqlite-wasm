@@ -46,7 +46,7 @@ pub(super) fn execute_scan(
             }
         }
 
-        rows.push(Row { values: row_values });
+        rows.push(Row::with_rowid(row_values, btree_row.rowid));
     }
 
     Ok(QueryResult {
@@ -77,7 +77,7 @@ pub(super) fn execute_index_scan(
 
     let eval_values: Vec<Value> = lookup_values
         .iter()
-        .map(|expr| super::eval::eval_expr(expr, &Row { values: vec![] }, &[], pager, catalog))
+        .map(|expr| super::eval::eval_expr(expr, &Row::new(vec![]), &[], pager, catalog))
         .collect::<Result<_>>()?;
 
     let mut index_cursor = IndexCursor::new(pager, index_root_page);
@@ -85,6 +85,61 @@ pub(super) fn execute_index_scan(
         .collect_all()
         .map_err(|e| Error::Other(e.to_string()))?;
 
+    // Covering / index-only scan: if every requested column can be served
+    // from the index entry itself (either it's an indexed column or it's
+    // the rowid alias, which lives at the tail of each index entry), skip
+    // the table btree fetch entirely.
+    let coverage: Option<Vec<usize>> = columns
+        .iter()
+        .map(|c| {
+            if c.is_rowid_alias {
+                // rowid lives at index_columns.len() — i.e. just past the
+                // indexed key columns.
+                Some(index_columns.len())
+            } else {
+                index_columns
+                    .iter()
+                    .position(|ic| ic.eq_ignore_ascii_case(&c.name))
+            }
+        })
+        .collect();
+
+    if let Some(positions) = coverage {
+        let mut rows = Vec::new();
+        for entry in &index_entries {
+            if entry.values.len() < index_columns.len() + 1 {
+                continue;
+            }
+            let mut matches = true;
+            for (i, lookup_val) in eval_values.iter().enumerate() {
+                if !super::helpers::values_equal(&entry.values[i], lookup_val) {
+                    matches = false;
+                    break;
+                }
+            }
+            if matches {
+                let row_values: Vec<Value> = positions
+                    .iter()
+                    .map(|&pos| entry.values.get(pos).cloned().unwrap_or(Value::Null))
+                    .collect();
+                let rid = entry
+                    .values
+                    .last()
+                    .and_then(|v| if let Value::Integer(r) = v { Some(*r) } else { None });
+                let row = match rid {
+                    Some(r) => Row::with_rowid(row_values, r),
+                    None => Row::new(row_values),
+                };
+                rows.push(row);
+            }
+        }
+        return Ok(QueryResult {
+            columns: column_names,
+            rows,
+        });
+    }
+
+    // Non-covering case: collect rowids, then fetch from the table btree.
     let mut matching_rowids = Vec::new();
     for entry in &index_entries {
         if entry.values.len() < index_columns.len() + 1 {
@@ -127,7 +182,7 @@ pub(super) fn execute_index_scan(
                         row_values.push(val);
                     }
                 }
-                rows.push(Row { values: row_values });
+                rows.push(Row::with_rowid(row_values, btree_row.rowid));
                 break;
             }
         }
@@ -160,7 +215,7 @@ pub(super) fn execute_index_range_scan(
         })
         .collect();
 
-    let empty_row = Row { values: vec![] };
+    let empty_row = Row::new(vec![]);
     let lower = lower_bound
         .map(|(expr, incl)| {
             super::eval::eval_expr(expr, &empty_row, &[], pager, catalog).map(|v| (v, *incl))
@@ -229,7 +284,7 @@ pub(super) fn execute_index_range_scan(
                         row_values.push(val);
                     }
                 }
-                rows.push(Row { values: row_values });
+                rows.push(Row::with_rowid(row_values, btree_row.rowid));
                 break;
             }
         }

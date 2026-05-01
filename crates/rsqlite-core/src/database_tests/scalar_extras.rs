@@ -643,6 +643,133 @@ fn on_update_no_op_when_referenced_column_unchanged() {
     assert_eq!(r.rows[0].values[0], Value::Text("new".to_string()));
 }
 
+// ── Covering / index-only scan ────────────────────────────────────────
+
+#[test]
+fn covering_scan_returns_correct_rows_without_table_fetch() {
+    // Test the correctness side of B6 — when the index covers all
+    // requested columns, the result must still match a non-covered scan.
+    let mut db = fresh();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")
+        .unwrap();
+    db.execute("CREATE INDEX idx_age ON t(age)").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'a', 30), (2, 'b', 25), (3, 'c', 30)")
+        .unwrap();
+
+    // SELECT only the indexed column + rowid alias — fully covered by idx_age.
+    let r = db.query("SELECT age, id FROM t WHERE age = 30 ORDER BY id").unwrap();
+    assert_eq!(r.rows.len(), 2);
+    assert_eq!(r.rows[0].values[0], Value::Integer(30));
+    assert_eq!(r.rows[0].values[1], Value::Integer(1));
+    assert_eq!(r.rows[1].values[0], Value::Integer(30));
+    assert_eq!(r.rows[1].values[1], Value::Integer(3));
+
+    // SELECT a non-indexed column — must fall through to table fetch.
+    let r = db.query("SELECT name FROM t WHERE age = 30 ORDER BY id").unwrap();
+    assert_eq!(r.rows.len(), 2);
+    assert_eq!(r.rows[0].values[0], Value::Text("a".to_string()));
+    assert_eq!(r.rows[1].values[0], Value::Text("c".to_string()));
+}
+
+// ── Bare rowid (no INTEGER PRIMARY KEY alias) ─────────────────────────
+
+#[test]
+fn bare_rowid_works_without_integer_primary_key_alias() {
+    let mut db = fresh();
+    // Table with NO INTEGER PRIMARY KEY — rowid has no alias column.
+    db.execute("CREATE TABLE t (name TEXT)").unwrap();
+    db.execute("INSERT INTO t VALUES ('a'), ('b'), ('c')").unwrap();
+    let r = db.query("SELECT rowid, name FROM t ORDER BY rowid").unwrap();
+    assert_eq!(r.rows.len(), 3);
+    assert_eq!(r.rows[0].values[0], Value::Integer(1));
+    assert_eq!(r.rows[0].values[1], Value::Text("a".to_string()));
+    assert_eq!(r.rows[2].values[0], Value::Integer(3));
+}
+
+#[test]
+fn bare_rowid_filter_without_alias() {
+    let mut db = fresh();
+    db.execute("CREATE TABLE t (val TEXT)").unwrap();
+    db.execute("INSERT INTO t VALUES ('first'), ('second'), ('third')")
+        .unwrap();
+    let r = db.query("SELECT val FROM t WHERE rowid = 2").unwrap();
+    assert_eq!(r.rows.len(), 1);
+    assert_eq!(r.rows[0].values[0], Value::Text("second".to_string()));
+}
+
+// ── ANALYZE / sqlite_stat1 ────────────────────────────────────────────
+
+#[test]
+fn analyze_creates_sqlite_stat1_with_row_counts() {
+    let mut db = fresh();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')").unwrap();
+    db.execute("ANALYZE").unwrap();
+
+    let r = db
+        .query("SELECT tbl, idx, stat FROM sqlite_stat1 WHERE tbl = 't'")
+        .unwrap();
+    assert_eq!(r.rows.len(), 1, "expected one stat row for table t");
+    assert_eq!(r.rows[0].values[0], Value::Text("t".to_string()));
+    assert_eq!(r.rows[0].values[1], Value::Null);
+    assert_eq!(r.rows[0].values[2], Value::Text("3".to_string()));
+}
+
+#[test]
+fn analyze_records_index_stats_too() {
+    let mut db = fresh();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+    db.execute("CREATE INDEX idx_name ON t(name)").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'a'), (2, 'b')").unwrap();
+    db.execute("ANALYZE").unwrap();
+
+    let r = db
+        .query("SELECT idx, stat FROM sqlite_stat1 WHERE tbl = 't' AND idx = 'idx_name'")
+        .unwrap();
+    assert_eq!(r.rows.len(), 1);
+    if let Value::Text(s) = &r.rows[0].values[1] {
+        assert!(s.starts_with("2"), "stat starts with row count: got {s:?}");
+    } else {
+        panic!("expected text stat");
+    }
+}
+
+#[test]
+fn analyze_refresh_replaces_stats() {
+    let mut db = fresh();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)").unwrap();
+    db.execute("INSERT INTO t VALUES (1), (2)").unwrap();
+    db.execute("ANALYZE").unwrap();
+    let first = db.query("SELECT stat FROM sqlite_stat1 WHERE tbl = 't'").unwrap();
+    assert_eq!(first.rows[0].values[0], Value::Text("2".to_string()));
+
+    db.execute("INSERT INTO t VALUES (3), (4), (5)").unwrap();
+    db.execute("ANALYZE").unwrap();
+    let second = db.query("SELECT stat FROM sqlite_stat1 WHERE tbl = 't'").unwrap();
+    assert_eq!(second.rows[0].values[0], Value::Text("5".to_string()));
+    // Old entry was replaced, not appended.
+    let count = db
+        .query("SELECT COUNT(*) FROM sqlite_stat1 WHERE tbl = 't'")
+        .unwrap();
+    assert_eq!(count.rows[0].values[0], Value::Integer(1));
+}
+
+#[test]
+fn analyze_skips_internal_tables() {
+    let mut db = fresh();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)").unwrap();
+    db.execute("ANALYZE").unwrap();
+    let r = db
+        .query("SELECT tbl FROM sqlite_stat1 WHERE tbl LIKE 'sqlite_%'")
+        .unwrap();
+    assert_eq!(
+        r.rows.len(),
+        0,
+        "ANALYZE should skip sqlite_* tables; got {:?}",
+        r.rows
+    );
+}
+
 // ── ATTACH / DETACH visibility ────────────────────────────────────────
 
 #[test]

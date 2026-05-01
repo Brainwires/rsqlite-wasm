@@ -1,4 +1,5 @@
 mod aggregate;
+mod analyze;
 mod autoincrement;
 mod constraints;
 mod ddl;
@@ -69,7 +70,7 @@ pub fn execute(plan: &Plan, pager: &mut Pager, catalog: &Catalog) -> Result<Quer
     match plan {
         Plan::SingleRow => Ok(QueryResult {
             columns: vec![],
-            rows: vec![Row { values: vec![] }],
+            rows: vec![Row::new(vec![])],
         }),
         Plan::TableFunction { name, args } => {
             table_function::execute_table_function(name, args, pager, catalog)
@@ -381,7 +382,7 @@ pub fn execute_mut(plan: &Plan, pager: &mut Pager, catalog: &mut Catalog) -> Res
         Plan::Reindex { .. } => Ok(ExecResult::affected(0)),
         // ANALYZE would populate sqlite_stat1 for a cost-based planner; our
         // planner is rule-based, so this is a no-op stub.
-        Plan::Analyze => Ok(ExecResult::affected(0)),
+        Plan::Analyze => analyze::execute_analyze(pager, catalog),
         Plan::CreateTrigger {
             name,
             table_name,

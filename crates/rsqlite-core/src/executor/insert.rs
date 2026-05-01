@@ -310,9 +310,7 @@ fn execute_insert_inner(
                         // the just-attempted INSERT values.
                         let mut combined_values = old_values.clone();
                         combined_values.extend_from_slice(&values);
-                        let combined_row = Row {
-                            values: combined_values,
-                        };
+                        let combined_row = Row { values: combined_values, rowid: None };
                         let mut combined_col_names: Vec<String> =
                             plan.table_columns.iter().map(|c| c.name.clone()).collect();
                         for c in &plan.table_columns {

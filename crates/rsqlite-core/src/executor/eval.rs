@@ -49,9 +49,12 @@ pub(super) fn eval_expr(
             })?;
             Ok(row.values.get(idx).cloned().unwrap_or(Value::Null))
         }
-        PlanExpr::Rowid => Err(Error::Other(
-            "bare ROWID reference not yet supported".to_string(),
-        )),
+        PlanExpr::Rowid => match row.rowid {
+            Some(r) => Ok(Value::Integer(r)),
+            None => Err(Error::Other(
+                "bare ROWID reference unavailable in this context".to_string(),
+            )),
+        },
         PlanExpr::Literal(lit) => Ok(literal_to_value(lit)),
         PlanExpr::BinaryOp { left, op, right } => {
             let l = eval_expr(left, row, columns, pager, catalog)?;
