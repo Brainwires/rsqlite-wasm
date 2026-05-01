@@ -5,7 +5,8 @@ use crate::error::ParseError;
 
 pub fn parse_sql(sql: &str) -> Result<Vec<sqlparser::ast::Statement>, ParseError> {
     let dialect = SQLiteDialect {};
-    let preprocessed = preprocess_is_truth_family(&preprocess_pragma(sql));
+    let preprocessed =
+        preprocess_bitwise_not(&preprocess_is_truth_family(&preprocess_pragma(sql)));
     if is_vacuum(&preprocessed) {
         return Ok(vec![make_pragma_statement("__vacuum", None)]);
     }
@@ -424,6 +425,152 @@ fn match_keyword(bytes: &[u8], i: &mut usize, kw: &str) -> bool {
     }
     *i = after;
     true
+}
+
+/// Translate prefix `~<operand>` (bitwise complement) into `__bnot(<operand>)`
+/// before parsing — sqlparser's SQLiteDialect rejects `~` as a unary token.
+///
+/// The operand can be:
+/// - a simple identifier (`col`, `t.col`, `"quoted col"`)
+/// - a parenthesized expression (`~(a + 1)` → `__bnot((a + 1))`)
+///
+/// Other forms (function calls, longer chains) fall through and the user
+/// uses the function form `__bnot(...)` directly.
+///
+/// Skips matches inside string literals, line comments, and `~` chars used
+/// as a binary operator (the SQLite dialect doesn't expose that anyway,
+/// but Postgres-style `~` regex match isn't our concern here).
+fn preprocess_bitwise_not(sql: &str) -> String {
+    if !sql.contains('~') {
+        return sql.to_string();
+    }
+
+    let bytes = sql.as_bytes();
+    let n = bytes.len();
+    let mut out = String::with_capacity(n);
+    let mut i = 0usize;
+
+    while i < n {
+        let ch = bytes[i] as char;
+        if ch == '\'' || ch == '"' {
+            let quote = ch;
+            out.push(ch);
+            i += 1;
+            while i < n {
+                let c = bytes[i] as char;
+                out.push(c);
+                i += 1;
+                if c == quote {
+                    if i < n && (bytes[i] as char) == quote {
+                        out.push(quote);
+                        i += 1;
+                        continue;
+                    }
+                    break;
+                }
+            }
+            continue;
+        }
+        if ch == '-' && i + 1 < n && bytes[i + 1] as char == '-' {
+            while i < n && bytes[i] as char != '\n' {
+                out.push(bytes[i] as char);
+                i += 1;
+            }
+            continue;
+        }
+        if ch != '~' {
+            out.push(ch);
+            i += 1;
+            continue;
+        }
+
+        // Decide whether this `~` is in a prefix position. It's a prefix
+        // iff the previous *significant* output character is the start of
+        // a fresh expression — i.e. one of: empty, `(`, `,`, operator,
+        // keyword separator. We approximate by walking back through any
+        // trailing whitespace.
+        let prev_significant = out.trim_end().chars().next_back();
+        let is_prefix = match prev_significant {
+            None => true,
+            Some(c) => matches!(
+                c,
+                '(' | ',' | '+' | '-' | '*' | '/' | '%' | '=' | '<' | '>' | '!' | '|' | '&' | '~'
+            ),
+        } || {
+            // Or the preceding token is an SQL keyword that ends an
+            // expression boundary (WHERE, AND, OR, NOT, ON, BY, ...).
+            let trimmed = out.trim_end();
+            let last_word: String = trimmed
+                .chars()
+                .rev()
+                .take_while(|c| c.is_ascii_alphabetic() || *c == '_')
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
+            matches!(
+                last_word.to_ascii_uppercase().as_str(),
+                "WHERE"
+                    | "AND"
+                    | "OR"
+                    | "NOT"
+                    | "ON"
+                    | "BY"
+                    | "CASE"
+                    | "WHEN"
+                    | "THEN"
+                    | "ELSE"
+                    | "SELECT"
+                    | "VALUES"
+                    | "RETURNING"
+                    | "HAVING"
+                    | "LIMIT"
+                    | "OFFSET"
+            )
+        };
+
+        if !is_prefix {
+            out.push(ch);
+            i += 1;
+            continue;
+        }
+
+        // Consume `~` and parse the operand.
+        i += 1;
+        skip_ws(bytes, &mut i);
+        if i >= n {
+            out.push('~');
+            continue;
+        }
+        let next_ch = bytes[i] as char;
+        if next_ch == '(' {
+            // Find matching close paren.
+            let start = i;
+            let mut depth = 1;
+            i += 1;
+            while i < n && depth > 0 {
+                let c = bytes[i] as char;
+                if c == '(' {
+                    depth += 1;
+                } else if c == ')' {
+                    depth -= 1;
+                }
+                i += 1;
+            }
+            let operand = &sql[start..i];
+            out.push_str(&format!("__bnot({operand})"));
+            continue;
+        }
+        // Identifier (possibly qualified).
+        let id = scan_identifier(bytes, &mut i);
+        if id.is_empty() {
+            out.push('~');
+            continue;
+        }
+        out.push_str(&format!("__bnot({id})"));
+    }
+
+    out
 }
 
 fn preprocess_pragma(sql: &str) -> String {

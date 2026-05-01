@@ -8,15 +8,16 @@ explains the gap, the workaround if any, and where to follow progress.
 
 Inherited from `sqlparser-rs` 0.55's `SQLiteDialect`:
 
-- **Bitwise shift `<<` and `>>`, complement `~`.** Parse error at the
-  operator syntax level. Use the function equivalents instead:
-  - `__shl(a, b)` → `a << b`
-  - `__shr(a, b)` → `a >> b`
-  - `__bnot(a)` → `~a`
+- **Bitwise complement `~`.** Supported as syntax for simple operands
+  via a parser pre-pass: `~col` and `~(expr)` rewrite to
+  `__bnot(col)` / `__bnot((expr))` before sqlparser sees them. For
+  numeric literals or complex prefixes that the rewriter doesn't
+  match, use `__bnot(...)` directly.
 
-  Both AND (`&`) and OR (`|`) work as native operators since SQLiteDialect
-  accepts them. A future release will add a custom dialect with
-  `parse_infix` to accept the missing operator tokens directly.
+- **Bitwise shift `<<` and `>>`.** Still parse errors at the operator
+  syntax level — the `__shl(a, b)` / `__shr(a, b)` function forms
+  cover the operations. AND (`&`) and OR (`|`) work as native
+  operators since SQLiteDialect accepts them.
 
 - **`x IS TRUE` / `x IS FALSE` / `x IS NOT TRUE` / `x IS NOT FALSE`.**
   The syntax form is supported when `x` is a single identifier
@@ -92,24 +93,22 @@ Inherited from `sqlparser-rs` 0.55's `SQLiteDialect`:
   callbacks can't be `postMessage`-serialized. Async UDFs are deferred
   to a future release.
 - **`WITHOUT ROWID` tables** — storage layer assumes rowid keys.
-- **Covering / index-only scans** — performance optimization, not
-  spec compliance.
 
 ## Known follow-ups
 
 These are tracked as v0.2 candidates:
 
 1. Multi-column expression-index lookup (single-column already works).
-2. UPDATE LIMIT / ORDER BY (needs custom parser path)
-3. Bare `rowid` on tables without an alias (synthetic column or Row.rowid)
-4. sqlite_schema root-page split (btree restructure)
-5. Native bitwise operator syntax (`<<`, `>>`, `~`) — currently only the
-   `__shl`, `__shr`, `__bnot` function forms work.
-6. `IS TRUE` / `IS FALSE` syntax with arbitrary expression LHS
+2. UPDATE LIMIT / ORDER BY (needs custom parser path).
+3. sqlite_schema root-page split (btree restructure).
+4. Native bitwise shift syntax (`<<`, `>>`) — currently only the
+   `__shl`, `__shr` function forms work. Prefix `~` is already
+   supported for simple operands.
+5. `IS TRUE` / `IS FALSE` syntax with arbitrary expression LHS
    (single-identifier form already works via parser pre-pass).
-7. Partial-index implication beyond the verbatim-conjunct case
+6. Partial-index implication beyond the verbatim-conjunct case
    (e.g. tighter range proves looser range).
-8. Cost-aware planner consuming the `sqlite_stat1` rows ANALYZE writes.
-9. Virtual tables / FTS5 / R-Tree / HNSW vector index — major
+7. Cost-aware planner consuming the `sqlite_stat1` rows ANALYZE writes.
+8. Virtual tables / FTS5 / R-Tree / HNSW vector index — major
    subsystems deferred to v0.2.
-10. WITHOUT ROWID tables — storage layer rewrite deferred to v0.2.
+9. WITHOUT ROWID tables — storage layer rewrite deferred to v0.2.

@@ -495,6 +495,48 @@ fn partial_index_skipped_when_query_does_not_imply() {
     assert_eq!(r.rows[1].values[0], Value::Integer(2));
 }
 
+// ── Bitwise NOT (~) syntax via preprocess ────────────────────────────
+
+#[test]
+fn tilde_prefix_complements_identifier() {
+    let mut db = fresh();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 0), (2, 255)").unwrap();
+    let r = db.query("SELECT id, ~n AS inv FROM t ORDER BY id").unwrap();
+    assert_eq!(r.rows.len(), 2);
+    assert_eq!(r.rows[0].values[1], Value::Integer(-1));
+    assert_eq!(r.rows[1].values[1], Value::Integer(-256));
+}
+
+#[test]
+fn tilde_prefix_complements_parenthesized_expr() {
+    let mut db = fresh();
+    let r = db.query("SELECT ~(5 + 2) AS v").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Integer(-8));
+}
+
+#[test]
+fn tilde_prefix_in_where() {
+    let mut db = fresh();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 0), (2, -1)").unwrap();
+    // ~n = 0 means n = -1 (since ~-1 = 0).
+    let r = db.query("SELECT id FROM t WHERE ~n = 0").unwrap();
+    assert_eq!(r.rows.len(), 1);
+    assert_eq!(r.rows[0].values[0], Value::Integer(2));
+}
+
+#[test]
+fn tilde_does_not_corrupt_string_literal() {
+    let mut db = fresh();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT)").unwrap();
+    db.execute("INSERT INTO t VALUES (1, '~tilde~'), (2, 'other')")
+        .unwrap();
+    let r = db.query("SELECT id FROM t WHERE label = '~tilde~'").unwrap();
+    assert_eq!(r.rows.len(), 1);
+    assert_eq!(r.rows[0].values[0], Value::Integer(1));
+}
+
 // ── IS TRUE / IS FALSE syntax (single-identifier LHS) ────────────────
 
 #[test]
