@@ -585,6 +585,54 @@ fn update_with_limit_does_not_corrupt_string_literal() {
     assert_eq!(r.rows[0].values[0], Value::Text("has LIMIT in it".to_string()));
 }
 
+// ── Bitwise shift syntax (`<<` / `>>`) via preprocess ────────────────
+
+#[test]
+fn shift_left_with_identifier_and_literal() {
+    let mut db = fresh();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 1), (2, 4), (3, 16)").unwrap();
+    let r = db.query("SELECT id, n << 2 AS shifted FROM t ORDER BY id").unwrap();
+    assert_eq!(r.rows[0].values[1], Value::Integer(4));
+    assert_eq!(r.rows[1].values[1], Value::Integer(16));
+    assert_eq!(r.rows[2].values[1], Value::Integer(64));
+}
+
+#[test]
+fn shift_right_with_identifier_and_literal() {
+    let mut db = fresh();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 16), (2, 64)").unwrap();
+    let r = db.query("SELECT n >> 2 AS shifted FROM t ORDER BY id").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Integer(4));
+    assert_eq!(r.rows[1].values[0], Value::Integer(16));
+}
+
+#[test]
+fn shift_with_parenthesized_lhs() {
+    let mut db = fresh();
+    let r = db.query("SELECT (1 + 2) << 3 AS v").unwrap();
+    // (1+2) = 3, 3 << 3 = 24
+    assert_eq!(r.rows[0].values[0], Value::Integer(24));
+}
+
+#[test]
+fn shift_chain_left_to_right() {
+    // (1 << 2) << 3 = 4 << 3 = 32
+    let mut db = fresh();
+    let r = db.query("SELECT 1 << 2 << 3 AS v").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Integer(32));
+}
+
+#[test]
+fn shift_does_not_corrupt_string_literal() {
+    let mut db = fresh();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT)").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'a << b')").unwrap();
+    let r = db.query("SELECT label FROM t WHERE id = 1").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Text("a << b".to_string()));
+}
+
 // ── Bitwise NOT (~) syntax via preprocess ────────────────────────────
 
 #[test]

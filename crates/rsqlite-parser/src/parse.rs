@@ -5,8 +5,8 @@ use crate::error::ParseError;
 
 pub fn parse_sql(sql: &str) -> Result<Vec<sqlparser::ast::Statement>, ParseError> {
     let dialect = SQLiteDialect {};
-    let preprocessed = preprocess_update_limit(&preprocess_bitwise_not(
-        &preprocess_is_truth_family(&preprocess_pragma(sql)),
+    let preprocessed = preprocess_update_limit(&preprocess_bitwise_shifts(
+        &preprocess_bitwise_not(&preprocess_is_truth_family(&preprocess_pragma(sql))),
     ));
     if is_vacuum(&preprocessed) {
         return Ok(vec![make_pragma_statement("__vacuum", None)]);
@@ -497,6 +497,239 @@ fn match_keyword(bytes: &[u8], i: &mut usize, kw: &str) -> bool {
     }
     *i = after;
     true
+}
+
+/// Translate `<atom> << <atom>` and `<atom> >> <atom>` into the function
+/// forms `__shl(a, b)` / `__shr(a, b)` so SQLiteDialect can parse them.
+///
+/// `<atom>` is deliberately narrow: identifier (possibly qualified),
+/// parenthesized subexpression, integer literal, or a simple function
+/// call `name(args)`. The narrowness avoids the precedence trap where
+/// `a + b << c` (which means `(a+b) << c` per SQL precedence) would be
+/// mis-rewritten to `a + __shl(b, c)`. Anything outside the safe shape
+/// falls through and the user keeps `__shl(...)` / `__shr(...)`.
+///
+/// Shift chains apply right-to-left at the rewriter level, but since
+/// the rewrite is one-pass left-to-right scanning, `a << b << c` becomes
+/// `__shl(a, b) << c` after one pass and then `__shl(__shl(a, b), c)` if
+/// we re-scan. We loop until convergence (capped) so chains resolve.
+fn preprocess_bitwise_shifts(sql: &str) -> String {
+    if !sql.contains("<<") && !sql.contains(">>") {
+        return sql.to_string();
+    }
+
+    let mut current = sql.to_string();
+    for _ in 0..8 {
+        let rewritten = rewrite_shifts_one_pass(&current);
+        if rewritten == current {
+            break;
+        }
+        current = rewritten;
+    }
+    current
+}
+
+fn rewrite_shifts_one_pass(sql: &str) -> String {
+    let bytes = sql.as_bytes();
+    let n = bytes.len();
+    let mut out = String::with_capacity(n);
+    let mut i = 0usize;
+
+    while i < n {
+        let ch = bytes[i] as char;
+        if ch == '\'' || ch == '"' {
+            let quote = ch;
+            out.push(ch);
+            i += 1;
+            while i < n {
+                let c = bytes[i] as char;
+                out.push(c);
+                i += 1;
+                if c == quote {
+                    if i < n && (bytes[i] as char) == quote {
+                        out.push(quote);
+                        i += 1;
+                        continue;
+                    }
+                    break;
+                }
+            }
+            continue;
+        }
+        if ch == '-' && i + 1 < n && bytes[i + 1] as char == '-' {
+            while i < n && bytes[i] as char != '\n' {
+                out.push(bytes[i] as char);
+                i += 1;
+            }
+            continue;
+        }
+        // Look for `atom <<` or `atom >>` anchored at the END of `out`.
+        // We only rewrite when the LHS is a "safe" trailing token in
+        // `out` and the RHS is also a safe atom.
+        if i + 2 <= n {
+            let pair = &sql[i..i + 2];
+            if pair == "<<" || pair == ">>" {
+                if let Some((lhs_start, lhs)) = trailing_atom(&out) {
+                    // Try to consume RHS atom.
+                    let after_op = i + 2;
+                    if let Some((rhs, consumed)) = leading_atom(&sql[after_op..]) {
+                        let func = if pair == "<<" { "__shl" } else { "__shr" };
+                        out.truncate(lhs_start);
+                        out.push_str(&format!("{func}({lhs}, {rhs})"));
+                        i = after_op + consumed;
+                        continue;
+                    }
+                }
+            }
+        }
+        out.push(ch);
+        i += 1;
+    }
+    out
+}
+
+/// Return the trailing safe-atom suffix of `out`, if any. The returned
+/// `start_index` is into the *trimmed* tail (i.e. matches `out` after
+/// dropping trailing whitespace) — callers `out.truncate(start_index)`
+/// to lop off the atom, which incidentally also drops the trailing
+/// whitespace before the operator.
+fn trailing_atom(out: &str) -> Option<(usize, String)> {
+    let trimmed = out.trim_end();
+    let bytes = trimmed.as_bytes();
+    let n = bytes.len();
+    if n == 0 {
+        return None;
+    }
+    let last = bytes[n - 1] as char;
+
+    // Parenthesized expression (optionally preceded by a function name).
+    if last == ')' {
+        let mut depth = 0i32;
+        let mut start = n;
+        for k in (0..n).rev() {
+            let c = bytes[k] as char;
+            if c == ')' {
+                depth += 1;
+            } else if c == '(' {
+                depth -= 1;
+                if depth == 0 {
+                    start = k;
+                    break;
+                }
+            }
+        }
+        if depth != 0 {
+            return None;
+        }
+        // Extend back over any identifier characters preceding the `(`,
+        // so `__shl(1, 2)` returns as a single atom rather than just `(1, 2)`.
+        let mut id_start = start;
+        while id_start > 0 {
+            let c = bytes[id_start - 1] as char;
+            if c.is_ascii_alphanumeric() || c == '_' {
+                id_start -= 1;
+            } else {
+                break;
+            }
+        }
+        let text = String::from_utf8_lossy(&bytes[id_start..n]).into_owned();
+        return Some((id_start, text));
+    }
+
+    // Numeric literal or identifier (with optional `.qualifier`).
+    if last.is_ascii_digit() || last.is_ascii_alphabetic() || last == '_' {
+        let mut start = n;
+        while start > 0 {
+            let c = bytes[start - 1] as char;
+            if c.is_ascii_alphanumeric() || c == '_' || c == '.' {
+                start -= 1;
+            } else {
+                break;
+            }
+        }
+        let text = String::from_utf8_lossy(&bytes[start..n]).into_owned();
+        return Some((start, text));
+    }
+
+    None
+}
+
+/// Return the leading safe-atom prefix of `s`, with bytes-consumed.
+fn leading_atom(s: &str) -> Option<(String, usize)> {
+    let bytes = s.as_bytes();
+    let n = bytes.len();
+    let mut i = 0;
+    while i < n && (bytes[i] as char).is_whitespace() {
+        i += 1;
+    }
+    if i >= n {
+        return None;
+    }
+    let start = i;
+    let first = bytes[i] as char;
+
+    // Parenthesized.
+    if first == '(' {
+        let mut depth = 1;
+        i += 1;
+        while i < n && depth > 0 {
+            let c = bytes[i] as char;
+            if c == '(' {
+                depth += 1;
+            } else if c == ')' {
+                depth -= 1;
+            }
+            i += 1;
+        }
+        if depth != 0 {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&bytes[start..i]).into_owned();
+        return Some((text, i));
+    }
+
+    // Number (possibly negative — but we'd need to check the previous
+    // op context, so keep it simple and only match unsigned digits).
+    if first.is_ascii_digit() {
+        while i < n && (bytes[i] as char).is_ascii_digit() {
+            i += 1;
+        }
+        let text = String::from_utf8_lossy(&bytes[start..i]).into_owned();
+        return Some((text, i));
+    }
+
+    // Identifier or function call.
+    if first.is_ascii_alphabetic() || first == '_' {
+        while i < n {
+            let c = bytes[i] as char;
+            if c.is_ascii_alphanumeric() || c == '_' || c == '.' {
+                i += 1;
+            } else {
+                break;
+            }
+        }
+        // Optional `(...)` for a function call.
+        if i < n && (bytes[i] as char) == '(' {
+            let mut depth = 1;
+            i += 1;
+            while i < n && depth > 0 {
+                let c = bytes[i] as char;
+                if c == '(' {
+                    depth += 1;
+                } else if c == ')' {
+                    depth -= 1;
+                }
+                i += 1;
+            }
+            if depth != 0 {
+                return None;
+            }
+        }
+        let text = String::from_utf8_lossy(&bytes[start..i]).into_owned();
+        return Some((text, i));
+    }
+
+    None
 }
 
 /// Translate prefix `~<operand>` (bitwise complement) into `__bnot(<operand>)`

@@ -14,10 +14,16 @@ Inherited from `sqlparser-rs` 0.55's `SQLiteDialect`:
   numeric literals or complex prefixes that the rewriter doesn't
   match, use `__bnot(...)` directly.
 
-- **Bitwise shift `<<` and `>>`.** Still parse errors at the operator
-  syntax level — the `__shl(a, b)` / `__shr(a, b)` function forms
-  cover the operations. AND (`&`) and OR (`|`) work as native
-  operators since SQLiteDialect accepts them.
+- **Bitwise shift `<<` and `>>`.** Supported as syntax for "safe"
+  operands via a parser pre-pass: identifier (possibly qualified),
+  parenthesized expression, integer literal, or function call all
+  rewrite to `__shl(a, b)` / `__shr(a, b)`. Chains like
+  `1 << 2 << 3` resolve left-to-right via repeated rewriting. The
+  rewriter is deliberately narrow — it won't touch `a + b << c`
+  (where SQL precedence intends `(a+b) << c`) because that would
+  silently produce the wrong answer. For unsafe-shape cases, use
+  `__shl(...)` / `__shr(...)` directly. AND (`&`) and OR (`|`)
+  work as native operators since SQLiteDialect accepts them.
 
 - **`x IS TRUE` / `x IS FALSE` / `x IS NOT TRUE` / `x IS NOT FALSE`.**
   The syntax form is supported when `x` is a single identifier
@@ -107,9 +113,6 @@ Inherited from `sqlparser-rs` 0.55's `SQLiteDialect`:
 These are tracked as v0.2 candidates:
 
 1. sqlite_schema root-page split (btree restructure).
-2. Native bitwise shift syntax (`<<`, `>>`) — currently only the
-   `__shl`, `__shr` function forms work. Prefix `~` is already
-   supported for simple operands.
 3. `IS TRUE` / `IS FALSE` syntax with arbitrary expression LHS
    (single-identifier form already works via parser pre-pass).
 4. Partial-index implication beyond the verbatim-conjunct case
