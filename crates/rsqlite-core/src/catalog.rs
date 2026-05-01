@@ -276,7 +276,6 @@ fn parse_table_def(entry: &SchemaEntry) -> Result<Option<TableDef>> {
 
     if let Statement::CreateTable(ct) = stmt {
         let mut columns = Vec::new();
-        let mut has_pk_in_columns = false;
 
         // Check for table-level PRIMARY KEY constraint
         let mut table_pk_cols: Vec<String> = Vec::new();
@@ -307,10 +306,6 @@ fn parse_table_def(entry: &SchemaEntry) -> Result<Option<TableDef>> {
             });
             let is_pk_from_table = table_pk_cols.contains(&col.name.value.to_lowercase());
             let is_primary_key = is_pk_inline || is_pk_from_table;
-
-            if is_primary_key {
-                has_pk_in_columns = true;
-            }
 
             let is_rowid_alias = is_primary_key && affinity == TypeAffinity::Integer;
 
@@ -387,8 +382,10 @@ fn parse_table_def(entry: &SchemaEntry) -> Result<Option<TableDef>> {
             });
         }
 
-        // If no explicit PK, SQLite has an implicit rowid
-        let _ = has_pk_in_columns;
+        // SQLite always provides an implicit rowid for tables without an
+        // explicit INTEGER PRIMARY KEY. We don't materialize a synthetic
+        // rowid column for unaliased tables — bare `rowid` references on
+        // such tables are a documented limitation; see LIMITATIONS.md.
 
         let mut check_constraints = Vec::new();
         for col in &ct.columns {

@@ -250,6 +250,14 @@ pub fn plan_expr(expr: &Expr, columns: &[ColumnRef], catalog: &Catalog) -> Resul
         Expr::Identifier(ident) => {
             let name = &ident.value;
             if name.eq_ignore_ascii_case("rowid") {
+                // When the table has an INTEGER PRIMARY KEY (rowid alias),
+                // bare `rowid` resolves to that column — its values already
+                // carry the rowid. Tables without an alias would need a
+                // synthetic rowid column threaded through every Row, which
+                // is documented as a limitation.
+                if let Some(alias) = columns.iter().find(|c| c.is_rowid_alias) {
+                    return Ok(PlanExpr::Column(alias.clone()));
+                }
                 return Ok(PlanExpr::Rowid);
             }
             let col = columns
@@ -261,6 +269,18 @@ pub fn plan_expr(expr: &Expr, columns: &[ColumnRef], catalog: &Catalog) -> Resul
         Expr::CompoundIdentifier(parts) if parts.len() == 2 => {
             let table = &parts[0].value;
             let col_name = &parts[1].value;
+            // `t.rowid` resolves to the rowid-alias column of table `t`.
+            if col_name.eq_ignore_ascii_case("rowid") {
+                if let Some(alias) = columns.iter().find(|c| {
+                    c.is_rowid_alias
+                        && c.table
+                            .as_ref()
+                            .is_some_and(|t| t.eq_ignore_ascii_case(table))
+                }) {
+                    return Ok(PlanExpr::Column(alias.clone()));
+                }
+                return Ok(PlanExpr::Rowid);
+            }
             let col = columns
                 .iter()
                 .find(|c| {

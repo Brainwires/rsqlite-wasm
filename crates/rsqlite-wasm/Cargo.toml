@@ -37,6 +37,7 @@ web-sys = { version = "0.3", features = [
     "IdbTransactionMode",
     "DomStringList",
     "Event",
+    "console",
     "EventTarget",
 ] }
 serde = { version = "1", features = ["derive"] }

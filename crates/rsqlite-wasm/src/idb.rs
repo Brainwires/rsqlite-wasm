@@ -91,19 +91,20 @@ impl IdbVfs {
         })
     }
 
-    pub fn flush_all_sync(&self) {
+    /// Flush all in-memory buffers to IndexedDB. Errors (quota exceeded,
+    /// closed connection, etc.) are propagated rather than silently dropped
+    /// so callers can surface them to the application.
+    pub fn flush_all_sync(&self) -> Result<(), JsValue> {
         let buffers = self.buffers.borrow();
-        if let Ok(tx) = self
+        let tx = self
             .idb
-            .transaction_with_str_and_mode(STORE_NAME, web_sys::IdbTransactionMode::Readwrite)
-        {
-            if let Ok(store) = tx.object_store(STORE_NAME) {
-                for (path, data) in buffers.iter() {
-                    let arr = js_sys::Uint8Array::from(data.as_slice());
-                    let _ = store.put_with_key(&arr, &JsValue::from_str(path));
-                }
-            }
+            .transaction_with_str_and_mode(STORE_NAME, web_sys::IdbTransactionMode::Readwrite)?;
+        let store = tx.object_store(STORE_NAME)?;
+        for (path, data) in buffers.iter() {
+            let arr = js_sys::Uint8Array::from(data.as_slice());
+            store.put_with_key(&arr, &JsValue::from_str(path))?;
         }
+        Ok(())
     }
 }
 
@@ -144,7 +145,13 @@ impl Vfs for IdbVfs {
 
 impl Drop for IdbVfs {
     fn drop(&mut self) {
-        self.flush_all_sync();
+        // Drop can't propagate; surface any flush failure via console.error
+        // so it shows up in the browser devtools instead of vanishing.
+        if let Err(e) = self.flush_all_sync() {
+            web_sys::console::error_1(&JsValue::from_str(&format!(
+                "rsqlite-wasm: IDB flush failed during drop: {e:?}"
+            )));
+        }
         self.idb.close();
     }
 }

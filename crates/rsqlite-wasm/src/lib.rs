@@ -224,10 +224,12 @@ impl WasmDatabase {
         Ok(buf)
     }
 
-    pub fn flush(&self) {
+    pub fn flush(&self) -> Result<(), JsError> {
         if let VfsBackend::Idb(vfs) = &self.backend {
-            vfs.flush_all_sync();
+            vfs.flush_all_sync()
+                .map_err(|e| JsError::new(&format!("IDB flush failed: {e:?}")))?;
         }
+        Ok(())
     }
 
     pub fn close(self) {}

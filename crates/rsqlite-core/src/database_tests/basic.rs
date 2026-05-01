@@ -1383,3 +1383,31 @@ fn scalar_nullif() {
 
     let _ = std::fs::remove_file(db_path);
 }
+
+#[test]
+fn select_bare_rowid_with_alias() {
+    let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+    let mut db = Database::create(&vfs, "test.db").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+    db.execute("INSERT INTO t VALUES (5, 'hello')").unwrap();
+    // `rowid` resolves to the INTEGER PRIMARY KEY alias.
+    let r = db.query("SELECT rowid, name FROM t").unwrap();
+    assert_eq!(r.rows.len(), 1);
+    assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(5));
+    assert_eq!(
+        r.rows[0].values[1],
+        crate::types::Value::Text("hello".to_string())
+    );
+}
+
+#[test]
+fn select_qualified_rowid_with_alias() {
+    let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+    let mut db = Database::create(&vfs, "test.db").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 10), (2, 20)").unwrap();
+    let r = db.query("SELECT t.rowid FROM t ORDER BY t.rowid").unwrap();
+    assert_eq!(r.rows.len(), 2);
+    assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(1));
+    assert_eq!(r.rows[1].values[0], crate::types::Value::Integer(2));
+}
