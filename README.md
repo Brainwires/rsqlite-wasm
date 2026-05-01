@@ -14,7 +14,8 @@ Databases created by rsqlite-wasm are **file-format compatible** with SQLite —
 - **Vector search** — built-in `vec_distance_cosine`, `vec_distance_l2`, and `vec_distance_dot` functions for embedding similarity search
 - **JavaScript UDFs** — register synchronous JS callbacks as SQL scalar functions via `db.createFunction(name, fn)`
 - **Small binary** — ~2 MB WASM with LTO + `opt-level=z`
-- **660+ tests** — comprehensive coverage across all crates
+- **670+ tests** — comprehensive coverage across all crates
+- **Virtual-table foundation** — `CREATE VIRTUAL TABLE … USING module(...)` and an extensible module registry, with a built-in `series` / `generate_series` module
 
 ## SQL Support
 
