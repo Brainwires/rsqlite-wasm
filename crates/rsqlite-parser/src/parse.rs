@@ -5,8 +5,9 @@ use crate::error::ParseError;
 
 pub fn parse_sql(sql: &str) -> Result<Vec<sqlparser::ast::Statement>, ParseError> {
     let dialect = SQLiteDialect {};
-    let preprocessed =
-        preprocess_bitwise_not(&preprocess_is_truth_family(&preprocess_pragma(sql)));
+    let preprocessed = preprocess_update_limit(&preprocess_bitwise_not(
+        &preprocess_is_truth_family(&preprocess_pragma(sql)),
+    ));
     if is_vacuum(&preprocessed) {
         return Ok(vec![make_pragma_statement("__vacuum", None)]);
     }
@@ -573,6 +574,200 @@ fn preprocess_bitwise_not(sql: &str) -> String {
     out
 }
 
+/// Translate `UPDATE t SET ... [WHERE ...] (ORDER BY ... | LIMIT n)` into
+/// the rowid-IN workaround SQLite documents:
+///
+///   UPDATE t SET ... WHERE rowid IN (
+///     SELECT rowid FROM t [WHERE ...] [ORDER BY ...] [LIMIT n]
+///   )
+///
+/// SQLite gates UPDATE-with-LIMIT/ORDER-BY behind a compile-time flag and
+/// `sqlparser`'s SQLiteDialect doesn't accept it, so without this pre-pass
+/// the user has to write the rowid-IN form by hand.
+///
+/// Conservative: only touches single-statement inputs that start with
+/// `UPDATE`. Bails on multi-table UPDATE-FROM (where rewriting requires
+/// also threading the FROM clause), or any case where the table name
+/// can't be cleanly extracted.
+fn preprocess_update_limit(sql: &str) -> String {
+    let upper = sql.to_ascii_uppercase();
+    let trimmed_upper = upper.trim_start();
+    if !trimmed_upper.starts_with("UPDATE ") {
+        return sql.to_string();
+    }
+    if !upper.contains(" ORDER BY ") && !upper.contains(" LIMIT ") {
+        return sql.to_string();
+    }
+
+    let kw_pos = find_top_level_keywords(sql, &["SET", "FROM", "WHERE", "ORDER", "LIMIT"]);
+    let set_pos = match kw_pos.iter().find(|(k, _)| k == "SET") {
+        Some((_, p)) => *p,
+        None => return sql.to_string(),
+    };
+    if kw_pos.iter().any(|(k, _)| k == "FROM") {
+        // UPDATE...FROM is a separate beast — leave it alone.
+        return sql.to_string();
+    }
+    let where_pos = kw_pos.iter().find(|(k, _)| k == "WHERE").map(|(_, p)| *p);
+    let order_pos = kw_pos.iter().find(|(k, _)| k == "ORDER").map(|(_, p)| *p);
+    let limit_pos = kw_pos.iter().find(|(k, _)| k == "LIMIT").map(|(_, p)| *p);
+
+    if order_pos.is_none() && limit_pos.is_none() {
+        return sql.to_string();
+    }
+
+    // Locate UPDATE keyword start (after any leading whitespace).
+    let leading_ws = sql.len() - sql.trim_start().len();
+    let table_section_start = leading_ws + "UPDATE".len();
+    let table_section = sql[table_section_start..set_pos].trim();
+    if table_section.is_empty() {
+        return sql.to_string();
+    }
+    // Strip an optional alias clause for the rowid subquery — keep the
+    // outer UPDATE table name verbatim.
+    let table_for_subquery = table_section
+        .split_whitespace()
+        .next()
+        .unwrap_or(table_section);
+
+    let assignments_end = where_pos
+        .or(order_pos)
+        .or(limit_pos)
+        .unwrap_or(sql.len());
+    let assignments = sql[set_pos + "SET".len()..assignments_end].trim();
+    if assignments.is_empty() {
+        return sql.to_string();
+    }
+
+    let where_body = where_pos.map(|wp| {
+        let end = order_pos.or(limit_pos).unwrap_or(sql.len());
+        sql[wp + "WHERE".len()..end].trim()
+    });
+
+    let order_body = order_pos.map(|op| {
+        // Skip past "ORDER" then optional whitespace then "BY".
+        let after = sql[op + "ORDER".len()..].trim_start();
+        let by_skip = sql[op + "ORDER".len()..].len() - after.len();
+        let body_start = if after.to_ascii_uppercase().starts_with("BY") {
+            op + "ORDER".len() + by_skip + "BY".len()
+        } else {
+            op + "ORDER".len() + by_skip
+        };
+        let end = limit_pos.unwrap_or(sql.len());
+        sql[body_start..end].trim()
+    });
+
+    let limit_body = limit_pos.map(|lp| {
+        sql[lp + "LIMIT".len()..]
+            .trim()
+            .trim_end_matches(';')
+            .trim()
+    });
+
+    let mut sub = format!("SELECT rowid FROM {table_for_subquery}");
+    if let Some(w) = where_body {
+        sub.push_str(" WHERE ");
+        sub.push_str(w);
+    }
+    if let Some(o) = order_body {
+        sub.push_str(" ORDER BY ");
+        sub.push_str(o);
+    }
+    if let Some(l) = limit_body {
+        sub.push_str(" LIMIT ");
+        sub.push_str(l);
+    }
+
+    format!("UPDATE {table_section} SET {assignments} WHERE rowid IN ({sub})")
+}
+
+/// Find positions of `keywords` that appear at the top level of `sql`
+/// (i.e. not inside a parenthesized subexpression and not inside a string
+/// literal). Each match must be at a word boundary on both sides.
+/// Keywords are matched case-insensitively.
+fn find_top_level_keywords(sql: &str, keywords: &[&str]) -> Vec<(String, usize)> {
+    let bytes = sql.as_bytes();
+    let n = bytes.len();
+    let mut out: Vec<(String, usize)> = Vec::new();
+    let mut i = 0usize;
+    let mut depth = 0i32;
+
+    while i < n {
+        let ch = bytes[i] as char;
+        // Skip string literals.
+        if ch == '\'' || ch == '"' {
+            let quote = ch;
+            i += 1;
+            while i < n {
+                let c = bytes[i] as char;
+                i += 1;
+                if c == quote {
+                    if i < n && (bytes[i] as char) == quote {
+                        i += 1;
+                        continue;
+                    }
+                    break;
+                }
+            }
+            continue;
+        }
+        // Skip line comments.
+        if ch == '-' && i + 1 < n && bytes[i + 1] as char == '-' {
+            while i < n && bytes[i] as char != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if ch == '(' {
+            depth += 1;
+            i += 1;
+            continue;
+        }
+        if ch == ')' {
+            depth -= 1;
+            i += 1;
+            continue;
+        }
+        if depth != 0 {
+            i += 1;
+            continue;
+        }
+
+        let prev_is_word = i > 0 && {
+            let p = bytes[i - 1] as char;
+            p.is_ascii_alphanumeric() || p == '_'
+        };
+        if !prev_is_word {
+            for kw in keywords {
+                let kb = kw.as_bytes();
+                if i + kb.len() > n {
+                    continue;
+                }
+                let mut ok = true;
+                for (k, b) in kb.iter().enumerate() {
+                    if bytes[i + k].to_ascii_uppercase() != *b {
+                        ok = false;
+                        break;
+                    }
+                }
+                if !ok {
+                    continue;
+                }
+                if i + kb.len() < n {
+                    let nc = bytes[i + kb.len()] as char;
+                    if nc.is_ascii_alphanumeric() || nc == '_' {
+                        continue;
+                    }
+                }
+                out.push((kw.to_string(), i));
+                break;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
 fn preprocess_pragma(sql: &str) -> String {
     let trimmed = sql.trim();
     if !trimmed.to_uppercase().starts_with("PRAGMA ") {
@@ -771,5 +966,41 @@ mod tests {
     fn parse_multiple_statements() {
         let stmts = parse_sql("SELECT 1; SELECT 2;").unwrap();
         assert_eq!(stmts.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod update_limit_tests {
+    use super::*;
+
+    #[test]
+    fn rewrite_limit_only() {
+        let out = preprocess_update_limit("UPDATE t SET status = 'new' LIMIT 2");
+        assert!(out.contains("LIMIT 2"), "out={out}");
+        assert!(out.contains("rowid IN ("), "out={out}");
+    }
+
+    #[test]
+    fn rewrite_where_and_limit() {
+        let out = preprocess_update_limit(
+            "UPDATE t SET status = 'updated' WHERE status = 'a' LIMIT 2",
+        );
+        assert!(out.contains("WHERE status = 'a'"), "out={out}");
+        assert!(out.contains("LIMIT 2"));
+        assert!(out.contains("rowid IN ("));
+    }
+
+    #[test]
+    fn no_op_without_order_by_or_limit() {
+        let sql = "UPDATE t SET status = 'x' WHERE id = 1";
+        let out = preprocess_update_limit(sql);
+        assert_eq!(out, sql);
+    }
+
+    #[test]
+    fn skips_string_literal_limit() {
+        let sql = "UPDATE t SET label = 'has LIMIT in it' WHERE id = 1";
+        let out = preprocess_update_limit(sql);
+        assert_eq!(out, sql);
     }
 }

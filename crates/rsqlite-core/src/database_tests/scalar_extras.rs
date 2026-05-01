@@ -495,6 +495,60 @@ fn partial_index_skipped_when_query_does_not_imply() {
     assert_eq!(r.rows[1].values[0], Value::Integer(2));
 }
 
+// ── UPDATE LIMIT / ORDER BY (preprocessed to rowid IN form) ──────────
+
+#[test]
+fn update_with_limit_only() {
+    let mut db = fresh();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT)").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'old'), (2, 'old'), (3, 'old')")
+        .unwrap();
+    db.execute("UPDATE t SET status = 'new' LIMIT 2").unwrap();
+    let r = db
+        .query("SELECT id, status FROM t ORDER BY id")
+        .unwrap();
+    let new_count = r
+        .rows
+        .iter()
+        .filter(|row| row.values[1] == Value::Text("new".to_string()))
+        .count();
+    assert_eq!(new_count, 2, "exactly 2 rows should be updated");
+}
+
+#[test]
+fn update_with_where_and_limit() {
+    let mut db = fresh();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT, n INTEGER)").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'a', 10), (2, 'a', 20), (3, 'a', 30), (4, 'b', 40)")
+        .unwrap();
+    db.execute("UPDATE t SET status = 'updated' WHERE status = 'a' LIMIT 2")
+        .unwrap();
+    let r = db
+        .query("SELECT id, status FROM t ORDER BY id")
+        .unwrap();
+    let updated_count = r
+        .rows
+        .iter()
+        .filter(|row| row.values[1] == Value::Text("updated".to_string()))
+        .count();
+    assert_eq!(updated_count, 2);
+    // Row 4 (status='b') stays untouched.
+    assert_eq!(r.rows[3].values[1], Value::Text("b".to_string()));
+}
+
+#[test]
+fn update_with_limit_does_not_corrupt_string_literal() {
+    // The literal `' LIMIT '` should NOT trigger the LIMIT preprocess
+    // — the keyword finder has to respect string boundaries.
+    let mut db = fresh();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT)").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'foo')").unwrap();
+    db.execute("UPDATE t SET label = 'has LIMIT in it' WHERE id = 1")
+        .unwrap();
+    let r = db.query("SELECT label FROM t WHERE id = 1").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Text("has LIMIT in it".to_string()));
+}
+
 // ── Bitwise NOT (~) syntax via preprocess ────────────────────────────
 
 #[test]
