@@ -291,4 +291,133 @@ mod tests {
     fn parse_error() {
         assert!(parse_sql("SELECTT * FROM").is_err());
     }
+
+    /// Helper: assert the SQL parsed into a `__pragma` statement with the
+    /// given internal name (e.g. "__vacuum", "__reindex", "__detach").
+    fn assert_pseudo_pragma(sql: &str, expected_name: &str) {
+        let stmts = parse_sql(sql).unwrap();
+        assert_eq!(stmts.len(), 1, "expected one statement for {sql:?}");
+        match &stmts[0] {
+            sqlparser::ast::Statement::Pragma { name, .. } => {
+                assert_eq!(
+                    name.to_string().to_lowercase(),
+                    expected_name,
+                    "wrong pseudo-pragma for {sql:?}"
+                );
+            }
+            other => panic!("expected pragma statement for {sql:?}, got {other:?}"),
+        }
+    }
+
+    // ---- VACUUM / REINDEX / ANALYZE pre-processing ----
+
+    #[test]
+    fn parse_vacuum_bare() {
+        assert_pseudo_pragma("VACUUM", "__vacuum");
+        assert_pseudo_pragma("vacuum;", "__vacuum");
+    }
+
+    #[test]
+    fn parse_reindex_no_arg() {
+        assert_pseudo_pragma("REINDEX", "__reindex");
+    }
+
+    #[test]
+    fn parse_reindex_with_target() {
+        assert_pseudo_pragma("REINDEX my_index", "__reindex");
+        assert_pseudo_pragma("reindex MY_TABLE;", "__reindex");
+    }
+
+    #[test]
+    fn parse_analyze_no_arg() {
+        assert_pseudo_pragma("ANALYZE", "__analyze");
+        assert_pseudo_pragma("analyze ;", "__analyze");
+    }
+
+    #[test]
+    fn parse_analyze_with_target() {
+        assert_pseudo_pragma("ANALYZE users", "__analyze");
+    }
+
+    // ---- DETACH ----
+
+    #[test]
+    fn parse_detach_database() {
+        assert_pseudo_pragma("DETACH DATABASE aux", "__detach");
+        assert_pseudo_pragma("DETACH aux;", "__detach");
+    }
+
+    // ---- CREATE TRIGGER (pre-processed into pseudo-pragma) ----
+
+    #[test]
+    fn parse_create_trigger_after_insert() {
+        assert_pseudo_pragma(
+            "CREATE TRIGGER tlog AFTER INSERT ON t BEGIN SELECT 1; END",
+            "__create_trigger",
+        );
+    }
+
+    #[test]
+    fn parse_create_trigger_before_update_for_each_row() {
+        assert_pseudo_pragma(
+            "CREATE TRIGGER t1 BEFORE UPDATE ON things FOR EACH ROW BEGIN SELECT 1; END",
+            "__create_trigger",
+        );
+    }
+
+    #[test]
+    fn parse_create_trigger_if_not_exists() {
+        assert_pseudo_pragma(
+            "CREATE TRIGGER IF NOT EXISTS t1 AFTER DELETE ON x BEGIN SELECT 1; END",
+            "__create_trigger",
+        );
+    }
+
+    #[test]
+    fn parse_drop_trigger() {
+        assert_pseudo_pragma("DROP TRIGGER tlog", "__drop_trigger");
+        assert_pseudo_pragma("DROP TRIGGER IF EXISTS tlog", "__drop_trigger");
+    }
+
+    // ---- PRAGMA preprocessing ----
+
+    #[test]
+    fn parse_pragma_paren_form() {
+        // PRAGMA table_info(users) — bare identifier in parens needs quoting
+        // for sqlparser; preprocess wraps it.
+        let stmts = parse_sql("PRAGMA table_info(users)").unwrap();
+        assert_eq!(stmts.len(), 1);
+        assert!(matches!(
+            &stmts[0],
+            sqlparser::ast::Statement::Pragma { .. }
+        ));
+    }
+
+    #[test]
+    fn parse_pragma_equals_form() {
+        let stmts = parse_sql("PRAGMA foreign_keys = ON").unwrap();
+        assert_eq!(stmts.len(), 1);
+        assert!(matches!(
+            &stmts[0],
+            sqlparser::ast::Statement::Pragma { .. }
+        ));
+    }
+
+    #[test]
+    fn parse_pragma_simple_read_form() {
+        let stmts = parse_sql("PRAGMA page_size").unwrap();
+        assert_eq!(stmts.len(), 1);
+        assert!(matches!(
+            &stmts[0],
+            sqlparser::ast::Statement::Pragma { .. }
+        ));
+    }
+
+    // ---- Multi-statement / generic pass-through ----
+
+    #[test]
+    fn parse_multiple_statements() {
+        let stmts = parse_sql("SELECT 1; SELECT 2;").unwrap();
+        assert_eq!(stmts.len(), 2);
+    }
 }

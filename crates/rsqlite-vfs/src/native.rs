@@ -109,3 +109,167 @@ impl Drop for NativeFile {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Allocate a unique tempfile path under the system temp dir. We avoid
+    /// pulling `tempfile` as a dep — a counter-suffixed path under
+    /// std::env::temp_dir() is enough for these tests, and we clean up via
+    /// delete_on_close (or explicit delete).
+    fn unique_path(stem: &str) -> String {
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let n = N.fetch_add(1, Ordering::SeqCst);
+        std::env::temp_dir()
+            .join(format!(
+                "rsqlite_vfs_test_{}_{}_{}.db",
+                std::process::id(),
+                stem,
+                n
+            ))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    fn create_flags() -> OpenFlags {
+        OpenFlags {
+            create: true,
+            read_write: true,
+            delete_on_close: true,
+        }
+    }
+
+    #[test]
+    fn open_creates_new_file() {
+        let vfs = NativeVfs::new();
+        let path = unique_path("create");
+        assert!(!vfs.exists(&path).unwrap());
+
+        let file = vfs.open(&path, create_flags()).unwrap();
+        assert!(vfs.exists(&path).unwrap());
+        assert_eq!(file.file_size().unwrap(), 0);
+    }
+
+    #[test]
+    fn open_without_create_errors_for_missing() {
+        let vfs = NativeVfs::new();
+        let path = unique_path("missing");
+        let res = vfs.open(
+            &path,
+            OpenFlags {
+                create: false,
+                read_write: true,
+                delete_on_close: false,
+            },
+        );
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn write_then_read_roundtrip() {
+        let vfs = NativeVfs::new();
+        let path = unique_path("rw");
+        let mut file = vfs.open(&path, create_flags()).unwrap();
+
+        let data = b"hello, vfs world";
+        file.write(0, data).unwrap();
+
+        let mut buf = vec![0u8; data.len()];
+        let n = file.read(0, &mut buf).unwrap();
+        assert_eq!(n, data.len());
+        assert_eq!(&buf, data);
+    }
+
+    #[test]
+    fn write_at_offset_creates_sparse_region() {
+        let vfs = NativeVfs::new();
+        let path = unique_path("offset");
+        let mut file = vfs.open(&path, create_flags()).unwrap();
+
+        // Write 4 bytes at offset 100; file should grow to 104 bytes.
+        file.write(100, b"data").unwrap();
+        assert_eq!(file.file_size().unwrap(), 104);
+
+        // The hole reads as zeros.
+        let mut buf = vec![0xFFu8; 4];
+        file.read(0, &mut buf).unwrap();
+        assert_eq!(&buf, &[0u8; 4]);
+    }
+
+    #[test]
+    fn truncate_shrinks_file() {
+        let vfs = NativeVfs::new();
+        let path = unique_path("truncate");
+        let mut file = vfs.open(&path, create_flags()).unwrap();
+
+        file.write(0, &[1u8; 100]).unwrap();
+        assert_eq!(file.file_size().unwrap(), 100);
+
+        file.truncate(40).unwrap();
+        assert_eq!(file.file_size().unwrap(), 40);
+    }
+
+    #[test]
+    fn sync_succeeds_with_both_flag_modes() {
+        let vfs = NativeVfs::new();
+        let path = unique_path("sync");
+        let mut file = vfs.open(&path, create_flags()).unwrap();
+
+        file.write(0, b"x").unwrap();
+        file.sync(SyncFlags { full: false }).unwrap();
+        file.sync(SyncFlags { full: true }).unwrap();
+    }
+
+    #[test]
+    fn delete_removes_file() {
+        let vfs = NativeVfs::new();
+        let path = unique_path("delete");
+        // Create with delete_on_close = false so we can explicitly delete.
+        let file = vfs
+            .open(
+                &path,
+                OpenFlags {
+                    create: true,
+                    read_write: true,
+                    delete_on_close: false,
+                },
+            )
+            .unwrap();
+        drop(file);
+        assert!(vfs.exists(&path).unwrap());
+
+        vfs.delete(&path).unwrap();
+        assert!(!vfs.exists(&path).unwrap());
+    }
+
+    #[test]
+    fn delete_on_close_removes_after_drop() {
+        let vfs = NativeVfs::new();
+        let path = unique_path("doc");
+        let file = vfs.open(&path, create_flags()).unwrap();
+        assert!(vfs.exists(&path).unwrap());
+        drop(file);
+        assert!(!vfs.exists(&path).unwrap());
+    }
+
+    #[test]
+    fn lock_unlock_set_state() {
+        // Locking is currently a stub; verify the no-op path doesn't error.
+        let vfs = NativeVfs::new();
+        let path = unique_path("lock");
+        let mut file = vfs.open(&path, create_flags()).unwrap();
+        file.lock(LockType::Shared).unwrap();
+        file.unlock(LockType::None).unwrap();
+    }
+
+    #[test]
+    fn clone_box_makes_usable_vfs() {
+        let vfs = NativeVfs::new();
+        let cloned = vfs.clone_box();
+        let path = unique_path("clone");
+        let _file = cloned.open(&path, create_flags()).unwrap();
+        assert!(cloned.exists(&path).unwrap());
+    }
+}

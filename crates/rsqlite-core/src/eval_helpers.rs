@@ -1147,3 +1147,428 @@ fn simple_printf(fmt: &str, args: &[Value]) -> String {
 
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rsqlite_storage::codec::Value;
+
+    fn t(s: &str) -> Value {
+        Value::Text(s.to_string())
+    }
+    fn i(n: i64) -> Value {
+        Value::Integer(n)
+    }
+    fn r(f: f64) -> Value {
+        Value::Real(f)
+    }
+
+    // ---- value coercion / comparison ----
+
+    #[test]
+    fn value_to_text_covers_all_types() {
+        assert_eq!(value_to_text(&Value::Null), "");
+        assert_eq!(value_to_text(&i(42)), "42");
+        assert_eq!(value_to_text(&r(2.5)), "2.5");
+        assert_eq!(value_to_text(&t("hi")), "hi");
+        assert_eq!(value_to_text(&Value::Blob(vec![97, 98])), "ab");
+    }
+
+    #[test]
+    fn value_to_int_parses_and_coerces() {
+        assert_eq!(value_to_int(&Value::Null), 0);
+        assert_eq!(value_to_int(&i(7)), 7);
+        assert_eq!(value_to_int(&r(3.9)), 3); // truncates
+        assert_eq!(value_to_int(&t("42")), 42);
+        assert_eq!(value_to_int(&t("not a number")), 0);
+        assert_eq!(value_to_int(&t("  -10  ")), -10); // trims
+    }
+
+    #[test]
+    fn is_truthy_semantics() {
+        assert!(!is_truthy(&Value::Null));
+        assert!(!is_truthy(&i(0)));
+        assert!(is_truthy(&i(1)));
+        assert!(is_truthy(&i(-1)));
+        assert!(!is_truthy(&r(0.0)));
+        assert!(is_truthy(&r(0.5)));
+        assert!(!is_truthy(&t("")));
+        assert!(is_truthy(&t("any")));
+        assert!(!is_truthy(&Value::Blob(vec![])));
+        assert!(is_truthy(&Value::Blob(vec![0])));
+    }
+
+    #[test]
+    fn type_order_ranks_consistently() {
+        assert!(type_order(&Value::Null) < type_order(&i(0)));
+        assert_eq!(type_order(&i(0)), type_order(&r(0.0)));
+        assert!(type_order(&i(0)) < type_order(&t("")));
+        assert!(type_order(&t("")) < type_order(&Value::Blob(vec![])));
+    }
+
+    #[test]
+    fn compare_orders_by_type_then_value() {
+        assert_eq!(compare(&Value::Null, &Value::Null), 0);
+        assert!(compare(&Value::Null, &i(0)) < 0);
+        assert_eq!(compare(&i(5), &i(5)), 0);
+        assert!(compare(&i(5), &i(10)) < 0);
+        assert!(compare(&i(5), &r(5.0)) == 0);
+        assert!(compare(&t("a"), &t("b")) < 0);
+        assert!(compare(&i(99), &t("a")) < 0); // numeric < text
+    }
+
+    // ---- LIKE matching ----
+
+    #[test]
+    fn like_basic_wildcards() {
+        assert!(like_match_with_escape("hello", "hello", None));
+        assert!(like_match_with_escape("h%", "hello", None));
+        assert!(like_match_with_escape("%lo", "hello", None));
+        assert!(like_match_with_escape("h_llo", "hello", None));
+        assert!(!like_match_with_escape("h_llo", "ho", None));
+    }
+
+    #[test]
+    fn like_case_insensitive_ascii() {
+        assert!(like_match_with_escape("HELLO", "hello", None));
+        assert!(like_match_with_escape("h%O", "HELLO", None));
+    }
+
+    #[test]
+    fn like_escape_char() {
+        // \% should match literal '%'
+        assert!(like_match_with_escape(r"50\%", "50%", Some('\\')));
+        assert!(!like_match_with_escape(r"50\%", "50x", Some('\\')));
+        // \_ should match literal '_'
+        assert!(like_match_with_escape(r"a\_b", "a_b", Some('\\')));
+        assert!(!like_match_with_escape(r"a\_b", "aXb", Some('\\')));
+    }
+
+    #[test]
+    fn like_empty_inputs() {
+        assert!(like_match_with_escape("", "", None));
+        assert!(!like_match_with_escape("a", "", None));
+        assert!(!like_match_with_escape("", "a", None));
+        assert!(like_match_with_escape("%", "", None));
+    }
+
+    // ---- GLOB matching ----
+
+    #[test]
+    fn glob_basic_wildcards() {
+        assert!(glob_match("*", "anything"));
+        assert!(glob_match("h?llo", "hello"));
+        assert!(glob_match("h*o", "hello"));
+        assert!(!glob_match("h?llo", "hllo"));
+    }
+
+    #[test]
+    fn glob_is_case_sensitive() {
+        // GLOB is case-sensitive (unlike LIKE).
+        assert!(glob_match("hello", "hello"));
+        assert!(!glob_match("hello", "HELLO"));
+    }
+
+    #[test]
+    fn glob_char_class() {
+        assert!(glob_match("[abc]ello", "aello"));
+        assert!(glob_match("[abc]ello", "bello"));
+        assert!(!glob_match("[abc]ello", "dello"));
+    }
+
+    // ---- CAST ----
+
+    #[test]
+    fn cast_integer_paths() {
+        assert_eq!(eval_cast(t("42"), "INTEGER").unwrap(), i(42));
+        assert_eq!(eval_cast(r(3.7), "INTEGER").unwrap(), i(3));
+        assert_eq!(eval_cast(t("garbage"), "INTEGER").unwrap(), i(0));
+        assert_eq!(eval_cast(Value::Null, "INTEGER").unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn cast_real_paths() {
+        assert_eq!(eval_cast(i(5), "REAL").unwrap(), r(5.0));
+        assert_eq!(eval_cast(t("3.14"), "REAL").unwrap(), r(3.14));
+        assert_eq!(eval_cast(t("nope"), "REAL").unwrap(), r(0.0));
+    }
+
+    #[test]
+    fn cast_text_paths() {
+        assert_eq!(eval_cast(i(42), "TEXT").unwrap(), t("42"));
+        assert_eq!(eval_cast(r(2.5), "TEXT").unwrap(), t("2.5"));
+        assert_eq!(eval_cast(Value::Null, "TEXT").unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn cast_blob_paths() {
+        match eval_cast(t("ab"), "BLOB").unwrap() {
+            Value::Blob(b) => assert_eq!(b, vec![97, 98]),
+            other => panic!("expected blob, got {:?}", other),
+        }
+    }
+
+    // ---- literal_to_value ----
+
+    #[test]
+    fn literal_conversions() {
+        use crate::planner::LiteralValue;
+        assert_eq!(literal_to_value(&LiteralValue::Null), Value::Null);
+        assert_eq!(literal_to_value(&LiteralValue::Integer(7)), i(7));
+        assert_eq!(literal_to_value(&LiteralValue::Real(1.5)), r(1.5));
+        assert_eq!(literal_to_value(&LiteralValue::Text("x".into())), t("x"));
+        assert_eq!(literal_to_value(&LiteralValue::Bool(true)), i(1));
+        assert_eq!(literal_to_value(&LiteralValue::Bool(false)), i(0));
+    }
+
+    // ---- binary op edge cases ----
+
+    #[test]
+    fn binop_null_propagation() {
+        // Most ops return NULL when either side is NULL.
+        assert_eq!(
+            eval_binop(BinOp::Add, &Value::Null, &i(5)).unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            eval_binop(BinOp::Mul, &i(3), &Value::Null).unwrap(),
+            Value::Null
+        );
+        // AND/OR are special: FALSE AND NULL = FALSE, TRUE OR NULL = TRUE.
+        assert_eq!(eval_binop(BinOp::And, &i(0), &Value::Null).unwrap(), i(0));
+        assert_eq!(eval_binop(BinOp::Or, &i(1), &Value::Null).unwrap(), i(1));
+    }
+
+    #[test]
+    fn binop_is_and_is_not_with_null() {
+        // NULL IS NULL = 1; NULL IS x = 0.
+        assert_eq!(eval_binop(BinOp::Is, &Value::Null, &Value::Null).unwrap(), i(1));
+        assert_eq!(eval_binop(BinOp::Is, &Value::Null, &i(5)).unwrap(), i(0));
+        assert_eq!(eval_binop(BinOp::IsNot, &Value::Null, &Value::Null).unwrap(), i(0));
+        assert_eq!(eval_binop(BinOp::IsNot, &Value::Null, &i(5)).unwrap(), i(1));
+    }
+
+    #[test]
+    fn binop_arithmetic() {
+        assert_eq!(eval_binop(BinOp::Add, &i(2), &i(3)).unwrap(), i(5));
+        assert_eq!(eval_binop(BinOp::Sub, &i(10), &i(4)).unwrap(), i(6));
+        assert_eq!(eval_binop(BinOp::Mul, &i(3), &i(7)).unwrap(), i(21));
+        assert_eq!(eval_binop(BinOp::Div, &i(10), &i(3)).unwrap(), i(3));
+        assert_eq!(eval_binop(BinOp::Mod, &i(10), &i(3)).unwrap(), i(1));
+    }
+
+    #[test]
+    fn binop_div_by_zero_returns_zero() {
+        // SQLite returns NULL for x/0 with reals; our impl currently
+        // returns 0 for integer division by zero. Documenting current behavior.
+        assert_eq!(eval_binop(BinOp::Div, &i(10), &i(0)).unwrap(), i(0));
+    }
+
+    #[test]
+    fn binop_concat() {
+        assert_eq!(
+            eval_binop(BinOp::Concat, &t("foo"), &t("bar")).unwrap(),
+            t("foobar")
+        );
+        // NULL || x = NULL.
+        assert_eq!(
+            eval_binop(BinOp::Concat, &Value::Null, &t("x")).unwrap(),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn binop_bitwise() {
+        assert_eq!(eval_binop(BinOp::BitAnd, &i(0b1100), &i(0b1010)).unwrap(), i(0b1000));
+        assert_eq!(eval_binop(BinOp::BitOr, &i(0b1100), &i(0b0011)).unwrap(), i(0b1111));
+        assert_eq!(eval_binop(BinOp::ShiftLeft, &i(1), &i(3)).unwrap(), i(8));
+        assert_eq!(eval_binop(BinOp::ShiftRight, &i(16), &i(2)).unwrap(), i(4));
+    }
+
+    // ---- unary ops ----
+
+    #[test]
+    fn unary_not_truthiness() {
+        assert_eq!(eval_unaryop(UnaryOp::Not, &i(0)).unwrap(), i(1));
+        assert_eq!(eval_unaryop(UnaryOp::Not, &i(5)).unwrap(), i(0));
+        assert_eq!(eval_unaryop(UnaryOp::Not, &Value::Null).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn unary_neg_numeric() {
+        assert_eq!(eval_unaryop(UnaryOp::Neg, &i(5)).unwrap(), i(-5));
+        assert_eq!(eval_unaryop(UnaryOp::Neg, &r(2.5)).unwrap(), r(-2.5));
+        assert_eq!(eval_unaryop(UnaryOp::Neg, &Value::Null).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn unary_bitnot() {
+        assert_eq!(eval_unaryop(UnaryOp::BitNot, &i(0)).unwrap(), i(-1));
+        assert_eq!(eval_unaryop(UnaryOp::BitNot, &i(-1)).unwrap(), i(0));
+    }
+
+    // ---- scalar functions ----
+
+    #[test]
+    fn scalar_length_unicode() {
+        assert_eq!(eval_scalar_function("LENGTH", &[t("hello")]).unwrap(), i(5));
+        // 4 chars, not 8 bytes, for "café"
+        assert_eq!(eval_scalar_function("LENGTH", &[t("café")]).unwrap(), i(4));
+        assert_eq!(eval_scalar_function("LENGTH", &[Value::Null]).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn scalar_upper_lower_unicode() {
+        assert_eq!(eval_scalar_function("UPPER", &[t("hello")]).unwrap(), t("HELLO"));
+        assert_eq!(eval_scalar_function("LOWER", &[t("WORLD")]).unwrap(), t("world"));
+        // Unicode case folding works for ascii-only here; locale-dependent
+        // characters like 'İ' may not roundtrip, which is SQLite-correct.
+        assert_eq!(eval_scalar_function("UPPER", &[t("ß")]).unwrap(), t("SS"));
+    }
+
+    #[test]
+    fn scalar_substr_negative_start() {
+        // start=-3 means "3 from the end"
+        assert_eq!(
+            eval_scalar_function("SUBSTR", &[t("hello"), i(-3)]).unwrap(),
+            t("llo")
+        );
+        // start=1 is the first char (1-indexed)
+        assert_eq!(
+            eval_scalar_function("SUBSTR", &[t("hello"), i(1), i(2)]).unwrap(),
+            t("he")
+        );
+        // start=0 is treated as 1 in some impls; here it returns from index 0
+        assert_eq!(
+            eval_scalar_function("SUBSTR", &[t("hello"), i(0), i(3)]).unwrap(),
+            t("he")
+        );
+    }
+
+    #[test]
+    fn scalar_coalesce_picks_first_non_null() {
+        assert_eq!(
+            eval_scalar_function("COALESCE", &[Value::Null, Value::Null, t("c")]).unwrap(),
+            t("c")
+        );
+        assert_eq!(
+            eval_scalar_function("COALESCE", &[Value::Null, Value::Null]).unwrap(),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn scalar_ifnull_and_nullif() {
+        assert_eq!(eval_scalar_function("IFNULL", &[Value::Null, t("x")]).unwrap(), t("x"));
+        assert_eq!(eval_scalar_function("IFNULL", &[i(1), t("x")]).unwrap(), i(1));
+        assert_eq!(eval_scalar_function("NULLIF", &[i(1), i(1)]).unwrap(), Value::Null);
+        assert_eq!(eval_scalar_function("NULLIF", &[i(1), i(2)]).unwrap(), i(1));
+    }
+
+    #[test]
+    fn scalar_typeof_each_type() {
+        assert_eq!(eval_scalar_function("TYPEOF", &[Value::Null]).unwrap(), t("null"));
+        assert_eq!(eval_scalar_function("TYPEOF", &[i(0)]).unwrap(), t("integer"));
+        assert_eq!(eval_scalar_function("TYPEOF", &[r(0.0)]).unwrap(), t("real"));
+        assert_eq!(eval_scalar_function("TYPEOF", &[t("x")]).unwrap(), t("text"));
+        assert_eq!(eval_scalar_function("TYPEOF", &[Value::Blob(vec![1])]).unwrap(), t("blob"));
+    }
+
+    #[test]
+    fn scalar_abs_paths() {
+        assert_eq!(eval_scalar_function("ABS", &[i(-5)]).unwrap(), i(5));
+        assert_eq!(eval_scalar_function("ABS", &[r(-2.5)]).unwrap(), r(2.5));
+        assert_eq!(eval_scalar_function("ABS", &[Value::Null]).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn scalar_replace_and_instr() {
+        assert_eq!(
+            eval_scalar_function("REPLACE", &[t("hello world"), t("world"), t("rust")]).unwrap(),
+            t("hello rust")
+        );
+        assert_eq!(eval_scalar_function("INSTR", &[t("hello"), t("ll")]).unwrap(), i(3));
+        assert_eq!(eval_scalar_function("INSTR", &[t("hello"), t("xx")]).unwrap(), i(0));
+    }
+
+    #[test]
+    fn scalar_trim_variants() {
+        assert_eq!(eval_scalar_function("TRIM", &[t("  hi  ")]).unwrap(), t("hi"));
+        assert_eq!(eval_scalar_function("LTRIM", &[t("  hi  ")]).unwrap(), t("hi  "));
+        assert_eq!(eval_scalar_function("RTRIM", &[t("  hi  ")]).unwrap(), t("  hi"));
+    }
+
+    #[test]
+    fn scalar_sign_branches() {
+        assert_eq!(eval_scalar_function("SIGN", &[i(5)]).unwrap(), i(1));
+        assert_eq!(eval_scalar_function("SIGN", &[i(-5)]).unwrap(), i(-1));
+        assert_eq!(eval_scalar_function("SIGN", &[i(0)]).unwrap(), i(0));
+        assert_eq!(eval_scalar_function("SIGN", &[Value::Null]).unwrap(), Value::Null);
+        assert_eq!(eval_scalar_function("SIGN", &[t("garbage")]).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn scalar_iif_picks_branch() {
+        assert_eq!(
+            eval_scalar_function("IIF", &[i(1), t("yes"), t("no")]).unwrap(),
+            t("yes")
+        );
+        assert_eq!(
+            eval_scalar_function("IIF", &[i(0), t("yes"), t("no")]).unwrap(),
+            t("no")
+        );
+    }
+
+    #[test]
+    fn scalar_hex_and_quote() {
+        match eval_scalar_function("HEX", &[Value::Blob(vec![0xAB, 0xCD])]).unwrap() {
+            Value::Text(s) => assert_eq!(s, "ABCD"),
+            other => panic!("got {:?}", other),
+        }
+        // QUOTE wraps text in single quotes and doubles internal quotes
+        match eval_scalar_function("QUOTE", &[t("it's")]).unwrap() {
+            Value::Text(s) => assert_eq!(s, "'it''s'"),
+            other => panic!("got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn scalar_zeroblob_size() {
+        match eval_scalar_function("ZEROBLOB", &[i(4)]).unwrap() {
+            Value::Blob(b) => assert_eq!(b, vec![0, 0, 0, 0]),
+            other => panic!("got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn scalar_random_returns_integer() {
+        // Just sanity: returns *something* of integer type.
+        assert!(matches!(
+            eval_scalar_function("RANDOM", &[]).unwrap(),
+            Value::Integer(_)
+        ));
+    }
+
+    #[test]
+    fn scalar_randomblob_length() {
+        match eval_scalar_function("RANDOMBLOB", &[i(8)]).unwrap() {
+            Value::Blob(b) => assert_eq!(b.len(), 8),
+            other => panic!("got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn scalar_likelihood_passes_through() {
+        assert_eq!(
+            eval_scalar_function("LIKELIHOOD", &[i(42), r(0.5)]).unwrap(),
+            i(42)
+        );
+        assert_eq!(eval_scalar_function("LIKELY", &[t("x")]).unwrap(), t("x"));
+        assert_eq!(eval_scalar_function("UNLIKELY", &[t("y")]).unwrap(), t("y"));
+    }
+
+    #[test]
+    fn scalar_unknown_function_errors() {
+        assert!(eval_scalar_function("NOPE_FN", &[]).is_err());
+    }
+}

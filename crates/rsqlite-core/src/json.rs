@@ -797,4 +797,156 @@ mod tests {
         let jv2 = parse_json(&output).unwrap();
         assert_eq!(jv, jv2);
     }
+
+    // ---- parse edge cases ----
+
+    #[test]
+    fn parse_negative_and_decimal_numbers() {
+        assert_eq!(parse_json("-0").unwrap(), JsonValue::Number(0.0));
+        assert_eq!(parse_json("-42").unwrap(), JsonValue::Number(-42.0));
+        assert_eq!(parse_json("3.14").unwrap(), JsonValue::Number(3.14));
+        assert_eq!(parse_json("-2.5").unwrap(), JsonValue::Number(-2.5));
+    }
+
+    #[test]
+    fn parse_scientific_notation() {
+        assert_eq!(parse_json("1e3").unwrap(), JsonValue::Number(1000.0));
+        assert_eq!(parse_json("1.5e2").unwrap(), JsonValue::Number(150.0));
+        assert_eq!(parse_json("-2E-3").unwrap(), JsonValue::Number(-0.002));
+    }
+
+    #[test]
+    fn parse_string_escapes() {
+        assert_eq!(
+            parse_json(r#""tab\there""#).unwrap(),
+            JsonValue::String("tab\there".into())
+        );
+        assert_eq!(
+            parse_json(r#""new\nline""#).unwrap(),
+            JsonValue::String("new\nline".into())
+        );
+        assert_eq!(
+            parse_json(r#""back\\slash""#).unwrap(),
+            JsonValue::String("back\\slash".into())
+        );
+        assert_eq!(
+            parse_json(r#""quote\"in""#).unwrap(),
+            JsonValue::String("quote\"in".into())
+        );
+    }
+
+    #[test]
+    fn parse_unicode_escape() {
+        // é = é
+        let jv = parse_json(r#""café""#).unwrap();
+        assert_eq!(jv, JsonValue::String("café".into()));
+    }
+
+    #[test]
+    fn parse_empty_containers() {
+        assert!(matches!(
+            parse_json("[]").unwrap(),
+            JsonValue::Array(ref v) if v.is_empty()
+        ));
+        assert!(matches!(
+            parse_json("{}").unwrap(),
+            JsonValue::Object(ref v) if v.is_empty()
+        ));
+    }
+
+    #[test]
+    fn parse_nested_deeply() {
+        let input = r#"{"a":{"b":{"c":{"d":[1,[2,[3,[4]]]]}}}}"#;
+        let jv = parse_json(input).unwrap();
+        assert_eq!(
+            jv.extract_path("$.a.b.c.d[0]"),
+            Some(&JsonValue::Number(1.0))
+        );
+    }
+
+    #[test]
+    fn parse_invalid_json_errors() {
+        assert!(parse_json("not json").is_err());
+        assert!(parse_json("{").is_err());
+        assert!(parse_json("[1,").is_err());
+        assert!(parse_json(r#"{"a":}"#).is_err());
+        assert!(parse_json("").is_err());
+    }
+
+    #[test]
+    fn parse_trailing_content_errors() {
+        // Two top-level values is malformed.
+        assert!(parse_json("1 2").is_err());
+        assert!(parse_json("[]extra").is_err());
+    }
+
+    #[test]
+    fn parse_with_whitespace() {
+        let jv = parse_json("  \n\t [ 1 , 2 , 3 ] \n  ").unwrap();
+        assert!(matches!(jv, JsonValue::Array(ref v) if v.len() == 3));
+    }
+
+    // ---- extract_path edge cases ----
+
+    #[test]
+    fn extract_root_returns_self() {
+        let jv = parse_json("[1,2,3]").unwrap();
+        assert_eq!(jv.extract_path("$"), Some(&jv));
+    }
+
+    #[test]
+    fn extract_array_out_of_bounds() {
+        let jv = parse_json("[10, 20]").unwrap();
+        assert_eq!(jv.extract_path("$[5]"), None);
+    }
+
+    #[test]
+    fn extract_into_scalar_returns_none() {
+        let jv = parse_json("42").unwrap();
+        // Can't take .key from a scalar
+        assert_eq!(jv.extract_path("$.foo"), None);
+        // Or [0] from a scalar
+        assert_eq!(jv.extract_path("$[0]"), None);
+    }
+
+    #[test]
+    fn extract_chained_object_and_array() {
+        let jv = parse_json(r#"{"users":[{"name":"a"},{"name":"b"}]}"#).unwrap();
+        assert_eq!(
+            jv.extract_path("$.users[0].name"),
+            Some(&JsonValue::String("a".into()))
+        );
+        assert_eq!(
+            jv.extract_path("$.users[1].name"),
+            Some(&JsonValue::String("b".into()))
+        );
+    }
+
+    // ---- to_string_repr edge cases ----
+
+    #[test]
+    fn to_string_quotes_special_chars() {
+        let s = JsonValue::String("a\"b\\c\nd".into());
+        // Should escape ", \, and \n
+        assert_eq!(s.to_string_repr(), r#""a\"b\\c\nd""#);
+    }
+
+    #[test]
+    fn to_string_integer_form() {
+        // Whole-number floats render as integers (per to_string_repr logic).
+        assert_eq!(JsonValue::Number(5.0).to_string_repr(), "5");
+        assert_eq!(JsonValue::Number(-5.0).to_string_repr(), "-5");
+        assert_eq!(JsonValue::Number(2.5).to_string_repr(), "2.5");
+    }
+
+    #[test]
+    fn type_name_each_variant() {
+        assert_eq!(JsonValue::Null.type_name(), "null");
+        assert_eq!(JsonValue::Bool(true).type_name(), "true");
+        assert_eq!(JsonValue::Bool(false).type_name(), "false");
+        assert_eq!(JsonValue::Number(0.0).type_name(), "real");
+        assert_eq!(JsonValue::String("x".into()).type_name(), "text");
+        assert_eq!(JsonValue::Array(vec![]).type_name(), "array");
+        assert_eq!(JsonValue::Object(vec![]).type_name(), "object");
+    }
 }
