@@ -727,23 +727,6 @@ impl<'a> IndexCursor<'a> {
 
 // ── Write helpers (pub(crate) for btree_write) ──
 
-#[allow(dead_code)]
-pub(crate) fn write_btree_header(data: &mut [u8], offset: usize, header: &BTreePageHeader) {
-    data[offset] = header.page_type as u8;
-    data[offset + 1..offset + 3].copy_from_slice(&header.first_freeblock.to_be_bytes());
-    data[offset + 3..offset + 5].copy_from_slice(&header.cell_count.to_be_bytes());
-    let raw_offset = if header.cell_content_offset >= 65536 {
-        0u16
-    } else {
-        header.cell_content_offset as u16
-    };
-    data[offset + 5..offset + 7].copy_from_slice(&raw_offset.to_be_bytes());
-    data[offset + 7] = header.fragmented_free_bytes;
-    if let Some(right) = header.right_most_pointer {
-        data[offset + 8..offset + 12].copy_from_slice(&right.to_be_bytes());
-    }
-}
-
 pub(crate) fn write_cell_pointers(data: &mut [u8], offset: usize, pointers: &[u16]) {
     for (i, ptr) in pointers.iter().enumerate() {
         let pos = offset + i * 2;

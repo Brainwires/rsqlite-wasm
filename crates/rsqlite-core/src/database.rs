@@ -20,6 +20,8 @@ pub struct AttachedDb {
     pub catalog: Catalog,
 }
 
+/// A connected database: pager, catalog, plan cache, and any attached
+/// secondary databases. One [`Database`] is one logical SQLite-file handle.
 pub struct Database {
     pager: Pager,
     catalog: Catalog,
@@ -29,6 +31,8 @@ pub struct Database {
 }
 
 impl Database {
+    /// Open an existing database at `path` on the given VFS. Errors if the
+    /// file does not exist or has an unrecognized header.
     pub fn open(vfs: &dyn Vfs, path: &str) -> Result<Self> {
         let mut pager = Pager::open(vfs, path)?;
         let catalog = Catalog::load(&mut pager)?;
@@ -41,6 +45,9 @@ impl Database {
         })
     }
 
+    /// Create a new database at `path` on the given VFS. The file is
+    /// initialized with a SQLite-3 header. Errors if `path` already exists
+    /// (depending on the VFS's create semantics).
     pub fn create(vfs: &dyn Vfs, path: &str) -> Result<Self> {
         let mut pager = Pager::create(vfs, path)?;
         let catalog = Catalog::load(&mut pager)?;
@@ -53,6 +60,7 @@ impl Database {
         })
     }
 
+    /// Same as [`Self::query`] but binds `?` placeholders to `params` first.
     pub fn query_with_params(&mut self, sql: &str, params: Vec<Value>) -> Result<QueryResult> {
         executor::set_params(params);
         let result = self.query(sql);
@@ -60,6 +68,7 @@ impl Database {
         result
     }
 
+    /// Same as [`Self::execute`] but binds `?` placeholders to `params` first.
     pub fn execute_with_params(&mut self, sql: &str, params: Vec<Value>) -> Result<ExecResult> {
         executor::set_params(params);
         let result = self.execute(sql);
@@ -67,6 +76,8 @@ impl Database {
         result
     }
 
+    /// Run `sql` and return the rows it produced. Use for SELECT, RETURNING,
+    /// EXPLAIN QUERY PLAN, and PRAGMAs that return rows.
     pub fn query(&mut self, sql: &str) -> Result<QueryResult> {
         if let Some(result) = self.try_explain_query_plan(sql)? {
             return Ok(result);
@@ -96,6 +107,8 @@ impl Database {
         executor::execute(&plan, &mut self.pager, &self.catalog)
     }
 
+    /// Run `sql` for its side effects and return the affected-row count.
+    /// Use for INSERT / UPDATE / DELETE, DDL, and most PRAGMAs.
     pub fn execute(&mut self, sql: &str) -> Result<ExecResult> {
         let plan = self.get_or_plan(sql)?;
         if let Plan::Pragma {

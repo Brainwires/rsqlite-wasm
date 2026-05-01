@@ -193,3 +193,61 @@ describe("Error paths", () => {
     db.free();
   });
 });
+
+describe("User-defined functions", () => {
+  it("registers a JS callback as a SQL scalar function", () => {
+    const db = fresh();
+    db.createFunction("double_it", 1, (n: unknown) => Number(n) * 2);
+    const r = db.query("SELECT double_it(21) AS v") as Array<{ v: number }>;
+    expect(r[0].v).toBe(42);
+    db.free();
+  });
+
+  it("variadic UDFs accept any argument count", () => {
+    const db = fresh();
+    db.createFunction("count_args", -1, (...args: unknown[]) => args.length);
+    const r = db.query(
+      "SELECT count_args() AS a, count_args(1) AS b, count_args(1, 2, 3) AS c"
+    ) as Array<{ a: number; b: number; c: number }>;
+    expect(r[0]).toEqual({ a: 0, b: 1, c: 3 });
+    db.free();
+  });
+
+  it("UDF runs row-wise inside SELECT", () => {
+    const db = fresh();
+    db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, x INTEGER)");
+    db.exec("INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)");
+    db.createFunction("plus_one", 1, (n: unknown) => Number(n) + 1);
+    const rows = db.query("SELECT plus_one(x) AS p FROM t ORDER BY id") as Array<{
+      p: number;
+    }>;
+    expect(rows.map((r) => r.p)).toEqual([11, 21, 31]);
+    db.free();
+  });
+
+  it("UDF that throws surfaces as a query error", () => {
+    const db = fresh();
+    db.createFunction("boom", 1, () => {
+      throw new Error("nope");
+    });
+    expect(() => db.query("SELECT boom(1)")).toThrow();
+    db.free();
+  });
+
+  it("deleteFunction removes the registration", () => {
+    const db = fresh();
+    db.createFunction("temp_fn", 0, () => 99);
+    expect(db.deleteFunction("temp_fn")).toBe(true);
+    expect(() => db.query("SELECT temp_fn()")).toThrow();
+    expect(db.deleteFunction("temp_fn")).toBe(false);
+    db.free();
+  });
+
+  it("UDF cannot shadow a built-in", () => {
+    const db = fresh();
+    db.createFunction("UPPER", 1, () => "udf-was-called");
+    const r = db.query("SELECT UPPER('abc') AS v") as Array<{ v: string }>;
+    expect(r[0].v).toBe("ABC");
+    db.free();
+  });
+});

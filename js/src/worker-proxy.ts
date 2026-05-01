@@ -42,6 +42,8 @@ export class WorkerDatabase {
       type: "open",
       name,
       backend: options?.backend ?? "opfs",
+      chunkSize: options?.chunkSize,
+      maxShards: options?.maxShards,
     });
     return db;
   }
@@ -93,6 +95,16 @@ export class WorkerDatabase {
       this.worker.terminate();
       this.closed = true;
     }
+  }
+
+  /** UDFs are not yet exposed across the worker boundary because callbacks
+   *  cannot be `postMessage`-serialized. Use the in-worker `Database` API
+   *  for UDFs, or instantiate a custom worker that pre-registers them at
+   *  startup. */
+  createFunction(): never {
+    throw new Error(
+      "WorkerDatabase.createFunction is not implemented; use the in-worker Database API"
+    );
   }
 
   get isClosed(): boolean {

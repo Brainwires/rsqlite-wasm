@@ -5,8 +5,15 @@ interface WasmModule {
   WasmDatabase: {
     new (): WasmDatabaseInstance;
     openInMemory(): WasmDatabaseInstance;
-    openWithOpfs(name: string): Promise<WasmDatabaseInstance>;
-    openWithIdb(name: string): Promise<WasmDatabaseInstance>;
+    openWithOpfs(
+      name: string,
+      chunkSize?: bigint,
+      maxShards?: number
+    ): Promise<WasmDatabaseInstance>;
+    openWithIdb(
+      name: string,
+      chunkSize?: bigint
+    ): Promise<WasmDatabaseInstance>;
     fromBuffer(data: Uint8Array): WasmDatabaseInstance;
   };
 }
@@ -25,7 +32,14 @@ interface WasmDatabaseInstance {
 }
 
 type WorkerRequest =
-  | { id: number; type: "open"; name?: string; backend?: string }
+  | {
+      id: number;
+      type: "open";
+      name?: string;
+      backend?: string;
+      chunkSize?: number;
+      maxShards?: number;
+    }
   | { id: number; type: "openInMemory" }
   | { id: number; type: "fromBuffer"; data: Uint8Array }
   | { id: number; type: "exec"; sql: string; params?: SqlValue[] }
@@ -60,10 +74,19 @@ async function handleMessage(msg: WorkerRequest): Promise<WorkerResponse> {
     switch (msg.type) {
       case "open": {
         const mod = await loadWasm();
+        const chunkSize =
+          msg.chunkSize !== undefined ? BigInt(msg.chunkSize) : undefined;
         if (msg.backend === "opfs") {
-          db = await mod.WasmDatabase.openWithOpfs(msg.name ?? "rsqlite");
+          db = await mod.WasmDatabase.openWithOpfs(
+            msg.name ?? "rsqlite",
+            chunkSize,
+            msg.maxShards
+          );
         } else if (msg.backend === "indexeddb") {
-          db = await mod.WasmDatabase.openWithIdb(msg.name ?? "rsqlite");
+          db = await mod.WasmDatabase.openWithIdb(
+            msg.name ?? "rsqlite",
+            chunkSize
+          );
         } else {
           db = new mod.WasmDatabase();
         }

@@ -43,7 +43,7 @@
     "indexeddb",
     "opfs"
   ],
-  "author": "",
+  "author": "The rsqlite-wasm contributors",
   "license": "MIT",
   "repository": {
     "type": "git",

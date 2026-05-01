@@ -333,6 +333,99 @@ pub(crate) fn eval_scalar_function(name: &str, args: &[Value]) -> Result<Value> 
             }
             Ok(args[0].clone())
         }
+        // sqlparser's SQLiteDialect rejects `<<`, `>>`, `~` as operator
+        // tokens, so we expose the same operations as functions. Semantics
+        // match SQLite's bitwise operators: NULL propagates; non-numeric
+        // text coerces to integer; reals truncate via `as i64`.
+        "__SHL" => {
+            if args.len() != 2 {
+                return Err(Error::Other("__shl requires 2 arguments".into()));
+            }
+            match (&args[0], &args[1]) {
+                (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+                (a, b) => {
+                    let av = value_to_int(a);
+                    let bv = value_to_int(b);
+                    let shift = bv & 63;
+                    Ok(Value::Integer(((av as u64) << shift) as i64))
+                }
+            }
+        }
+        "__SHR" => {
+            if args.len() != 2 {
+                return Err(Error::Other("__shr requires 2 arguments".into()));
+            }
+            match (&args[0], &args[1]) {
+                (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+                (a, b) => {
+                    let av = value_to_int(a);
+                    let bv = value_to_int(b);
+                    let shift = bv & 63;
+                    Ok(Value::Integer(((av as u64) >> shift) as i64))
+                }
+            }
+        }
+        "__BNOT" => {
+            if args.len() != 1 {
+                return Err(Error::Other("__bnot requires 1 argument".into()));
+            }
+            match &args[0] {
+                Value::Null => Ok(Value::Null),
+                v => Ok(Value::Integer(!value_to_int(v))),
+            }
+        }
+        // SQLite's `IS TRUE` / `IS FALSE` family. SQLiteDialect doesn't
+        // accept the syntax, so we expose function equivalents. SQLite's
+        // truthy rule: NULL is unknown, integer/real != 0 is true, non-empty
+        // text is true if it parses as a non-zero number.
+        "IS_TRUE" => {
+            if args.len() != 1 {
+                return Err(Error::Other("is_true requires 1 argument".into()));
+            }
+            Ok(Value::Integer(if matches!(args[0], Value::Null) {
+                0
+            } else if is_truthy(&args[0]) {
+                1
+            } else {
+                0
+            }))
+        }
+        "IS_FALSE" => {
+            if args.len() != 1 {
+                return Err(Error::Other("is_false requires 1 argument".into()));
+            }
+            Ok(Value::Integer(if matches!(args[0], Value::Null) {
+                0
+            } else if !is_truthy(&args[0]) {
+                1
+            } else {
+                0
+            }))
+        }
+        "IS_NOT_TRUE" => {
+            if args.len() != 1 {
+                return Err(Error::Other("is_not_true requires 1 argument".into()));
+            }
+            Ok(Value::Integer(if matches!(args[0], Value::Null) {
+                1
+            } else if !is_truthy(&args[0]) {
+                1
+            } else {
+                0
+            }))
+        }
+        "IS_NOT_FALSE" => {
+            if args.len() != 1 {
+                return Err(Error::Other("is_not_false requires 1 argument".into()));
+            }
+            Ok(Value::Integer(if matches!(args[0], Value::Null) {
+                1
+            } else if is_truthy(&args[0]) {
+                1
+            } else {
+                0
+            }))
+        }
         "SIGN" => {
             if args.is_empty() {
                 return Err(Error::Other("SIGN requires 1 argument".into()));
@@ -531,7 +624,13 @@ pub(crate) fn eval_scalar_function(name: &str, args: &[Value]) -> Result<Value> 
         "JSON" | "JSON_EXTRACT" | "JSON_TYPE" | "JSON_VALID" | "JSON_ARRAY" | "JSON_OBJECT"
         | "JSON_ARRAY_LENGTH" | "JSON_QUOTE" | "JSON_INSERT" | "JSON_REPLACE" | "JSON_SET"
         | "JSON_REMOVE" | "JSON_PATCH" => crate::json::eval_json_function(name, args),
-        _ => Err(Error::Other(format!("unknown function: {name}"))),
+        _ => {
+            // Fall through to user-defined functions before erroring out.
+            if let Some(result) = crate::udf::invoke(name, args) {
+                return result;
+            }
+            Err(Error::Other(format!("unknown function: {name}")))
+        }
     }
 }
 

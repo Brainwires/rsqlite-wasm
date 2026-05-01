@@ -6,8 +6,46 @@ use wasm_bindgen::prelude::*;
 
 use rsqlite_core::database::Database;
 use rsqlite_core::types::Value;
-use rsqlite_vfs::Vfs;
 use rsqlite_vfs::memory::MemoryVfs;
+use rsqlite_vfs::multiplex::{DEFAULT_CHUNK_SIZE, MultiplexVfs};
+use rsqlite_vfs::{OpenFlags, Vfs};
+
+/// Sentinel size (in bytes) below which we treat a file as effectively
+/// non-existent — too small to hold even an SQLite header. Hit when a
+/// previous session created the OPFS / IDB handle but crashed (or was
+/// reloaded) before any pages were written. The 100-byte threshold
+/// matches `rsqlite_storage::header::HEADER_SIZE`.
+const MIN_VALID_DB_BYTES: u64 = 100;
+
+/// Returns `true` when `path` exists in `vfs` AND has at least a valid
+/// header's worth of bytes. A 0-byte file (or a partial-header
+/// truncation) is treated as `false` so the caller falls through to
+/// `Database::create` instead of `Database::open`-ing into the
+/// `InvalidHeader("file too small")` failure mode.
+fn db_path_is_loadable(vfs: &dyn Vfs, path: &str) -> Result<bool, JsError> {
+    if !vfs.exists(path).map_err(to_js_error)? {
+        return Ok(false);
+    }
+    // Open read-only just long enough to query size; the file handle is
+    // dropped at the end of the function.
+    let flags = OpenFlags {
+        create: false,
+        read_write: false,
+        delete_on_close: false,
+    };
+    let file = match vfs.open(path, flags) {
+        Ok(f) => f,
+        Err(_) => return Ok(false),
+    };
+    let size = file.file_size().map_err(to_js_error)?;
+    Ok(size >= MIN_VALID_DB_BYTES)
+}
+
+/// Default per-shard cap for OPFS-backed databases. With 1 GB chunks this
+/// gives a 16 GB ceiling per database — more than the per-file caps any
+/// browser currently enforces, while only costing 16 zero-byte handle slots
+/// for fresh databases.
+const DEFAULT_MAX_SHARDS: usize = 16;
 
 #[wasm_bindgen(start)]
 pub fn init() {
@@ -16,8 +54,14 @@ pub fn init() {
 
 enum VfsBackend {
     Memory(MemoryVfs),
-    Opfs(opfs::OpfsVfs),
-    Idb(idb::IdbVfs),
+    Opfs {
+        mux: MultiplexVfs,
+        _raw: opfs::OpfsVfs,
+    },
+    Idb {
+        mux: MultiplexVfs,
+        raw: idb::IdbVfs,
+    },
 }
 
 #[wasm_bindgen]
@@ -46,39 +90,56 @@ impl WasmDatabase {
     }
 
     #[wasm_bindgen(js_name = "openWithOpfs")]
-    pub async fn open_with_opfs(name: &str) -> Result<WasmDatabase, JsError> {
-        let vfs = opfs::OpfsVfs::new().await.map_err(jsval_to_js_error)?;
+    pub async fn open_with_opfs(
+        name: &str,
+        chunk_size: Option<u64>,
+        max_shards: Option<usize>,
+    ) -> Result<WasmDatabase, JsError> {
+        let chunk_size = chunk_size.unwrap_or(DEFAULT_CHUNK_SIZE);
+        let max_shards = max_shards.unwrap_or(DEFAULT_MAX_SHARDS);
+
+        let raw = opfs::OpfsVfs::new().await.map_err(jsval_to_js_error)?;
         let db_path = if name.ends_with(".db") {
             name.to_string()
         } else {
             format!("{name}.db")
         };
 
-        let exists = {
-            let result = vfs.open_file(&db_path, false).await;
-            result.is_ok()
-        };
+        // Pre-register all shard handles. SyncAccessHandle creation is async
+        // but the engine's reads/writes are sync, so we must hold every
+        // handle we might need before any query runs.
+        raw.register_shards(&db_path, max_shards)
+            .await
+            .map_err(jsval_to_js_error)?;
 
-        let db = if exists {
-            Database::open(&vfs, &db_path).map_err(to_js_error)?
+        let mux = MultiplexVfs::with_chunk_size(raw.clone_box(), chunk_size);
+        let db = if db_path_is_loadable(&mux, &db_path)? {
+            Database::open(&mux, &db_path).map_err(to_js_error)?
         } else {
-            vfs.open_file(&db_path, true)
-                .await
-                .map_err(jsval_to_js_error)?;
-            Database::create(&vfs, &db_path).map_err(to_js_error)?
+            // File missing OR too small to hold a header. Either way,
+            // create a fresh database. `MultiplexVfs::open(create=true)`
+            // truncates / reinitializes the underlying shards, so an
+            // empty leftover file from a crashed prior session is
+            // safely overwritten.
+            Database::create(&mux, &db_path).map_err(to_js_error)?
         };
 
         Ok(WasmDatabase {
             db,
-            backend: VfsBackend::Opfs(vfs),
+            backend: VfsBackend::Opfs { mux, _raw: raw },
             path: db_path,
         })
     }
 
     #[wasm_bindgen(js_name = "openWithIdb")]
-    pub async fn open_with_idb(name: &str) -> Result<WasmDatabase, JsError> {
+    pub async fn open_with_idb(
+        name: &str,
+        chunk_size: Option<u64>,
+    ) -> Result<WasmDatabase, JsError> {
+        let chunk_size = chunk_size.unwrap_or(DEFAULT_CHUNK_SIZE);
+
         let idb_name = format!("rsqlite_{name}");
-        let vfs = idb::IdbVfs::new(&idb_name)
+        let raw = idb::IdbVfs::new(&idb_name)
             .await
             .map_err(jsval_to_js_error)?;
         let db_path = if name.ends_with(".db") {
@@ -87,26 +148,42 @@ impl WasmDatabase {
             format!("{name}.db")
         };
 
-        let db = if vfs.exists(&db_path).unwrap_or(false) {
-            Database::open(&vfs, &db_path).map_err(to_js_error)?
+        let mux = MultiplexVfs::with_chunk_size(raw.clone_box(), chunk_size);
+        let db = if db_path_is_loadable(&mux, &db_path)? {
+            Database::open(&mux, &db_path).map_err(to_js_error)?
         } else {
-            Database::create(&vfs, &db_path).map_err(to_js_error)?
+            Database::create(&mux, &db_path).map_err(to_js_error)?
         };
 
         Ok(WasmDatabase {
             db,
-            backend: VfsBackend::Idb(vfs),
+            backend: VfsBackend::Idb { mux, raw },
             path: db_path,
         })
     }
 
     #[wasm_bindgen(js_name = "openPersisted")]
-    pub async fn open_persisted(name: &str) -> Result<WasmDatabase, JsError> {
-        match Self::open_with_opfs(name).await {
+    pub async fn open_persisted(
+        name: &str,
+        chunk_size: Option<u64>,
+        max_shards: Option<usize>,
+    ) -> Result<WasmDatabase, JsError> {
+        match Self::open_with_opfs(name, chunk_size, max_shards).await {
             Ok(db) => return Ok(db),
-            Err(_) => {}
+            Err(e) => {
+                // Surface why OPFS failed before silently falling back to IDB,
+                // so quota / permission / browser-support issues are diagnosable.
+                let val: JsValue = e.into();
+                let detail = js_sys::JSON::stringify(&val)
+                    .ok()
+                    .and_then(|s| s.as_string())
+                    .unwrap_or_else(|| format!("{val:?}"));
+                web_sys::console::warn_1(&JsValue::from_str(&format!(
+                    "rsqlite-wasm: OPFS unavailable, falling back to IndexedDB: {detail}"
+                )));
+            }
         }
-        Self::open_with_idb(name).await
+        Self::open_with_idb(name, chunk_size).await
     }
 
     #[wasm_bindgen(js_name = "fromBuffer")]
@@ -214,8 +291,8 @@ impl WasmDatabase {
         };
         let vfs: &dyn Vfs = match &self.backend {
             VfsBackend::Memory(v) => v,
-            VfsBackend::Opfs(v) => v,
-            VfsBackend::Idb(v) => v,
+            VfsBackend::Opfs { mux, .. } => mux,
+            VfsBackend::Idb { mux, .. } => mux,
         };
         let file = vfs.open(&self.path, flags).map_err(to_js_error)?;
         let size = file.file_size().map_err(to_js_error)? as usize;
@@ -225,11 +302,56 @@ impl WasmDatabase {
     }
 
     pub fn flush(&self) -> Result<(), JsError> {
-        if let VfsBackend::Idb(vfs) = &self.backend {
-            vfs.flush_all_sync()
+        if let VfsBackend::Idb { raw, .. } = &self.backend {
+            raw.flush_all_sync()
                 .map_err(|e| JsError::new(&format!("IDB flush failed: {e:?}")))?;
         }
         Ok(())
+    }
+
+    /// Register a JavaScript callback as a SQL scalar function.
+    ///
+    /// The callback receives the evaluated arguments as JS values and must
+    /// return synchronously (async callbacks are deferred to a later
+    /// release). Pass `n_args = -1` for variadic.
+    ///
+    /// User-defined functions cannot shadow built-ins — the engine resolves
+    /// known names (`UPPER`, `JSON_EXTRACT`, `vec_distance_cosine`, …) before
+    /// consulting the UDF registry.
+    #[wasm_bindgen(js_name = "createFunction")]
+    pub fn create_function(&self, name: &str, n_args: i32, callback: js_sys::Function) {
+        let cb_rc = std::rc::Rc::new(callback);
+        let wrapped = std::rc::Rc::new(move |args: &[Value]| -> Result<Value, rsqlite_core::error::Error> {
+            let js_args = js_sys::Array::new();
+            for v in args {
+                js_args.push(&value_to_js(v));
+            }
+            match cb_rc.apply(&JsValue::NULL, &js_args) {
+                Ok(result) => Ok(js_to_value(&result)),
+                Err(e) => {
+                    let msg = js_sys::JSON::stringify(&e)
+                        .ok()
+                        .and_then(|s| s.as_string())
+                        .unwrap_or_else(|| format!("{e:?}"));
+                    Err(rsqlite_core::error::Error::Other(format!(
+                        "user function threw: {msg}"
+                    )))
+                }
+            }
+        });
+        let n = if n_args < 0 {
+            None
+        } else {
+            Some(n_args as usize)
+        };
+        rsqlite_core::udf::register(name, n, wrapped);
+    }
+
+    /// Remove a previously-registered user-defined function. Returns true if
+    /// a function by that name existed.
+    #[wasm_bindgen(js_name = "deleteFunction")]
+    pub fn delete_function(&self, name: &str) -> bool {
+        rsqlite_core::udf::unregister(name)
     }
 
     pub fn close(self) {}

@@ -8,13 +8,25 @@ explains the gap, the workaround if any, and where to follow progress.
 
 Inherited from `sqlparser-rs` 0.55's `SQLiteDialect`:
 
-- **Bitwise shift `<<` and `>>`, complement `~`.** Parse error. The AST
-  layer accepts these only under `PostgreSqlDialect` / `GenericDialect`.
-  Workaround: do bit shifts in application code, or parse with a
-  generic dialect upstream.
+- **Bitwise shift `<<` and `>>`, complement `~`.** Parse error at the
+  operator syntax level. Use the function equivalents instead:
+  - `__shl(a, b)` → `a << b`
+  - `__shr(a, b)` → `a >> b`
+  - `__bnot(a)` → `~a`
+
+  Both AND (`&`) and OR (`|`) work as native operators since SQLiteDialect
+  accepts them. A future release will add a custom dialect with
+  `parse_infix` to accept the missing operator tokens directly.
+
 - **`x IS TRUE` / `x IS FALSE` / `x IS NOT TRUE` / `x IS NOT FALSE`.**
-  Not implemented. Workaround: use `x IS NOT 0` (truthy) / `x IS 0`
-  (falsy), or `x IS DISTINCT FROM` for null-safe comparison.
+  Not parseable as syntax. Use the function equivalents:
+  - `is_true(x)` — 1 when `x` is non-null and truthy, else 0
+  - `is_false(x)` — 1 when `x` is non-null and falsy, else 0
+  - `is_not_true(x)` — 1 when `x` is null or falsy
+  - `is_not_false(x)` — 1 when `x` is null or truthy
+
+  Truthiness follows SQLite semantics: NULL is unknown; integer/real != 0
+  is true; text is true if it parses as a non-zero number.
 
 ## Schema
 
@@ -33,13 +45,15 @@ Inherited from `sqlparser-rs` 0.55's `SQLiteDialect`:
 
 ## Indexes
 
-- **Partial indexes** (`CREATE INDEX ... WHERE ...`) build correctly
-  and are maintained on INSERT/UPDATE — but the planner skips them at
-  query lookup time, falling back to a full table scan. The index
-  exists, it just isn't picked. Correctness is unaffected.
+- **Partial indexes** (`CREATE INDEX ... WHERE ...`) build correctly,
+  are maintained on INSERT/UPDATE, and are picked at query lookup time
+  when the query's WHERE clause has the index's WHERE predicate as a
+  top-level conjunct (the conservative case). More elaborate
+  predicate-implication shapes still fall back to full scan; correctness
+  is preserved either way.
 - **Expression indexes** (`CREATE INDEX ... ON t(lower(name))`) build
   with NULL placeholders for the expression columns and aren't picked
-  at lookup time. Same correctness story.
+  at lookup time. Correctness unaffected.
 
 ## DML
 
@@ -48,10 +62,6 @@ Inherited from `sqlparser-rs` 0.55's `SQLiteDialect`:
   flag (`SQLITE_ENABLE_UPDATE_DELETE_LIMIT`) and `sqlparser` doesn't
   expose them under SQLiteDialect. Workaround: rewrite as
   `UPDATE ... WHERE rowid IN (SELECT rowid FROM ... LIMIT N)`.
-- **`ON UPDATE` foreign-key actions** are parsed and stored on the
-  catalog but not enforced — only `ON DELETE` actions execute.
-  Updating a referenced parent key won't cascade, set null, or
-  restrict. Workaround: avoid changing PK values; use surrogate keys.
 
 ## Maintenance
 
@@ -66,7 +76,11 @@ Inherited from `sqlparser-rs` 0.55's `SQLiteDialect`:
 
 - **Virtual tables / FTS / R-Tree** — out of scope.
 - **`LOAD_EXTENSION`** — not safe in WASM.
-- **User-defined functions** from JavaScript — not yet wired.
+- **User-defined functions** from JavaScript — supported in the
+  in-worker `Database` API via `db.createFunction(name, fn, opts)`. Not
+  yet supported through the cross-thread `WorkerDatabase` proxy because
+  callbacks can't be `postMessage`-serialized. Async UDFs are deferred
+  to a future release.
 - **`WITHOUT ROWID` tables** — storage layer assumes rowid keys.
 - **Covering / index-only scans** — performance optimization, not
   spec compliance.
@@ -75,9 +89,17 @@ Inherited from `sqlparser-rs` 0.55's `SQLiteDialect`:
 
 These are tracked as v0.2 candidates:
 
-1. Predicate-implication analysis for partial-index lookup-time use
-2. Expression-index lookup-time use (recognize matching `expr(col)` in WHERE)
-3. ON UPDATE FK action enforcement
-4. UPDATE LIMIT / ORDER BY (needs custom parser path)
-5. Bare `rowid` on tables without an alias (synthetic column or Row.rowid)
-6. sqlite_schema root-page split (btree restructure)
+1. Expression-index lookup-time use (recognize matching `expr(col)` in WHERE)
+2. UPDATE LIMIT / ORDER BY (needs custom parser path)
+3. Bare `rowid` on tables without an alias (synthetic column or Row.rowid)
+4. sqlite_schema root-page split (btree restructure)
+5. Native bitwise operator syntax (`<<`, `>>`, `~`) — currently only the
+   `__shl`, `__shr`, `__bnot` function forms work.
+6. `IS TRUE` / `IS FALSE` as syntax — currently only the `is_true()`,
+   `is_false()`, `is_not_true()`, `is_not_false()` function forms work.
+7. Partial-index implication beyond the verbatim-conjunct case
+   (e.g. tighter range proves looser range).
+8. Cost-aware planner / `ANALYZE` populating `sqlite_stat1`.
+9. Virtual tables / FTS5 / R-Tree / HNSW vector index — major
+   subsystems deferred to v0.2.
+10. WITHOUT ROWID tables — storage layer rewrite deferred to v0.2.

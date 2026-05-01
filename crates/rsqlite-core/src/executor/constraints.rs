@@ -519,6 +519,159 @@ pub(super) fn apply_foreign_key_delete_actions(
     Ok(())
 }
 
+/// Mirror of [`apply_foreign_key_delete_actions`] for parent-key updates.
+/// Fires the FK's `ON UPDATE` action whenever a referenced parent column
+/// actually changes value.
+pub(super) fn apply_foreign_key_update_actions(
+    updated_rowid: i64,
+    old_values: &[Value],
+    new_values: &[Value],
+    table_name: &str,
+    table_columns: &[crate::catalog::ColumnDef],
+    pager: &mut Pager,
+    catalog: &Catalog,
+) -> Result<()> {
+    if !super::state::foreign_keys_enabled() {
+        return Ok(());
+    }
+
+    let child_tables: Vec<crate::catalog::TableDef> = catalog
+        .all_tables()
+        .filter(|t| {
+            t.foreign_keys
+                .iter()
+                .any(|fk| fk.to_table.eq_ignore_ascii_case(table_name))
+        })
+        .cloned()
+        .collect();
+
+    for child_table in child_tables {
+        for fk in &child_table.foreign_keys {
+            if !fk.to_table.eq_ignore_ascii_case(table_name) {
+                continue;
+            }
+            let parent_col_indices: Vec<usize> = fk
+                .to_columns
+                .iter()
+                .map(|tc| {
+                    table_columns
+                        .iter()
+                        .position(|c| c.name.eq_ignore_ascii_case(tc))
+                        .unwrap_or(0)
+                })
+                .collect();
+
+            let value_for = |vals: &[Value], idx: usize| -> Value {
+                let col = &table_columns[idx];
+                if col.is_rowid_alias {
+                    Value::Integer(updated_rowid)
+                } else {
+                    vals.get(idx).cloned().unwrap_or(Value::Null)
+                }
+            };
+
+            let old_parent: Vec<Value> = parent_col_indices
+                .iter()
+                .map(|&ci| value_for(old_values, ci))
+                .collect();
+            let new_parent: Vec<Value> = parent_col_indices
+                .iter()
+                .map(|&ci| value_for(new_values, ci))
+                .collect();
+
+            // Skip if none of the referenced columns actually changed —
+            // then no child action is required.
+            if old_parent
+                .iter()
+                .zip(new_parent.iter())
+                .all(|(o, n)| super::helpers::values_equal(o, n))
+            {
+                continue;
+            }
+
+            let child_col_indices: Vec<usize> = fk
+                .from_columns
+                .iter()
+                .map(|fc| {
+                    child_table
+                        .columns
+                        .iter()
+                        .position(|c| c.name.eq_ignore_ascii_case(fc))
+                        .unwrap_or(0)
+                })
+                .collect();
+
+            let mut cursor = BTreeCursor::new(pager, child_table.root_page);
+            let rows = cursor
+                .collect_all()
+                .map_err(|e| Error::Other(e.to_string()))?;
+            let matching_rowids: Vec<i64> = rows
+                .iter()
+                .filter(|row| {
+                    child_col_indices
+                        .iter()
+                        .zip(old_parent.iter())
+                        .all(|(&ci, pv)| {
+                            let child_val =
+                                row.record.values.get(ci).cloned().unwrap_or(Value::Null);
+                            super::helpers::values_equal(&child_val, pv)
+                        })
+                })
+                .map(|r| r.rowid)
+                .collect();
+
+            if matching_rowids.is_empty() {
+                continue;
+            }
+
+            match fk.on_update {
+                crate::catalog::ReferentialAction::NoAction
+                | crate::catalog::ReferentialAction::Restrict => {
+                    return Err(Error::Other(format!(
+                        "FOREIGN KEY constraint failed: cannot update '{}' \
+                         — referenced by '{}'",
+                        table_name, child_table.name
+                    )));
+                }
+                crate::catalog::ReferentialAction::Cascade => {
+                    set_child_fk_columns(
+                        &child_table,
+                        &matching_rowids,
+                        &child_col_indices,
+                        &new_parent,
+                        pager,
+                    )?;
+                }
+                crate::catalog::ReferentialAction::SetNull => {
+                    set_child_fk_columns(
+                        &child_table,
+                        &matching_rowids,
+                        &child_col_indices,
+                        &vec![Value::Null; child_col_indices.len()],
+                        pager,
+                    )?;
+                }
+                crate::catalog::ReferentialAction::SetDefault => {
+                    let defaults = evaluate_column_defaults(
+                        &child_table,
+                        &child_col_indices,
+                        pager,
+                        catalog,
+                    )?;
+                    set_child_fk_columns(
+                        &child_table,
+                        &matching_rowids,
+                        &child_col_indices,
+                        &defaults,
+                        pager,
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Delete the given child rows, then recursively apply ON DELETE actions for
 /// any FKs referencing this child table.
 fn cascade_delete_child_rows(

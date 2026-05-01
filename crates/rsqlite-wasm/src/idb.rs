@@ -23,26 +23,13 @@ export function idb_request_to_promise(req) {
         req.onerror = () => reject(req.error);
     });
 }
-export function idb_transaction_to_promise(tx) {
-    return new Promise((resolve, reject) => {
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-    });
-}
 ")]
 extern "C" {
     fn idb_request_to_promise(req: &JsValue) -> js_sys::Promise;
-    fn idb_transaction_to_promise(tx: &web_sys::IdbTransaction) -> js_sys::Promise;
 }
 
 async fn idb_request_await(req: &JsValue) -> Result<JsValue, JsValue> {
     JsFuture::from(idb_request_to_promise(req)).await
-}
-
-#[allow(dead_code)]
-async fn idb_transaction_await(tx: &web_sys::IdbTransaction) -> Result<(), JsValue> {
-    JsFuture::from(idb_transaction_to_promise(tx)).await?;
-    Ok(())
 }
 
 impl IdbVfs {
@@ -53,12 +40,34 @@ impl IdbVfs {
 
         let open_req = factory.open_with_u32(db_name, DB_VERSION)?;
 
+        // The upgrade callback runs synchronously inside IDB; any panic here
+        // would tear down the worker. Log and bail instead — the open request
+        // will then fail with a missing-object-store error on first use,
+        // which surfaces to the caller as a normal Promise rejection.
         let on_upgrade = Closure::once(move |event: web_sys::Event| {
-            let target = event.target().unwrap();
+            let Some(target) = event.target() else {
+                web_sys::console::error_1(&JsValue::from_str(
+                    "rsqlite-wasm: IDB upgrade event had no target",
+                ));
+                return;
+            };
             let req: web_sys::IdbOpenDbRequest = target.unchecked_into();
-            let db: web_sys::IdbDatabase = req.result().unwrap().unchecked_into();
+            let db_val = match req.result() {
+                Ok(v) => v,
+                Err(e) => {
+                    web_sys::console::error_1(&JsValue::from_str(&format!(
+                        "rsqlite-wasm: IDB upgrade result unavailable: {e:?}"
+                    )));
+                    return;
+                }
+            };
+            let db: web_sys::IdbDatabase = db_val.unchecked_into();
             if !db.object_store_names().contains(STORE_NAME) {
-                db.create_object_store(STORE_NAME).unwrap();
+                if let Err(e) = db.create_object_store(STORE_NAME) {
+                    web_sys::console::error_1(&JsValue::from_str(&format!(
+                        "rsqlite-wasm: IDB createObjectStore failed: {e:?}"
+                    )));
+                }
             }
         });
         open_req.set_onupgradeneeded(Some(on_upgrade.as_ref().unchecked_ref()));

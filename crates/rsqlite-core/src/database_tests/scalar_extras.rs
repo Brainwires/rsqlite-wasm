@@ -1,0 +1,684 @@
+//! Integration coverage for scalar functions that have unit tests in
+//! `eval_helpers` but were missing end-to-end SQL coverage. Each test goes
+//! through the full parse → plan → execute path so a regression in any
+//! layer is caught.
+
+use super::*;
+use crate::database::Database;
+use crate::types::Value;
+use rsqlite_vfs::memory::MemoryVfs;
+
+fn fresh() -> Database {
+    let vfs = MemoryVfs::new();
+    Database::create(&vfs, "test.db").unwrap()
+}
+
+// ── QUOTE ─────────────────────────────────────────────────────────────
+
+#[test]
+fn quote_text_doubles_single_quotes() {
+    let mut db = fresh();
+    let r = db.query("SELECT QUOTE('it''s ok')").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Text("'it''s ok'".to_string()));
+}
+
+#[test]
+fn quote_null_returns_null_keyword() {
+    let mut db = fresh();
+    let r = db.query("SELECT QUOTE(NULL)").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Text("NULL".to_string()));
+}
+
+#[test]
+fn quote_integer_passes_through() {
+    let mut db = fresh();
+    let r = db.query("SELECT QUOTE(42)").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Text("42".to_string()));
+}
+
+#[test]
+fn quote_blob_returns_x_literal() {
+    let mut db = fresh();
+    let r = db
+        .query_with_params("SELECT QUOTE(?)", vec![Value::Blob(vec![0xde, 0xad])])
+        .unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Text("X'DEAD'".to_string()));
+}
+
+// ── UNICODE ───────────────────────────────────────────────────────────
+
+#[test]
+fn unicode_returns_first_codepoint() {
+    let mut db = fresh();
+    let r = db.query("SELECT UNICODE('A')").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Integer(65));
+}
+
+#[test]
+fn unicode_handles_multibyte() {
+    let mut db = fresh();
+    let r = db.query("SELECT UNICODE('é')").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Integer(233));
+}
+
+#[test]
+fn unicode_empty_string_is_null() {
+    let mut db = fresh();
+    let r = db.query("SELECT UNICODE('')").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Null);
+}
+
+// ── ZEROBLOB ──────────────────────────────────────────────────────────
+
+#[test]
+fn zeroblob_returns_blob_of_zeros() {
+    let mut db = fresh();
+    let r = db.query("SELECT ZEROBLOB(5)").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Blob(vec![0u8; 5]));
+}
+
+#[test]
+fn zeroblob_zero_length_is_empty_blob() {
+    let mut db = fresh();
+    let r = db.query("SELECT ZEROBLOB(0)").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Blob(vec![]));
+}
+
+// ── RANDOMBLOB ────────────────────────────────────────────────────────
+
+#[test]
+fn randomblob_length_matches_request() {
+    let mut db = fresh();
+    let r = db.query("SELECT LENGTH(RANDOMBLOB(16))").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Integer(16));
+}
+
+#[test]
+fn randomblob_two_calls_differ() {
+    let mut db = fresh();
+    // Two 16-byte random blobs colliding is ~ 2^-128. If this ever fails,
+    // RANDOMBLOB is broken.
+    let r = db
+        .query("SELECT QUOTE(RANDOMBLOB(16)), QUOTE(RANDOMBLOB(16))")
+        .unwrap();
+    assert_ne!(r.rows[0].values[0], r.rows[0].values[1]);
+}
+
+// ── PRINTF ────────────────────────────────────────────────────────────
+
+#[test]
+fn printf_basic_specs() {
+    let mut db = fresh();
+    let r = db.query("SELECT PRINTF('%s=%d', 'x', 7)").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Text("x=7".to_string()));
+}
+
+#[test]
+fn printf_no_args_passes_through() {
+    let mut db = fresh();
+    let r = db.query("SELECT PRINTF('hello')").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Text("hello".to_string()));
+}
+
+#[test]
+fn printf_percent_escape() {
+    let mut db = fresh();
+    let r = db.query("SELECT PRINTF('100%%')").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Text("100%".to_string()));
+}
+
+// ── LIKELY / UNLIKELY / LIKELIHOOD ────────────────────────────────────
+
+#[test]
+fn likely_unlikely_pass_value_through() {
+    let mut db = fresh();
+    let r = db
+        .query("SELECT LIKELY(1), UNLIKELY('x'), LIKELIHOOD(42, 0.5)")
+        .unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Integer(1));
+    assert_eq!(r.rows[0].values[1], Value::Text("x".to_string()));
+    assert_eq!(r.rows[0].values[2], Value::Integer(42));
+}
+
+// ── SIGN edge cases ───────────────────────────────────────────────────
+
+#[test]
+fn sign_real_values() {
+    let mut db = fresh();
+    let r = db.query("SELECT SIGN(3.14), SIGN(-2.5), SIGN(0.0)").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Integer(1));
+    assert_eq!(r.rows[0].values[1], Value::Integer(-1));
+    assert_eq!(r.rows[0].values[2], Value::Integer(0));
+}
+
+#[test]
+fn sign_text_coerces_or_nulls() {
+    let mut db = fresh();
+    let numeric = db.query("SELECT SIGN('-7')").unwrap();
+    assert_eq!(numeric.rows[0].values[0], Value::Integer(-1));
+    let nonnumeric = db.query("SELECT SIGN('abc')").unwrap();
+    assert_eq!(nonnumeric.rows[0].values[0], Value::Null);
+}
+
+// ── Vector function edges ─────────────────────────────────────────────
+
+fn vec_blob(values: &[f32]) -> Value {
+    let mut bytes = Vec::with_capacity(values.len() * 4);
+    for v in values {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    Value::Blob(bytes)
+}
+
+#[test]
+fn vec_length_empty_blob_is_zero() {
+    let mut db = fresh();
+    let r = db
+        .query_with_params("SELECT vec_length(?)", vec![Value::Blob(vec![])])
+        .unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Integer(0));
+}
+
+#[test]
+fn vec_distance_cosine_with_null_errors() {
+    let mut db = fresh();
+    let v = vec_blob(&[1.0, 0.0, 0.0]);
+    // Calling a vec_* function with NULL is treated as a programming error
+    // — vectors are required arguments. This locks in the current behavior.
+    let res = db.query_with_params("SELECT vec_distance_cosine(?, NULL)", vec![v]);
+    assert!(res.is_err());
+}
+
+#[test]
+fn vec_normalize_unit_vector_is_identity() {
+    let mut db = fresh();
+    let v = vec_blob(&[1.0, 0.0, 0.0]);
+    let r = db
+        .query_with_params("SELECT vec_to_json(vec_normalize(?))", vec![v])
+        .unwrap();
+    if let Value::Text(s) = &r.rows[0].values[0] {
+        assert!(s.starts_with("[1") || s.starts_with("[1.0"));
+    } else {
+        panic!("expected text result, got {:?}", r.rows[0].values[0]);
+    }
+}
+
+#[test]
+fn vec_normalize_scales_to_unit_length() {
+    let mut db = fresh();
+    // [3, 4, 0] has length 5, normalized → [0.6, 0.8, 0]
+    let v = vec_blob(&[3.0, 4.0, 0.0]);
+    let r = db
+        .query_with_params("SELECT vec_to_json(vec_normalize(?))", vec![v])
+        .unwrap();
+    if let Value::Text(s) = &r.rows[0].values[0] {
+        // Parse the JSON-ish output and check magnitudes are roughly right.
+        let trimmed = s.trim_matches(|c| c == '[' || c == ']');
+        let parts: Vec<f32> = trimmed
+            .split(',')
+            .map(|p| p.trim().parse().unwrap())
+            .collect();
+        assert!((parts[0] - 0.6).abs() < 1e-5);
+        assert!((parts[1] - 0.8).abs() < 1e-5);
+        assert!(parts[2].abs() < 1e-5);
+    } else {
+        panic!("expected text result");
+    }
+}
+
+#[test]
+fn vec_from_json_then_distance() {
+    let mut db = fresh();
+    let r = db
+        .query("SELECT vec_distance_l2(vec_from_json('[0,0,0]'), vec_from_json('[3,4,0]'))")
+        .unwrap();
+    if let Value::Real(d) = r.rows[0].values[0] {
+        assert!((d - 5.0).abs() < 1e-5);
+    } else {
+        panic!("expected real distance");
+    }
+}
+
+// ── JSON deeper paths and semantic differences ────────────────────────
+
+#[test]
+fn json_extract_array_index() {
+    let mut db = fresh();
+    let r = db
+        .query(r#"SELECT json_extract('[10, 20, 30]', '$[1]')"#)
+        .unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Integer(20));
+}
+
+#[test]
+fn json_extract_nested_array_in_object() {
+    let mut db = fresh();
+    let r = db
+        .query(r#"SELECT json_extract('{"items":[{"id":1},{"id":2}]}', '$.items[1].id')"#)
+        .unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Integer(2));
+}
+
+#[test]
+fn json_set_creates_and_replaces() {
+    let mut db = fresh();
+    // json_set is the union of insert + replace: it both ADDs new keys and
+    // OVERWRITES existing ones. This is the semantic distinction from the
+    // dedicated json_insert / json_replace functions.
+    let r = db
+        .query(r#"SELECT json_set('{"a":1}', '$.a', 99, '$.b', 2)"#)
+        .unwrap();
+    if let Value::Text(s) = &r.rows[0].values[0] {
+        assert!(s.contains("\"a\":99"));
+        assert!(s.contains("\"b\":2"));
+    } else {
+        panic!("expected text json output");
+    }
+}
+
+#[test]
+fn json_remove_array_element() {
+    let mut db = fresh();
+    let r = db.query("SELECT json_remove('[1,2,3]', '$[1]')").unwrap();
+    if let Value::Text(s) = &r.rows[0].values[0] {
+        assert_eq!(s, "[1,3]");
+    } else {
+        panic!("expected text result");
+    }
+}
+
+#[test]
+fn json_array_length_array_path() {
+    let mut db = fresh();
+    let r = db
+        .query(r#"SELECT json_array_length('{"x":[1,2,3,4,5]}', '$.x')"#)
+        .unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Integer(5));
+}
+
+// ── INSERT OR REPLACE / IGNORE on UNIQUE conflict ─────────────────────
+
+#[test]
+fn insert_or_replace_overwrites_existing_pk() {
+    let mut db = fresh();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+        .unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'old')").unwrap();
+    db.execute("INSERT OR REPLACE INTO t VALUES (1, 'new')")
+        .unwrap();
+    let r = db.query("SELECT name FROM t WHERE id = 1").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Text("new".to_string()));
+}
+
+#[test]
+fn insert_or_ignore_keeps_existing_on_conflict() {
+    let mut db = fresh();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+        .unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'first')").unwrap();
+    db.execute("INSERT OR IGNORE INTO t VALUES (1, 'second')")
+        .unwrap();
+    let r = db.query("SELECT name FROM t WHERE id = 1").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Text("first".to_string()));
+}
+
+// ── Partial index lookup-time use ─────────────────────────────────────
+
+#[test]
+fn partial_index_used_when_query_implies_predicate() {
+    let mut db = fresh();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT, name TEXT)")
+        .unwrap();
+    db.execute("CREATE INDEX idx_active ON t(name) WHERE status = 'active'")
+        .unwrap();
+    db.execute(
+        "INSERT INTO t VALUES \
+         (1, 'active', 'a'), (2, 'inactive', 'b'), (3, 'active', 'c')",
+    )
+    .unwrap();
+    // Query WHERE has the index's predicate as a top-level conjunct.
+    let plan = db
+        .query(
+            "EXPLAIN QUERY PLAN SELECT id FROM t WHERE status = 'active' AND name = 'a'",
+        )
+        .unwrap();
+    let plan_text = plan
+        .rows
+        .iter()
+        .map(|r| {
+            r.values
+                .iter()
+                .map(|v| format!("{v:?}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        plan_text.contains("idx_active") || plan_text.contains("INDEX"),
+        "EXPLAIN QUERY PLAN didn't show the partial index being used: {plan_text}"
+    );
+    // And of course the actual query still returns the right rows.
+    let r = db
+        .query("SELECT id FROM t WHERE status = 'active' AND name = 'a'")
+        .unwrap();
+    assert_eq!(r.rows.len(), 1);
+    assert_eq!(r.rows[0].values[0], Value::Integer(1));
+}
+
+#[test]
+fn partial_index_skipped_when_query_does_not_imply() {
+    // Query lacks the partial index's predicate as a top-level conjunct;
+    // the planner must NOT pick the index (otherwise rows where the
+    // predicate is false would be missed).
+    let mut db = fresh();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT, name TEXT)")
+        .unwrap();
+    db.execute("CREATE INDEX idx_active ON t(name) WHERE status = 'active'")
+        .unwrap();
+    db.execute(
+        "INSERT INTO t VALUES \
+         (1, 'active', 'a'), (2, 'inactive', 'a'), (3, 'inactive', 'b')",
+    )
+    .unwrap();
+    // Query without `status = 'active'` — both rows with name='a' must come
+    // back, including the inactive one.
+    let r = db
+        .query("SELECT id FROM t WHERE name = 'a' ORDER BY id")
+        .unwrap();
+    assert_eq!(r.rows.len(), 2);
+    assert_eq!(r.rows[0].values[0], Value::Integer(1));
+    assert_eq!(r.rows[1].values[0], Value::Integer(2));
+}
+
+// ── Bitwise / IS TRUE-FALSE function workarounds ──────────────────────
+
+#[test]
+fn shl_function_shifts_left() {
+    let mut db = fresh();
+    let r = db.query("SELECT __shl(1, 3)").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Integer(8));
+}
+
+#[test]
+fn shr_function_shifts_right() {
+    let mut db = fresh();
+    let r = db.query("SELECT __shr(16, 2)").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Integer(4));
+}
+
+#[test]
+fn bnot_function_inverts_bits() {
+    let mut db = fresh();
+    let r = db.query("SELECT __bnot(0)").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Integer(-1));
+    let r = db.query("SELECT __bnot(255)").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Integer(-256));
+}
+
+#[test]
+fn shl_shr_null_propagates() {
+    let mut db = fresh();
+    let r = db.query("SELECT __shl(NULL, 1)").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Null);
+    let r = db.query("SELECT __shr(1, NULL)").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Null);
+    let r = db.query("SELECT __bnot(NULL)").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Null);
+}
+
+#[test]
+fn is_true_false_family() {
+    let mut db = fresh();
+    let r = db
+        .query(
+            "SELECT \
+             is_true(1), is_true(0), is_true(NULL), \
+             is_false(0), is_false(1), is_false(NULL), \
+             is_not_true(0), is_not_true(1), is_not_true(NULL), \
+             is_not_false(1), is_not_false(0), is_not_false(NULL)",
+        )
+        .unwrap();
+    let row = &r.rows[0].values;
+    // is_true: 1→1, 0→0, NULL→0
+    assert_eq!(row[0], Value::Integer(1));
+    assert_eq!(row[1], Value::Integer(0));
+    assert_eq!(row[2], Value::Integer(0));
+    // is_false: 0→1, 1→0, NULL→0
+    assert_eq!(row[3], Value::Integer(1));
+    assert_eq!(row[4], Value::Integer(0));
+    assert_eq!(row[5], Value::Integer(0));
+    // is_not_true: 0→1, 1→0, NULL→1
+    assert_eq!(row[6], Value::Integer(1));
+    assert_eq!(row[7], Value::Integer(0));
+    assert_eq!(row[8], Value::Integer(1));
+    // is_not_false: 1→1, 0→0, NULL→1
+    assert_eq!(row[9], Value::Integer(1));
+    assert_eq!(row[10], Value::Integer(0));
+    assert_eq!(row[11], Value::Integer(1));
+}
+
+// ── User-defined scalar functions ─────────────────────────────────────
+
+#[test]
+fn udf_dispatched_from_sql() {
+    use crate::udf;
+    udf::clear();
+    udf::register(
+        "add_one",
+        Some(1),
+        std::rc::Rc::new(|args: &[Value]| match &args[0] {
+            Value::Integer(n) => Ok(Value::Integer(n + 1)),
+            _ => Err(crate::error::Error::Other("expected integer".into())),
+        }),
+    );
+    let mut db = fresh();
+    let r = db.query("SELECT add_one(41)").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Integer(42));
+    udf::clear();
+}
+
+#[test]
+fn udf_can_run_inside_select_over_table() {
+    use crate::udf;
+    udf::clear();
+    udf::register(
+        "shout",
+        Some(1),
+        std::rc::Rc::new(|args: &[Value]| match &args[0] {
+            Value::Text(s) => Ok(Value::Text(s.to_uppercase())),
+            other => Ok(other.clone()),
+        }),
+    );
+    let mut db = fresh();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+        .unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'hello'), (2, 'world')")
+        .unwrap();
+    let r = db.query("SELECT shout(name) FROM t ORDER BY id").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Text("HELLO".to_string()));
+    assert_eq!(r.rows[1].values[0], Value::Text("WORLD".to_string()));
+    udf::clear();
+}
+
+#[test]
+fn udf_arity_mismatch_surfaces_as_query_error() {
+    use crate::udf;
+    udf::clear();
+    udf::register(
+        "needs_two",
+        Some(2),
+        std::rc::Rc::new(|_args: &[Value]| Ok(Value::Null)),
+    );
+    let mut db = fresh();
+    let res = db.query("SELECT needs_two(1)");
+    assert!(res.is_err());
+    udf::clear();
+}
+
+#[test]
+fn udf_does_not_shadow_builtin() {
+    use crate::udf;
+    udf::clear();
+    // Even if we register UPPER as a UDF, the built-in dispatch wins.
+    udf::register(
+        "UPPER",
+        Some(1),
+        std::rc::Rc::new(|_args: &[Value]| Ok(Value::Text("UDF-WAS-CALLED".into()))),
+    );
+    let mut db = fresh();
+    let r = db.query("SELECT UPPER('abc')").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Text("ABC".to_string()));
+    udf::clear();
+}
+
+// ── ON UPDATE foreign-key actions ─────────────────────────────────────
+
+fn fk_db_with_pragma() -> Database {
+    let mut db = fresh();
+    db.execute("PRAGMA foreign_keys = ON").unwrap();
+    db
+}
+
+#[test]
+fn on_update_cascade_propagates_parent_change() {
+    let mut db = fk_db_with_pragma();
+    db.execute(
+        "CREATE TABLE parent (id INTEGER PRIMARY KEY, code TEXT UNIQUE NOT NULL)",
+    )
+    .unwrap();
+    db.execute(
+        "CREATE TABLE child ( \
+           id INTEGER PRIMARY KEY, \
+           parent_code TEXT, \
+           FOREIGN KEY (parent_code) REFERENCES parent(code) ON UPDATE CASCADE \
+         )",
+    )
+    .unwrap();
+    db.execute("INSERT INTO parent VALUES (1, 'A'), (2, 'B')").unwrap();
+    db.execute("INSERT INTO child VALUES (10, 'A'), (11, 'A'), (12, 'B')")
+        .unwrap();
+
+    db.execute("UPDATE parent SET code = 'A2' WHERE id = 1").unwrap();
+    let r = db
+        .query("SELECT id, parent_code FROM child ORDER BY id")
+        .unwrap();
+    assert_eq!(r.rows[0].values[1], Value::Text("A2".to_string()));
+    assert_eq!(r.rows[1].values[1], Value::Text("A2".to_string()));
+    assert_eq!(r.rows[2].values[1], Value::Text("B".to_string()));
+}
+
+#[test]
+fn on_update_set_null_clears_child_fk() {
+    let mut db = fk_db_with_pragma();
+    db.execute(
+        "CREATE TABLE parent (id INTEGER PRIMARY KEY, code TEXT UNIQUE NOT NULL)",
+    )
+    .unwrap();
+    db.execute(
+        "CREATE TABLE child ( \
+           id INTEGER PRIMARY KEY, \
+           parent_code TEXT, \
+           FOREIGN KEY (parent_code) REFERENCES parent(code) ON UPDATE SET NULL \
+         )",
+    )
+    .unwrap();
+    db.execute("INSERT INTO parent VALUES (1, 'X')").unwrap();
+    db.execute("INSERT INTO child VALUES (5, 'X')").unwrap();
+
+    db.execute("UPDATE parent SET code = 'Y' WHERE id = 1").unwrap();
+    let r = db.query("SELECT parent_code FROM child").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Null);
+}
+
+#[test]
+fn on_update_restrict_blocks_change_when_referenced() {
+    let mut db = fk_db_with_pragma();
+    db.execute(
+        "CREATE TABLE parent (id INTEGER PRIMARY KEY, code TEXT UNIQUE NOT NULL)",
+    )
+    .unwrap();
+    db.execute(
+        "CREATE TABLE child ( \
+           id INTEGER PRIMARY KEY, \
+           parent_code TEXT, \
+           FOREIGN KEY (parent_code) REFERENCES parent(code) ON UPDATE RESTRICT \
+         )",
+    )
+    .unwrap();
+    db.execute("INSERT INTO parent VALUES (1, 'A')").unwrap();
+    db.execute("INSERT INTO child VALUES (5, 'A')").unwrap();
+
+    let res = db.execute("UPDATE parent SET code = 'B' WHERE id = 1");
+    assert!(res.is_err(), "expected RESTRICT to block update");
+}
+
+#[test]
+fn on_update_no_op_when_referenced_column_unchanged() {
+    let mut db = fk_db_with_pragma();
+    db.execute(
+        "CREATE TABLE parent ( \
+           id INTEGER PRIMARY KEY, \
+           code TEXT UNIQUE NOT NULL, \
+           extra TEXT \
+         )",
+    )
+    .unwrap();
+    db.execute(
+        "CREATE TABLE child ( \
+           id INTEGER PRIMARY KEY, \
+           parent_code TEXT, \
+           FOREIGN KEY (parent_code) REFERENCES parent(code) ON UPDATE RESTRICT \
+         )",
+    )
+    .unwrap();
+    db.execute("INSERT INTO parent VALUES (1, 'A', 'old')").unwrap();
+    db.execute("INSERT INTO child VALUES (5, 'A')").unwrap();
+
+    // Updating only `extra` (not the referenced `code`) must not fire FK
+    // checks even though the action is RESTRICT.
+    db.execute("UPDATE parent SET extra = 'new' WHERE id = 1")
+        .unwrap();
+    let r = db.query("SELECT extra FROM parent").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Text("new".to_string()));
+}
+
+// ── ATTACH / DETACH visibility ────────────────────────────────────────
+
+#[test]
+fn attached_database_appears_in_database_list() {
+    let primary = "/tmp/rsqlite_attach_list_primary.db";
+    let secondary = "/tmp/rsqlite_attach_list_secondary.db";
+    let _ = std::fs::remove_file(primary);
+    let _ = std::fs::remove_file(secondary);
+
+    {
+        let vfs = rsqlite_vfs::native::NativeVfs::new();
+        let _ = Database::create(&vfs, secondary).unwrap();
+    }
+
+    let vfs = rsqlite_vfs::native::NativeVfs::new();
+    let mut db = Database::create(&vfs, primary).unwrap();
+    db.execute(&format!("ATTACH DATABASE '{secondary}' AS sec"))
+        .unwrap();
+    let r = db.query("PRAGMA database_list").unwrap();
+    let names: Vec<String> = r
+        .rows
+        .iter()
+        .map(|row| {
+            if let Value::Text(s) = &row.values[1] {
+                s.clone()
+            } else {
+                String::new()
+            }
+        })
+        .collect();
+    assert!(names.iter().any(|n| n == "main"), "names = {names:?}");
+    assert!(names.iter().any(|n| n == "sec"), "names = {names:?}");
+    db.execute("DETACH sec").unwrap();
+    let r = db.query("PRAGMA database_list").unwrap();
+    assert_eq!(r.rows.len(), 1);
+
+    let _ = std::fs::remove_file(primary);
+    let _ = std::fs::remove_file(secondary);
+}

@@ -12,8 +12,8 @@ use crate::types::Row;
 
 use super::ExecResult;
 use super::constraints::{
-    check_check_constraints, check_foreign_key_insert, check_not_null_constraints,
-    check_unique_constraints,
+    apply_foreign_key_update_actions, check_check_constraints, check_foreign_key_insert,
+    check_not_null_constraints, check_unique_constraints,
 };
 use super::eval::eval_expr;
 use super::helpers::{
@@ -274,6 +274,22 @@ pub(super) fn execute_update(
             pager,
             catalog,
         )?;
+
+        // Cascade ON UPDATE actions to any child tables that reference this
+        // row's parent-key columns. Runs before the row itself is rewritten
+        // so child-table reads still see the old parent values.
+        if let Some(table_def) = catalog.get_table(&plan.table_name) {
+            let table_columns_def = table_def.columns.clone();
+            apply_foreign_key_update_actions(
+                rowid,
+                &old_values,
+                &new_values,
+                &plan.table_name,
+                &table_columns_def,
+                pager,
+                catalog,
+            )?;
+        }
 
         for (idx_root, idx_col_indices, predicate) in &table_indexes {
             let old_in = index_predicate_matches(

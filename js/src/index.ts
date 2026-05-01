@@ -17,14 +17,34 @@ interface WasmDatabaseInstance {
   flush(): void;
   close(): void;
   free(): void;
+  createFunction(name: string, nArgs: number, fn: (...args: unknown[]) => unknown): void;
+  deleteFunction(name: string): boolean;
+}
+
+/** Options for [`Database.createFunction`]. */
+export interface UdfOptions {
+  /** Number of arguments the function accepts. Omit or pass `-1` for
+   *  variadic. Calls with the wrong arity error at query time. */
+  nArgs?: number;
 }
 
 interface WasmDatabaseConstructor {
   new (): WasmDatabaseInstance;
   openInMemory(): WasmDatabaseInstance;
-  openWithOpfs(name: string): Promise<WasmDatabaseInstance>;
-  openWithIdb(name: string): Promise<WasmDatabaseInstance>;
-  openPersisted(name: string): Promise<WasmDatabaseInstance>;
+  openWithOpfs(
+    name: string,
+    chunkSize?: bigint,
+    maxShards?: number
+  ): Promise<WasmDatabaseInstance>;
+  openWithIdb(
+    name: string,
+    chunkSize?: bigint
+  ): Promise<WasmDatabaseInstance>;
+  openPersisted(
+    name: string,
+    chunkSize?: bigint,
+    maxShards?: number
+  ): Promise<WasmDatabaseInstance>;
   fromBuffer(data: Uint8Array): WasmDatabaseInstance;
 }
 
@@ -67,14 +87,26 @@ export class Database {
   ): Promise<Database> {
     const mod = await loadWasm();
     const backend = options?.backend ?? "memory";
+    const chunkSize =
+      options?.chunkSize !== undefined
+        ? BigInt(options.chunkSize)
+        : undefined;
+    const maxShards = options?.maxShards;
 
     if (backend === "opfs") {
-      const inner = await mod.WasmDatabase.openWithOpfs(name ?? "rsqlite");
+      const inner = await mod.WasmDatabase.openWithOpfs(
+        name ?? "rsqlite",
+        chunkSize,
+        maxShards
+      );
       return new Database(inner);
     }
 
     if (backend === "indexeddb") {
-      const inner = await mod.WasmDatabase.openWithIdb(name ?? "rsqlite");
+      const inner = await mod.WasmDatabase.openWithIdb(
+        name ?? "rsqlite",
+        chunkSize
+      );
       return new Database(inner);
     }
 
@@ -84,7 +116,11 @@ export class Database {
     }
 
     // Default: auto-detect best persistent backend
-    const inner = await mod.WasmDatabase.openPersisted(name ?? "rsqlite");
+    const inner = await mod.WasmDatabase.openPersisted(
+      name ?? "rsqlite",
+      chunkSize,
+      maxShards
+    );
     return new Database(inner);
   }
 
@@ -153,6 +189,28 @@ export class Database {
       this.inner.exec("ROLLBACK");
       throw e;
     }
+  }
+
+  /** Register a JavaScript callback as a SQL scalar function.
+   *
+   * The callback runs synchronously inside the engine's evaluation loop —
+   * async functions and Promises are not awaited. Throwing inside the
+   * callback surfaces as a query error. UDFs cannot shadow built-ins.
+   */
+  createFunction(
+    name: string,
+    fn: (...args: SqlValue[]) => SqlValue,
+    options?: UdfOptions
+  ): void {
+    this.ensureOpen();
+    const nArgs = options?.nArgs ?? -1;
+    this.inner.createFunction(name, nArgs, fn as (...args: unknown[]) => unknown);
+  }
+
+  /** Remove a previously-registered UDF. Returns true if it existed. */
+  deleteFunction(name: string): boolean {
+    this.ensureOpen();
+    return this.inner.deleteFunction(name);
   }
 
   close(): void {

@@ -7,6 +7,7 @@ pub(super) use super::*;
 mod basic;
 mod constraints_integrity;
 mod modern;
+mod scalar_extras;
 mod schema;
 mod views_ctes_advanced;
 

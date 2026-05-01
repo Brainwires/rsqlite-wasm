@@ -47,12 +47,16 @@ impl OpfsVfs {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub async fn delete_file(&self, path: &str) -> Result<(), JsValue> {
-        if let Some(handle) = self.handles.borrow_mut().remove(path) {
-            handle.close();
+    /// Pre-register `count` sharded files for the multiplex VFS. Each shard
+    /// is opened with `create: true` so the SyncAccessHandle exists ahead of
+    /// time — OPFS only exposes async handle creation, but sharded writes
+    /// from the engine happen synchronously, so we have to hold all the
+    /// handles we might need before any write begins.
+    pub async fn register_shards(&self, base: &str, count: usize) -> Result<(), JsValue> {
+        for i in 0..count {
+            let name = format!("{}.{:03}", base, i);
+            self.open_file(&name, true).await?;
         }
-        JsFuture::from(self.root_dir.remove_entry(path)).await?;
         Ok(())
     }
 

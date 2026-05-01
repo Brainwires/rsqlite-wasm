@@ -9,10 +9,12 @@ Databases created by rsqlite-wasm are **file-format compatible** with SQLite —
 - **Pure Rust** — zero C dependencies, builds cleanly for `wasm32-unknown-unknown`
 - **SQLite file format** — binary-compatible with SQLite 3 databases
 - **Browser persistence** — OPFS (primary) and IndexedDB (fallback) backends
+- **Multi-file sharding** — logical databases shard transparently across 1 GB files to escape browser per-file size caps (see [Database size & sharding](#database-size--sharding))
 - **Web Worker architecture** — all I/O runs off the main thread
 - **Vector search** — built-in `vec_distance_cosine`, `vec_distance_l2`, and `vec_distance_dot` functions for embedding similarity search
-- **Small binary** — ~1.6 MB WASM with LTO + `opt-level=z`
-- **420+ tests** — comprehensive coverage across all crates
+- **JavaScript UDFs** — register synchronous JS callbacks as SQL scalar functions via `db.createFunction(name, fn)`
+- **Small binary** — ~2 MB WASM with LTO + `opt-level=z`
+- **650+ tests** — comprehensive coverage across all crates
 
 ## SQL Support
 
@@ -97,6 +99,30 @@ db.close();
 
 The WASM module runs inside a Web Worker. The `WorkerDatabase` class is a main-thread proxy that communicates via `postMessage`. OPFS is used for persistence when available, with IndexedDB as a fallback.
 
+## Database size & sharding
+
+Browsers cap individual storage files well below SQLite-class workloads (OPFS and IndexedDB both have per-file size limits, often ≤ 4 GB). To escape that cap, rsqlite-wasm transparently shards each logical database across multiple backing files via a `MultiplexVfs` layer.
+
+A logical database `myapp.db` is stored on disk as `myapp.db.000`, `myapp.db.001`, `myapp.db.002`, … Each shard is capped at 1 GB by default. With the default 16-shard ceiling, a single database can grow to 16 GB without any application changes.
+
+```typescript
+// Default: 1 GB shards, 16 shards max → 16 GB ceiling.
+const db = await WorkerDatabase.open('myapp.db');
+
+// For larger databases, raise the ceiling at open time:
+const big = await WorkerDatabase.open('huge.db', {
+  chunkSize: 1024 * 1024 * 1024,  // 1 GB per shard
+  maxShards: 64,                  // 64 GB total
+});
+```
+
+Notes:
+
+- **OPFS pre-registration.** OPFS only exposes asynchronous handle creation, but the engine reads and writes synchronously. To bridge the gap, rsqlite-wasm registers all `maxShards` handles at open time. Unused shards are zero-byte files and cost only a directory entry.
+- **IndexedDB has no shard ceiling.** The IDB backend creates shards lazily, so `maxShards` is ignored there.
+- **Backward compatibility.** A legacy non-sharded file (e.g. a database created by an older single-file VFS) is detected on open and treated as shard 0; growth past 1 GB writes new shards alongside it (`myapp.db`, `myapp.db.001`, `myapp.db.002`, …).
+- **Exporting to vanilla `sqlite3`.** A sharded database is logically one file. To open it with the `sqlite3` CLI, concatenate the shards: `cat myapp.db.* > myapp.db && sqlite3 myapp.db`.
+
 ## Building from Source
 
 ### Prerequisites
@@ -153,8 +179,10 @@ rsqlite (facade) --> rsqlite-core --> rsqlite-parser
                                   --> rsqlite-storage --> rsqlite-vfs
 
 rsqlite-wasm ------> rsqlite-core
-                  --> rsqlite-vfs (OPFS + IndexedDB backends)
+                  --> rsqlite-vfs (OPFS + IndexedDB backends, MultiplexVfs)
 ```
+
+The `MultiplexVfs` layer sits between the engine and any concrete VFS backend; it presents one logical file backed by N capped-size physical files, so OPFS and IDB databases can scale past per-file size limits.
 
 The core engine uses a **tree-walking interpreter** with a Volcano/iterator execution model. The query planner produces logical plans that the executor evaluates directly — no bytecode VM. This keeps the WASM binary small and the code easy to debug.
 

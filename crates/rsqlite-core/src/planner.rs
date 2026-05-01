@@ -1494,6 +1494,99 @@ fn plan_create_table(ct: &ast::CreateTable, catalog: &Catalog) -> Result<Plan> {
     }))
 }
 
+/// True when every And-conjunct of `b` appears (structurally) as a top-level
+/// conjunct of `a`. A small, conservative implication checker — covers the
+/// common partial-index case where the user spells out the index's WHERE in
+/// their query.
+fn query_predicate_implies_index_predicate(
+    query_predicate: &PlanExpr,
+    index_predicate_src: &str,
+    columns: &[ColumnRef],
+    catalog: &Catalog,
+) -> bool {
+    // Re-parse the index's stored predicate string into a PlanExpr.
+    let parsed = match rsqlite_parser::parse::parse_sql(&format!(
+        "SELECT 1 WHERE {index_predicate_src}"
+    )) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    let expr_ast = parsed.into_iter().next().and_then(|stmt| {
+        if let sqlparser::ast::Statement::Query(q) = stmt {
+            if let sqlparser::ast::SetExpr::Select(sel) = *q.body {
+                return sel.selection;
+            }
+        }
+        None
+    });
+    let Some(expr_ast) = expr_ast else {
+        return false;
+    };
+    let Ok(idx_predicate) = plan_expr(&expr_ast, columns, catalog) else {
+        return false;
+    };
+
+    let query_conjuncts = collect_and_conjuncts(query_predicate);
+    let idx_conjuncts = collect_and_conjuncts(&idx_predicate);
+
+    idx_conjuncts.iter().all(|ip| {
+        query_conjuncts
+            .iter()
+            .any(|qp| plan_exprs_structurally_equal(qp, ip))
+    })
+}
+
+/// Flatten a nested `And` tree into a list of leaf conjuncts. Non-And nodes
+/// are returned as a single-element list.
+fn collect_and_conjuncts(expr: &PlanExpr) -> Vec<&PlanExpr> {
+    fn walk<'a>(e: &'a PlanExpr, out: &mut Vec<&'a PlanExpr>) {
+        if let PlanExpr::BinaryOp {
+            left,
+            op: BinOp::And,
+            right,
+        } = e
+        {
+            walk(left, out);
+            walk(right, out);
+        } else {
+            out.push(e);
+        }
+    }
+    let mut out = Vec::new();
+    walk(expr, &mut out);
+    out
+}
+
+/// Conservative structural equality on PlanExpr — covers the cases we need
+/// for partial-index matching (Column, Literal, BinaryOp, UnaryOp, IsNull,
+/// IsNotNull). Anything else returns false rather than risk a false match.
+fn plan_exprs_structurally_equal(a: &PlanExpr, b: &PlanExpr) -> bool {
+    match (a, b) {
+        (PlanExpr::Column(ca), PlanExpr::Column(cb)) => {
+            ca.name.eq_ignore_ascii_case(&cb.name)
+                && ca.table.as_deref().map(|s| s.to_ascii_lowercase())
+                    == cb.table.as_deref().map(|s| s.to_ascii_lowercase())
+        }
+        (PlanExpr::Rowid, PlanExpr::Rowid) => true,
+        (PlanExpr::Literal(la), PlanExpr::Literal(lb)) => la == lb,
+        (PlanExpr::BinaryOp { left: la, op: oa, right: ra },
+         PlanExpr::BinaryOp { left: lb, op: ob, right: rb }) => {
+            oa == ob
+                && plan_exprs_structurally_equal(la, lb)
+                && plan_exprs_structurally_equal(ra, rb)
+        }
+        (PlanExpr::UnaryOp { op: oa, operand: aa },
+         PlanExpr::UnaryOp { op: ob, operand: bb }) => {
+            oa == ob && plan_exprs_structurally_equal(aa, bb)
+        }
+        (PlanExpr::IsNull(aa), PlanExpr::IsNull(bb))
+        | (PlanExpr::IsNotNull(aa), PlanExpr::IsNotNull(bb)) => {
+            plan_exprs_structurally_equal(aa, bb)
+        }
+        _ => false,
+    }
+}
+
 fn try_index_scan(
     current_plan: &Plan,
     predicate: &PlanExpr,
@@ -1518,11 +1611,14 @@ fn try_index_scan(
         if idx_def.columns.is_empty() {
             continue;
         }
-        // Partial indexes: skipping at the planner level is the safe default.
-        // The query predicate would have to imply the index predicate for it
-        // to be safe to use, and that analysis isn't implemented yet.
-        if idx_def.predicate.is_some() {
-            continue;
+        // Partial indexes: only usable when the query predicate implies the
+        // index predicate. We accept the (common) case where the index's
+        // predicate appears verbatim as a top-level conjunct of the query
+        // WHERE — anything fancier still falls through to a full scan.
+        if let Some(idx_pred_src) = idx_def.predicate.as_deref() {
+            if !query_predicate_implies_index_predicate(predicate, idx_pred_src, _all_columns, catalog) {
+                continue;
+            }
         }
 
         if eq_parts.len() >= idx_def.columns.len() {

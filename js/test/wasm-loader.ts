@@ -21,6 +21,8 @@ interface WasmDatabaseInstance {
   toBuffer(): Uint8Array;
   flush(): void;
   free(): void;
+  createFunction(name: string, nArgs: number, fn: (...args: unknown[]) => unknown): void;
+  deleteFunction(name: string): boolean;
 }
 
 interface WasmDatabaseConstructor {

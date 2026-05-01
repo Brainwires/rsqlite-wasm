@@ -129,7 +129,7 @@ pub enum PlanExpr {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum LiteralValue {
     Null,
     Integer(i64),
@@ -138,7 +138,7 @@ pub enum LiteralValue {
     Bool(bool),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
     Eq,
     NotEq,
@@ -164,7 +164,7 @@ pub enum BinOp {
     JsonLongArrow,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOp {
     Not,
     Neg,
@@ -792,9 +792,28 @@ fn plan_function_expr(
         "JSON_REMOVE",
         "JSON_QUOTE",
         "JSON_PATCH",
+        // SQLiteDialect-syntax workarounds: bitwise + IS TRUE/FALSE.
+        "__SHL",
+        "__SHR",
+        "__BNOT",
+        "IS_TRUE",
+        "IS_FALSE",
+        "IS_NOT_TRUE",
+        "IS_NOT_FALSE",
     ];
 
     if KNOWN_SCALARS.contains(&name.as_str()) {
+        return Ok(PlanExpr::Function {
+            name,
+            args: scalar_args,
+        });
+    }
+
+    // User-defined scalar functions registered through `crate::udf` are
+    // looked up at evaluation time. Accept the name here so the plan tree
+    // can carry it; if it's still unregistered when the executor runs, the
+    // executor surfaces an "unknown function" error.
+    if crate::udf::is_registered(&name) {
         return Ok(PlanExpr::Function {
             name,
             args: scalar_args,
