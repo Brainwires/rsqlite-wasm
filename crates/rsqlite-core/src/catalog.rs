@@ -63,11 +63,22 @@ pub struct TableDef {
     pub foreign_keys: Vec<ForeignKeyDef>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReferentialAction {
+    NoAction,
+    Restrict,
+    Cascade,
+    SetNull,
+    SetDefault,
+}
+
 #[derive(Debug, Clone)]
 pub struct ForeignKeyDef {
     pub from_columns: Vec<String>,
     pub to_table: String,
     pub to_columns: Vec<String>,
+    pub on_delete: ReferentialAction,
+    pub on_update: ReferentialAction,
 }
 
 impl TableDef {
@@ -330,21 +341,40 @@ fn parse_table_def(entry: &SchemaEntry) -> Result<Option<TableDef>> {
         let mut foreign_keys = Vec::new();
         for (i, col) in ct.columns.iter().enumerate() {
             for opt in &col.options {
-                if let ColumnOption::ForeignKey { foreign_table, referred_columns, .. } = &opt.option {
+                if let ColumnOption::ForeignKey {
+                    foreign_table,
+                    referred_columns,
+                    on_delete,
+                    on_update,
+                    ..
+                } = &opt.option
+                {
                     foreign_keys.push(ForeignKeyDef {
                         from_columns: vec![columns[i].name.clone()],
                         to_table: foreign_table.to_string(),
                         to_columns: referred_columns.iter().map(|c| c.value.clone()).collect(),
+                        on_delete: map_referential_action(*on_delete),
+                        on_update: map_referential_action(*on_update),
                     });
                 }
             }
         }
         for constraint in &ct.constraints {
-            if let ast::TableConstraint::ForeignKey { columns: fk_cols, foreign_table, referred_columns, .. } = constraint {
+            if let ast::TableConstraint::ForeignKey {
+                columns: fk_cols,
+                foreign_table,
+                referred_columns,
+                on_delete,
+                on_update,
+                ..
+            } = constraint
+            {
                 foreign_keys.push(ForeignKeyDef {
                     from_columns: fk_cols.iter().map(|c| c.value.clone()).collect(),
                     to_table: foreign_table.to_string(),
                     to_columns: referred_columns.iter().map(|c| c.value.clone()).collect(),
+                    on_delete: map_referential_action(*on_delete),
+                    on_update: map_referential_action(*on_update),
                 });
             }
         }
@@ -360,6 +390,16 @@ fn parse_table_def(entry: &SchemaEntry) -> Result<Option<TableDef>> {
         }))
     } else {
         Ok(None)
+    }
+}
+
+fn map_referential_action(action: Option<ast::ReferentialAction>) -> ReferentialAction {
+    match action {
+        Some(ast::ReferentialAction::Cascade) => ReferentialAction::Cascade,
+        Some(ast::ReferentialAction::SetNull) => ReferentialAction::SetNull,
+        Some(ast::ReferentialAction::SetDefault) => ReferentialAction::SetDefault,
+        Some(ast::ReferentialAction::Restrict) => ReferentialAction::Restrict,
+        Some(ast::ReferentialAction::NoAction) | None => ReferentialAction::NoAction,
     }
 }
 

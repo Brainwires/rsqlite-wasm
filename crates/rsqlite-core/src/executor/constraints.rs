@@ -276,10 +276,43 @@ pub(super) fn check_foreign_key_delete(
     pager: &mut Pager,
     catalog: &Catalog,
 ) -> Result<()> {
+    apply_foreign_key_delete_actions(
+        deleted_rowid,
+        deleted_values,
+        table_name,
+        table_columns,
+        pager,
+        catalog,
+    )
+}
+
+/// Apply the configured ON DELETE action for every child FK referencing the
+/// parent table when the row at `deleted_rowid` is being removed.
+///
+/// - NoAction / Restrict: error if any child row references this parent.
+/// - Cascade: delete the matching child rows (recurse for further cascades).
+/// - SetNull / SetDefault: rewrite the FK columns to NULL or the defaults.
+pub(super) fn apply_foreign_key_delete_actions(
+    deleted_rowid: i64,
+    deleted_values: &[Value],
+    table_name: &str,
+    table_columns: &[crate::catalog::ColumnDef],
+    pager: &mut Pager,
+    catalog: &Catalog,
+) -> Result<()> {
     if !super::state::foreign_keys_enabled() {
         return Ok(());
     }
-    for child_table in catalog.all_tables() {
+
+    // Snapshot the child tables to avoid holding a borrow on catalog while we
+    // mutate the pager (and to allow recursive cascade through clones).
+    let child_tables: Vec<crate::catalog::TableDef> = catalog
+        .all_tables()
+        .filter(|t| t.foreign_keys.iter().any(|fk| fk.to_table.eq_ignore_ascii_case(table_name)))
+        .cloned()
+        .collect();
+
+    for child_table in child_tables {
         for fk in &child_table.foreign_keys {
             if !fk.to_table.eq_ignore_ascii_case(table_name) {
                 continue;
@@ -303,19 +336,244 @@ pub(super) fn check_foreign_key_delete(
 
             let mut cursor = BTreeCursor::new(pager, child_table.root_page);
             let rows = cursor.collect_all().map_err(|e| Error::Other(e.to_string()))?;
-            for row in &rows {
-                let match_all = child_col_indices.iter().zip(parent_vals.iter()).all(|(&ci, pv)| {
-                    let child_val = row.record.values.get(ci).cloned().unwrap_or(Value::Null);
-                    super::helpers::values_equal(&child_val, pv)
-                });
-                if match_all {
+            let matching_rowids: Vec<i64> = rows
+                .iter()
+                .filter(|row| {
+                    child_col_indices.iter().zip(parent_vals.iter()).all(|(&ci, pv)| {
+                        let child_val = row.record.values.get(ci).cloned().unwrap_or(Value::Null);
+                        super::helpers::values_equal(&child_val, pv)
+                    })
+                })
+                .map(|r| r.rowid)
+                .collect();
+
+            if matching_rowids.is_empty() {
+                continue;
+            }
+
+            match fk.on_delete {
+                crate::catalog::ReferentialAction::NoAction
+                | crate::catalog::ReferentialAction::Restrict => {
                     return Err(Error::Other(format!(
                         "FOREIGN KEY constraint failed: cannot delete from '{}' — referenced by '{}'",
                         table_name, child_table.name
                     )));
                 }
+                crate::catalog::ReferentialAction::Cascade => {
+                    cascade_delete_child_rows(
+                        &child_table,
+                        &matching_rowids,
+                        pager,
+                        catalog,
+                    )?;
+                }
+                crate::catalog::ReferentialAction::SetNull => {
+                    set_child_fk_columns(
+                        &child_table,
+                        &matching_rowids,
+                        &child_col_indices,
+                        &vec![Value::Null; child_col_indices.len()],
+                        pager,
+                    )?;
+                }
+                crate::catalog::ReferentialAction::SetDefault => {
+                    let defaults = evaluate_column_defaults(
+                        &child_table,
+                        &child_col_indices,
+                        pager,
+                        catalog,
+                    )?;
+                    set_child_fk_columns(
+                        &child_table,
+                        &matching_rowids,
+                        &child_col_indices,
+                        &defaults,
+                        pager,
+                    )?;
+                }
             }
         }
     }
     Ok(())
+}
+
+/// Delete the given child rows, then recursively apply ON DELETE actions for
+/// any FKs referencing this child table.
+fn cascade_delete_child_rows(
+    child_table: &crate::catalog::TableDef,
+    rowids: &[i64],
+    pager: &mut Pager,
+    catalog: &Catalog,
+) -> Result<()> {
+    use rsqlite_storage::btree::{btree_delete, btree_index_delete};
+
+    // Snapshot child rows for recursion before deleting.
+    let mut cursor = BTreeCursor::new(pager, child_table.root_page);
+    let rows = cursor.collect_all().map_err(|e| Error::Other(e.to_string()))?;
+    let snapshots: Vec<(i64, Vec<Value>)> = rows
+        .iter()
+        .filter(|r| rowids.contains(&r.rowid))
+        .map(|r| (r.rowid, r.record.values.clone()))
+        .collect();
+
+    let table_indexes = super::helpers::get_table_indexes(catalog, &child_table.name);
+    let plan_columns: Vec<crate::planner::ColumnRef> = child_table
+        .columns
+        .iter()
+        .map(|c| crate::planner::ColumnRef {
+            name: c.name.clone(),
+            column_index: c.column_index,
+            is_rowid_alias: c.is_rowid_alias,
+            table: None,
+            nullable: c.nullable,
+            is_primary_key: c.is_primary_key,
+            is_unique: c.is_unique,
+        })
+        .collect();
+
+    for (rowid, values) in &snapshots {
+        for (idx_root, idx_col_indices) in &table_indexes {
+            let key = super::helpers::build_index_key(values, idx_col_indices, &plan_columns, *rowid);
+            let _ = btree_index_delete(pager, *idx_root, &key);
+        }
+        btree_delete(pager, child_table.root_page, *rowid)
+            .map_err(|e| Error::Other(e.to_string()))?;
+    }
+
+    // Recursively cascade: this child may itself be a parent.
+    for (rowid, values) in &snapshots {
+        apply_foreign_key_delete_actions(
+            *rowid,
+            values,
+            &child_table.name,
+            &child_table.columns,
+            pager,
+            catalog,
+        )?;
+    }
+    Ok(())
+}
+
+fn set_child_fk_columns(
+    child_table: &crate::catalog::TableDef,
+    rowids: &[i64],
+    fk_col_indices: &[usize],
+    new_values: &[Value],
+    pager: &mut Pager,
+) -> Result<()> {
+    use rsqlite_storage::btree::{btree_delete, btree_insert};
+    use rsqlite_storage::codec::Record;
+
+    let mut cursor = BTreeCursor::new(pager, child_table.root_page);
+    let rows = cursor.collect_all().map_err(|e| Error::Other(e.to_string()))?;
+    let to_update: Vec<(i64, Vec<Value>)> = rows
+        .iter()
+        .filter(|r| rowids.contains(&r.rowid))
+        .map(|r| {
+            let mut updated = r.record.values.clone();
+            for (k, &ci) in fk_col_indices.iter().enumerate() {
+                if ci < updated.len() {
+                    updated[ci] = new_values.get(k).cloned().unwrap_or(Value::Null);
+                }
+            }
+            (r.rowid, updated)
+        })
+        .collect();
+
+    for (rowid, updated) in to_update {
+        btree_delete(pager, child_table.root_page, rowid)
+            .map_err(|e| Error::Other(e.to_string()))?;
+        btree_insert(pager, child_table.root_page, rowid, &Record { values: updated })
+            .map_err(|e| Error::Other(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Evaluate the static DEFAULT values for the given FK columns of a child
+/// table. Columns without a DEFAULT (or whose DEFAULT can't be evaluated
+/// statically) fall back to NULL.
+fn evaluate_column_defaults(
+    child_table: &crate::catalog::TableDef,
+    col_indices: &[usize],
+    pager: &mut Pager,
+    catalog: &Catalog,
+) -> Result<Vec<Value>> {
+    let mut out = Vec::with_capacity(col_indices.len());
+    for &ci in col_indices {
+        let col = &child_table.columns[ci];
+        let default = match &col.default_expr {
+            Some(s) => s.clone(),
+            None => {
+                out.push(Value::Null);
+                continue;
+            }
+        };
+        // Best-effort: parse and evaluate the default expression.
+        let parsed = match rsqlite_parser::parse::parse_sql(&format!("SELECT {default}")) {
+            Ok(s) => s,
+            Err(_) => {
+                out.push(Value::Null);
+                continue;
+            }
+        };
+        let expr_ast = parsed.into_iter().next().and_then(|stmt| {
+            if let sqlparser::ast::Statement::Query(q) = stmt {
+                if let sqlparser::ast::SetExpr::Select(sel) = *q.body {
+                    sel.projection.into_iter().next().and_then(|item| {
+                        if let sqlparser::ast::SelectItem::UnnamedExpr(e) = item {
+                            Some(e)
+                        } else {
+                            None
+                        }
+                    })
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        });
+        let expr_ast = match expr_ast {
+            Some(e) => e,
+            None => {
+                out.push(Value::Null);
+                continue;
+            }
+        };
+        let plan_columns: Vec<crate::planner::ColumnRef> = child_table
+            .columns
+            .iter()
+            .map(|c| crate::planner::ColumnRef {
+                name: c.name.clone(),
+                column_index: c.column_index,
+                is_rowid_alias: c.is_rowid_alias,
+                table: None,
+                nullable: c.nullable,
+                is_primary_key: c.is_primary_key,
+                is_unique: c.is_unique,
+            })
+            .collect();
+        let plan_expr = match crate::planner::plan_expr(&expr_ast, &plan_columns, catalog) {
+            Ok(pe) => pe,
+            Err(_) => {
+                out.push(Value::Null);
+                continue;
+            }
+        };
+        let placeholder_row = crate::types::Row {
+            values: vec![Value::Null; child_table.columns.len()],
+        };
+        let col_names: Vec<String> = child_table.columns.iter().map(|c| c.name.clone()).collect();
+        match super::eval::eval_expr(
+            &plan_expr,
+            &placeholder_row,
+            &col_names,
+            pager,
+            catalog,
+        ) {
+            Ok(v) => out.push(v),
+            Err(_) => out.push(Value::Null),
+        }
+    }
+    Ok(out)
 }
