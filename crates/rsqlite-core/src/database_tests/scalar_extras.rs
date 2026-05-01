@@ -1183,6 +1183,98 @@ fn series_module_rejects_insert() {
     assert!(res.is_err());
 }
 
+// ── fts5 virtual table + match/rank scalar functions ─────────────────
+
+#[test]
+fn fts5_create_insert_and_brute_force_match() {
+    let mut db = fresh();
+    db.execute("CREATE VIRTUAL TABLE docs USING fts5(content)").unwrap();
+    db.execute("INSERT INTO docs VALUES ('The quick brown fox')")
+        .unwrap();
+    db.execute("INSERT INTO docs VALUES ('Lazy dogs nap all day')")
+        .unwrap();
+    db.execute("INSERT INTO docs VALUES ('Quick foxes jump high')")
+        .unwrap();
+
+    let r = db
+        .query(
+            "SELECT rowid, content FROM docs \
+             WHERE fts5_match(content, 'quick fox') ORDER BY rowid",
+        )
+        .unwrap();
+    let ids: Vec<i64> = r
+        .rows
+        .iter()
+        .filter_map(|row| {
+            if let Value::Integer(n) = row.values[0] {
+                Some(n)
+            } else {
+                None
+            }
+        })
+        .collect();
+    // Row 1 has "quick" and "fox" (singular). Row 3 has "quick" and "foxes".
+    // Tokenizer doesn't stem, so only row 1 matches "quick fox" verbatim.
+    assert_eq!(ids, vec![1]);
+}
+
+#[test]
+fn fts5_rank_orders_by_match_count() {
+    let mut db = fresh();
+    db.execute("CREATE VIRTUAL TABLE docs USING fts5(content)").unwrap();
+    db.execute("INSERT INTO docs VALUES ('apple banana cherry')")
+        .unwrap();
+    db.execute("INSERT INTO docs VALUES ('apple grape')").unwrap();
+    db.execute("INSERT INTO docs VALUES ('mango papaya')").unwrap();
+
+    let r = db
+        .query(
+            "SELECT rowid, fts5_rank(content, 'apple banana') AS r FROM docs \
+             ORDER BY r DESC, rowid",
+        )
+        .unwrap();
+    // Row 1 matches both terms → rank 1.0.
+    // Row 2 matches `apple` only → rank 0.5.
+    // Row 3 matches nothing → rank 0.0.
+    assert_eq!(r.rows[0].values[0], Value::Integer(1));
+    assert_eq!(r.rows[0].values[1], Value::Real(1.0));
+    assert_eq!(r.rows[1].values[0], Value::Integer(2));
+    assert_eq!(r.rows[1].values[1], Value::Real(0.5));
+    assert_eq!(r.rows[2].values[0], Value::Integer(3));
+    assert_eq!(r.rows[2].values[1], Value::Real(0.0));
+}
+
+#[test]
+fn fts5_match_is_case_insensitive_via_tokenizer() {
+    let mut db = fresh();
+    db.execute("CREATE VIRTUAL TABLE docs USING fts5(content)").unwrap();
+    db.execute("INSERT INTO docs VALUES ('The QUICK Brown Fox')")
+        .unwrap();
+    let r = db
+        .query("SELECT rowid FROM docs WHERE fts5_match(content, 'quick FOX')")
+        .unwrap();
+    assert_eq!(r.rows.len(), 1);
+}
+
+#[test]
+fn fts5_match_ignores_punctuation() {
+    let mut db = fresh();
+    db.execute("CREATE VIRTUAL TABLE docs USING fts5(content)").unwrap();
+    db.execute("INSERT INTO docs VALUES ('hello, world!')")
+        .unwrap();
+    let r = db
+        .query("SELECT rowid FROM docs WHERE fts5_match(content, 'hello world')")
+        .unwrap();
+    assert_eq!(r.rows.len(), 1);
+}
+
+#[test]
+fn fts5_create_rejects_multi_column_for_now() {
+    let mut db = fresh();
+    let res = db.execute("CREATE VIRTUAL TABLE docs USING fts5(title, body)");
+    assert!(res.is_err());
+}
+
 // ── WITHOUT ROWID tables (syntax accepted, PK uniqueness enforced) ────
 
 #[test]

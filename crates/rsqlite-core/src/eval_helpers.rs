@@ -319,6 +319,56 @@ pub(crate) fn eval_scalar_function(name: &str, args: &[Value]) -> Result<Value> 
         "LAST_INSERT_ROWID" => Ok(Value::Integer(super::executor::get_last_insert_rowid_pub())),
         "CHANGES" => Ok(Value::Integer(super::executor::get_changes_pub())),
         "TOTAL_CHANGES" => Ok(Value::Integer(super::executor::get_total_changes_pub())),
+        "FTS5_MATCH" => {
+            // fts5_match(content, 'query terms') → 1 if every term in
+            // the query appears as a token in `content`, else 0. NULL
+            // content matches no query.
+            if args.len() != 2 {
+                return Err(Error::Other(
+                    "fts5_match expects (content, query_text)".into(),
+                ));
+            }
+            let content = match &args[0] {
+                Value::Null => return Ok(Value::Integer(0)),
+                v => value_to_text(v),
+            };
+            let query = value_to_text(&args[1]);
+            let content_tokens = crate::vtab::fts5::tokenize(&content);
+            let query_tokens = crate::vtab::fts5::tokenize(&query);
+            if query_tokens.is_empty() {
+                return Ok(Value::Integer(1));
+            }
+            let all_present = query_tokens
+                .iter()
+                .all(|q| content_tokens.iter().any(|c| c == q));
+            Ok(Value::Integer(if all_present { 1 } else { 0 }))
+        }
+        "FTS5_RANK" => {
+            // fts5_rank(content, 'query terms') → relevance score in
+            // [0, 1] = matched_terms / total_query_terms. Repeated
+            // matches don't compound (set membership). Sorts higher =
+            // more relevant.
+            if args.len() != 2 {
+                return Err(Error::Other(
+                    "fts5_rank expects (content, query_text)".into(),
+                ));
+            }
+            let content = match &args[0] {
+                Value::Null => return Ok(Value::Real(0.0)),
+                v => value_to_text(v),
+            };
+            let query = value_to_text(&args[1]);
+            let content_tokens = crate::vtab::fts5::tokenize(&content);
+            let query_tokens = crate::vtab::fts5::tokenize(&query);
+            if query_tokens.is_empty() {
+                return Ok(Value::Real(0.0));
+            }
+            let matched = query_tokens
+                .iter()
+                .filter(|q| content_tokens.iter().any(|c| &c == q))
+                .count();
+            Ok(Value::Real((matched as f64) / (query_tokens.len() as f64)))
+        }
         "PRINTF" | "FORMAT" => {
             if args.is_empty() {
                 return Err(Error::Other("PRINTF requires at least 1 argument".into()));

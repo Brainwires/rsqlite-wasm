@@ -111,10 +111,15 @@ Inherited from `sqlparser-rs` 0.55's `SQLiteDialect`:
   validate `min ≤ max` per dimension. Overlap queries are
   brute-force in v0.1; a real R*-Tree (split heuristic, MBR
   cascade) is a v0.2 swap behind the same module API.
-- **FTS5** — the virtual-table foundation is in place but the
-  specific full-text module (tokenizer, inverted index, BM25
-  ranking, MATCH operator) is deferred to v0.2. Third parties can
-  register custom modules via `vtab::register_module`.
+- **FTS5 `fts5`** — basic full-text search shipped as a built-in
+  module (`CREATE VIRTUAL TABLE docs USING fts5(content)`). v0.1
+  ships single-column tables, an ASCII-aware whitespace +
+  punctuation tokenizer, and the scalar functions `fts5_match(col,
+  'query')` (boolean: every query token present) and
+  `fts5_rank(col, 'query')` (`matched_terms / total_query_terms`,
+  use in `ORDER BY`). Lookup is brute force; the native `MATCH`
+  operator and SQLite's `unicode61` Unicode tokenizer + inverted
+  index + BM25 ranking are v0.2 follow-ups.
 - **`LOAD_EXTENSION`** — not safe in WASM.
 - **User-defined functions** from JavaScript — supported in the
   in-worker `Database` API via `db.createFunction(name, fn, opts)`. Not
@@ -137,9 +142,11 @@ These are tracked as v0.2 candidates:
 1. sqlite_schema root-page split (btree restructure).
 2. Partial-index implication beyond the verbatim-conjunct + literal
    range cases (e.g. semantic implication of two `IN` lists).
-3. FTS5 module (tokenizer + inverted index + BM25). Real HNSW
-   graph + R*-Tree split heuristic (the brute-force `vec_index`
-   and `rtree` shipped today are API-shaped for the swap).
+3. Real HNSW graph + R*-Tree split heuristic + FTS5 inverted index +
+   BM25 (the brute-force `vec_index`, `rtree`, and `fts5` shipped
+   today are API-shaped for the swap; multi-column FTS5 with
+   per-column weights and the native `MATCH` operator also belong
+   here).
 4. WITHOUT ROWID storage rewrite — the syntax is accepted and PK
    uniqueness enforced today, but real composite-PK-as-btree-key
    storage (for SQLite file-format compat on those tables) is

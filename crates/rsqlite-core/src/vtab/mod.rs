@@ -25,6 +25,7 @@ use std::rc::Rc;
 
 use rsqlite_storage::codec::Value;
 
+pub(crate) mod fts5;
 mod rtree;
 mod vec_index;
 
@@ -84,6 +85,7 @@ fn default_modules() -> HashMap<String, Rc<dyn Module>> {
     map.insert("kvstore".to_string(), Rc::new(KvStoreModule));
     map.insert("vec_index".to_string(), Rc::new(vec_index::VecIndexModule));
     map.insert("rtree".to_string(), Rc::new(rtree::RtreeModule));
+    map.insert("fts5".to_string(), Rc::new(fts5::Fts5Module));
     map
 }
 
