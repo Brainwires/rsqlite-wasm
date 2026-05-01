@@ -973,9 +973,33 @@ fn plan_simple_select(
                 });
             }
             if !keys.is_empty() {
-                plan = Plan::Sort {
-                    input: Box::new(plan),
-                    keys,
+                // Two competing structures:
+                //
+                // - Sort(Project(...)): Sort sees the projected columns,
+                //   so it can resolve `ORDER BY <alias>` referencing a
+                //   computed projection like `SELECT a + b AS sum
+                //   FROM t ORDER BY sum`.
+                // - Project(Sort(...)): Sort sees the underlying scan
+                //   columns, so it can resolve `ORDER BY <col>` where
+                //   `<col>` isn't in the SELECT list (e.g.
+                //   `SELECT rowid FROM t ORDER BY n`).
+                //
+                // Pick based on whether any sort key references an alias
+                // that doesn't exist as an underlying table column. If
+                // yes → keep the old Sort(Project) shape; if no → push
+                // Sort below Project.
+                let needs_alias_resolution = keys.iter().any(|k| {
+                    plan_expr_references_alias_only(&k.expr, &output_names, &all_columns)
+                });
+                plan = match (plan, needs_alias_resolution) {
+                    (Plan::Project { input, outputs }, false) => Plan::Project {
+                        input: Box::new(Plan::Sort { input, keys }),
+                        outputs,
+                    },
+                    (other, _) => Plan::Sort {
+                        input: Box::new(other),
+                        keys,
+                    },
                 };
             }
         }
@@ -1595,6 +1619,43 @@ fn plan_exprs_structurally_equal(a: &PlanExpr, b: &PlanExpr) -> bool {
         (PlanExpr::Cast { expr: ea, type_name: ta },
          PlanExpr::Cast { expr: eb, type_name: tb }) => {
             ta.eq_ignore_ascii_case(tb) && plan_exprs_structurally_equal(ea, eb)
+        }
+        _ => false,
+    }
+}
+
+/// Walk `expr` and return true if any embedded Column refers to a name
+/// that's an alias from `output_names` but does not exist as a real
+/// underlying column in `table_columns`. Used to decide whether a Sort
+/// must run after Project (so the alias is resolvable) or can run
+/// before Project (so non-projected scan columns are reachable).
+fn plan_expr_references_alias_only(
+    expr: &PlanExpr,
+    output_names: &[String],
+    table_columns: &[ColumnRef],
+) -> bool {
+    match expr {
+        PlanExpr::Column(c) => {
+            output_names.iter().any(|n| n.eq_ignore_ascii_case(&c.name))
+                && !table_columns
+                    .iter()
+                    .any(|tc| tc.name.eq_ignore_ascii_case(&c.name))
+        }
+        PlanExpr::BinaryOp { left, right, .. } => {
+            plan_expr_references_alias_only(left, output_names, table_columns)
+                || plan_expr_references_alias_only(right, output_names, table_columns)
+        }
+        PlanExpr::UnaryOp { operand, .. } => {
+            plan_expr_references_alias_only(operand, output_names, table_columns)
+        }
+        PlanExpr::Function { args, .. } => args
+            .iter()
+            .any(|a| plan_expr_references_alias_only(a, output_names, table_columns)),
+        PlanExpr::Cast { expr, .. } => {
+            plan_expr_references_alias_only(expr, output_names, table_columns)
+        }
+        PlanExpr::IsNull(e) | PlanExpr::IsNotNull(e) | PlanExpr::Collate { expr: e, .. } => {
+            plan_expr_references_alias_only(e, output_names, table_columns)
         }
         _ => false,
     }

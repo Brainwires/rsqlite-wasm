@@ -64,16 +64,13 @@ Inherited from `sqlparser-rs` 0.55's `SQLiteDialect`:
 
 ## DML
 
-- **`UPDATE ... LIMIT`.** Supported via a parser pre-pass that
-  rewrites the statement into the rowid-IN form SQLite documents.
-  Single-table UPDATE only — `UPDATE ... FROM` falls through and
-  the user keeps writing the IN-form by hand.
-- **`UPDATE ... ORDER BY`.** Not yet — the rewrite would need the
-  ORDER BY column to survive past the rowid-projection step, which
-  requires a separate planner change (sort before project, or push
-  order columns into the inner projection). Workaround: use the
-  rowid-IN form yourself, with the ORDER BY columns explicitly in
-  the inner SELECT.
+- **`UPDATE ... LIMIT` / `UPDATE ... ORDER BY`.** Supported via a
+  parser pre-pass that rewrites the statement into the rowid-IN
+  form SQLite documents. Single-table UPDATE only —
+  `UPDATE ... FROM` falls through and the user keeps writing the
+  IN-form by hand. Works in tandem with the planner's
+  Sort-before-Project shape so the ORDER BY column doesn't have to
+  be in the SELECT projection.
 
 ## Maintenance
 
@@ -104,8 +101,6 @@ Inherited from `sqlparser-rs` 0.55's `SQLiteDialect`:
 These are tracked as v0.2 candidates:
 
 1. Multi-column expression-index lookup (single-column already works).
-2. UPDATE ORDER BY (needs Sort-before-Project planner restructure;
-   UPDATE LIMIT alone already works).
 3. sqlite_schema root-page split (btree restructure).
 4. Native bitwise shift syntax (`<<`, `>>`) — currently only the
    `__shl`, `__shr` function forms work. Prefix `~` is already

@@ -537,6 +537,42 @@ fn update_with_where_and_limit() {
 }
 
 #[test]
+fn update_with_order_by_and_limit_picks_correct_rows() {
+    let mut db = fresh();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER, label TEXT)").unwrap();
+    db.execute(
+        "INSERT INTO t VALUES (1, 30, 'orig'), (2, 10, 'orig'), (3, 20, 'orig'), (4, 40, 'orig')",
+    )
+    .unwrap();
+    // Updates the 2 rows with LOWEST n: ids 2 (n=10) and 3 (n=20).
+    db.execute("UPDATE t SET label = 'low' ORDER BY n ASC LIMIT 2")
+        .unwrap();
+    let r = db
+        .query("SELECT id, label FROM t ORDER BY id")
+        .unwrap();
+    assert_eq!(r.rows[0].values[1], Value::Text("orig".to_string())); // id=1
+    assert_eq!(r.rows[1].values[1], Value::Text("low".to_string()));  // id=2
+    assert_eq!(r.rows[2].values[1], Value::Text("low".to_string()));  // id=3
+    assert_eq!(r.rows[3].values[1], Value::Text("orig".to_string())); // id=4
+}
+
+#[test]
+fn select_rowid_with_order_by_non_projected_column() {
+    // The Sort-before-Project planner change makes this work — `n` is
+    // not in the SELECT list but the Sort can still reach it.
+    let mut db = fresh();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 30), (2, 10), (3, 20)").unwrap();
+    let r = db
+        .query("SELECT id FROM t ORDER BY n ASC")
+        .unwrap();
+    assert_eq!(r.rows.len(), 3);
+    assert_eq!(r.rows[0].values[0], Value::Integer(2)); // n=10
+    assert_eq!(r.rows[1].values[0], Value::Integer(3)); // n=20
+    assert_eq!(r.rows[2].values[0], Value::Integer(1)); // n=30
+}
+
+#[test]
 fn update_with_limit_does_not_corrupt_string_literal() {
     // The literal `' LIMIT '` should NOT trigger the LIMIT preprocess
     // — the keyword finder has to respect string boundaries.
