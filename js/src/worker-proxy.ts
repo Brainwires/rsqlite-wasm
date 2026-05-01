@@ -97,14 +97,24 @@ export class WorkerDatabase {
     }
   }
 
-  /** UDFs are not yet exposed across the worker boundary because callbacks
-   *  cannot be `postMessage`-serialized. Use the in-worker `Database` API
-   *  for UDFs, or instantiate a custom worker that pre-registers them at
-   *  startup. */
-  createFunction(): never {
-    throw new Error(
-      "WorkerDatabase.createFunction is not implemented; use the in-worker Database API"
-    );
+  /** Register a JS function callable from SQL. The function's source is
+   *  serialized via `Function.prototype.toString`, sent through
+   *  `postMessage`, and rehydrated in the worker with `new Function`.
+   *
+   *  Caveat: closures over the main thread's lexical scope do NOT
+   *  survive — only globals available in the worker can be referenced.
+   *  This is the same restriction as any postMessage'd callable. */
+  async createFunction(
+    name: string,
+    nArgs: number,
+    fn: (...args: unknown[]) => unknown
+  ): Promise<void> {
+    await this.send({
+      type: "createFunction",
+      name,
+      nArgs,
+      fnSource: fn.toString(),
+    });
   }
 
   get isClosed(): boolean {

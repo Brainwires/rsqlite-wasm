@@ -114,11 +114,12 @@ Inherited from `sqlparser-rs` 0.55's `SQLiteDialect`:
   operator and SQLite's `unicode61` Unicode tokenizer + inverted
   index + BM25 ranking are v0.2 follow-ups.
 - **`LOAD_EXTENSION`** — not safe in WASM.
-- **User-defined functions** from JavaScript — supported in the
-  in-worker `Database` API via `db.createFunction(name, fn, opts)`. Not
-  yet supported through the cross-thread `WorkerDatabase` proxy because
-  callbacks can't be `postMessage`-serialized. Async UDFs are deferred
-  to a future release.
+- **Async user-defined functions** — `db.createFunction` registers a
+  synchronous JS function. Async UDFs would require a
+  `SharedArrayBuffer` + `Atomics.wait` round-trip and only run in a
+  `crossOriginIsolated` context, so they're not exposed as a default
+  API. Workaround: pre-compute async work and pass the results in as
+  parameters.
 - **`WITHOUT ROWID` tables** — syntax accepted; the catalog tracks
   the flag and the planner enforces that a PRIMARY KEY is declared.
   Query semantics match a regular rowid table because PK uniqueness

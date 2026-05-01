@@ -29,6 +29,11 @@ interface WasmDatabaseInstance {
   flush(): void;
   close(): void;
   free(): void;
+  createFunction(
+    name: string,
+    nArgs: number,
+    fn: (...args: unknown[]) => unknown
+  ): void;
 }
 
 type WorkerRequest =
@@ -48,7 +53,14 @@ type WorkerRequest =
   | { id: number; type: "execMany"; sql: string }
   | { id: number; type: "toBuffer" }
   | { id: number; type: "flush" }
-  | { id: number; type: "close" };
+  | { id: number; type: "close" }
+  | {
+      id: number;
+      type: "createFunction";
+      name: string;
+      nArgs: number;
+      fnSource: string;
+    };
 
 type WorkerResponse =
   | { id: number; ok: true; result?: unknown }
@@ -144,6 +156,23 @@ async function handleMessage(msg: WorkerRequest): Promise<WorkerResponse> {
           db.free();
           db = null;
         }
+        return { id: msg.id, ok: true };
+      }
+      case "createFunction": {
+        if (!db) throw new Error("Database not open");
+        // The function source crossed postMessage as a string; rehydrate
+        // with `new Function`. Closures over the main thread's lexical
+        // scope are NOT preserved — same caveat as any postMessage'd
+        // callable. The rehydrated function runs in the worker's global
+        // scope and can use only its own arguments and globals available
+        // in the worker.
+        const fn = new Function(
+          "args",
+          `return (${msg.fnSource}).apply(null, args);`
+        ) as (args: unknown[]) => unknown;
+        db.createFunction(msg.name, msg.nArgs, (...args: unknown[]) =>
+          fn(args)
+        );
         return { id: msg.id, ok: true };
       }
       default:
