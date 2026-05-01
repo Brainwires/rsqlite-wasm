@@ -45,9 +45,10 @@ let db: WasmDatabaseInstance | null = null;
 
 async function loadWasm(): Promise<WasmModule> {
   if (wasmModule) return wasmModule;
+  // worker.js sits at dist/worker.js, wasm at dist/wasm/rsqlite_wasm.js.
   const mod: WasmModule = await import(
     /* webpackIgnore: true */
-    new URL("../pkg/rsqlite_wasm.js", import.meta.url).href
+    new URL("./wasm/rsqlite_wasm.js", import.meta.url).href
   );
   await mod.default();
   wasmModule = mod;

@@ -5,12 +5,27 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./worker": {
+      "types": "./dist/worker.d.ts",
+      "default": "./dist/worker.js"
+    }
+  },
   "files": [
-    "dist/"
+    "dist/",
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
-    "build": "tsc",
-    "build:wasm": "cd .. && wasm-pack build --target web --out-dir pkg crates/rsqlite-wasm",
+    "clean": "rm -rf dist",
+    "build:wasm": "cd .. && wasm-pack build --target web --release --out-dir ../../js/dist/wasm --no-pack crates/rsqlite-wasm && rm -f js/dist/wasm/.gitignore",
+    "build:ts": "tsc",
+    "build:meta": "cp ../README.md README.md && cp ../LICENSE LICENSE",
+    "build": "npm run clean && npm run build:wasm && npm run build:ts && npm run build:meta",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
@@ -24,7 +39,20 @@
     "indexeddb",
     "opfs"
   ],
+  "author": "",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nightness/rsqlite-wasm.git",
+    "directory": "js"
+  },
+  "homepage": "https://github.com/nightness/rsqlite-wasm#readme",
+  "bugs": {
+    "url": "https://github.com/nightness/rsqlite-wasm/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "devDependencies": {
     "typescript": "^5.4"
   }

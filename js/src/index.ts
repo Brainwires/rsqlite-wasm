@@ -38,9 +38,12 @@ async function loadWasm(wasmUrl?: string | URL): Promise<WasmModule> {
   if (wasmInitPromise) return wasmInitPromise;
 
   wasmInitPromise = (async () => {
+    // The compiled JS sits at dist/index.js and the wasm-pack output is at
+    // dist/wasm/rsqlite_wasm.js, so the relative resolution works whether
+    // the file is loaded directly, via a bundler, or from a CDN.
     const mod: WasmModule = await import(
       /* webpackIgnore: true */
-      wasmUrl?.toString() ?? new URL("../pkg/rsqlite_wasm.js", import.meta.url).href
+      wasmUrl?.toString() ?? new URL("./wasm/rsqlite_wasm.js", import.meta.url).href
     );
     await mod.default();
     wasmModule = mod;

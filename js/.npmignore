@@ -1,0 +1,9 @@
+# The "files" field in package.json is the source of truth for what
+# ships. This file just unblocks the *.wasm pattern inherited from the
+# repo-wide .gitignore.
+!*.wasm
+!dist/wasm/
+node_modules
+src
+tsconfig.json
+.npmignore
