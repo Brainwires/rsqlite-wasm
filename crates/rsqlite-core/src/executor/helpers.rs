@@ -129,6 +129,19 @@ pub(super) fn row_values_for_rowid(
 }
 
 pub(super) fn get_table_indexes(catalog: &Catalog, table_name: &str) -> Vec<(u32, Vec<usize>)> {
+    get_table_indexes_with_predicates(catalog, table_name)
+        .into_iter()
+        .map(|(root, cols, _)| (root, cols))
+        .collect()
+}
+
+/// Like `get_table_indexes` but also returns each index's WHERE predicate
+/// (for partial indexes). The predicate is the source-form WHERE clause;
+/// callers re-parse it to skip rows that don't match.
+pub(super) fn get_table_indexes_with_predicates(
+    catalog: &Catalog,
+    table_name: &str,
+) -> Vec<(u32, Vec<usize>, Option<String>)> {
     let table_def = match catalog.get_table(table_name) {
         Some(t) => t,
         None => return vec![],
@@ -150,12 +163,57 @@ pub(super) fn get_table_indexes(catalog: &Catalog, table_name: &str) -> Vec<(u32
                 })
                 .collect();
             if col_indices.len() == idx.columns.len() {
-                Some((idx.root_page, col_indices))
+                Some((idx.root_page, col_indices, idx.predicate.clone()))
             } else {
                 None
             }
         })
         .collect()
+}
+
+/// Evaluate a partial-index predicate (in source form) against a row of
+/// values from the table. Returns true if the predicate is missing or
+/// truthy — i.e. the row belongs in the index.
+pub(super) fn index_predicate_matches(
+    predicate: Option<&str>,
+    values: &[Value],
+    table_columns: &[ColumnRef],
+    pager: &mut Pager,
+    catalog: &Catalog,
+) -> Result<bool> {
+    let s = match predicate {
+        None => return Ok(true),
+        Some(s) => s,
+    };
+    let parsed = match rsqlite_parser::parse::parse_sql(&format!("SELECT 1 WHERE {s}")) {
+        Ok(p) => p,
+        Err(_) => return Ok(true),
+    };
+    let stmt = match parsed.into_iter().next() {
+        Some(s) => s,
+        None => return Ok(true),
+    };
+    let expr = match stmt {
+        sqlparser::ast::Statement::Query(q) => match *q.body {
+            sqlparser::ast::SetExpr::Select(sel) => sel.selection,
+            _ => None,
+        },
+        _ => None,
+    };
+    let expr = match expr {
+        Some(e) => e,
+        None => return Ok(true),
+    };
+    let plan_expr = match crate::planner::plan_expr(&expr, table_columns, catalog) {
+        Ok(pe) => pe,
+        Err(_) => return Ok(true),
+    };
+    let row = crate::types::Row {
+        values: values.to_vec(),
+    };
+    let col_names: Vec<String> = table_columns.iter().map(|c| c.name.clone()).collect();
+    let v = super::eval::eval_expr(&plan_expr, &row, &col_names, pager, catalog)?;
+    Ok(crate::eval_helpers::is_truthy(&v))
 }
 
 pub(super) fn build_index_key(

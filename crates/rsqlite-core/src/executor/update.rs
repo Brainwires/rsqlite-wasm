@@ -17,8 +17,8 @@ use super::constraints::{
 };
 use super::eval::eval_expr;
 use super::helpers::{
-    apply_generated_columns, build_index_key, build_returning_result, get_table_indexes,
-    row_values_for_rowid,
+    apply_generated_columns, build_index_key, build_returning_result,
+    get_table_indexes_with_predicates, index_predicate_matches, row_values_for_rowid,
 };
 use super::state::set_changes;
 use super::trigger::fire_triggers;
@@ -244,7 +244,7 @@ pub(super) fn execute_update(
     }
 
     let rows_affected = to_update.len() as u64;
-    let table_indexes = get_table_indexes(catalog, &plan.table_name);
+    let table_indexes = get_table_indexes_with_predicates(catalog, &plan.table_name);
     let mut returning_values: Vec<Vec<Value>> = Vec::new();
 
     let mut current_root = plan.root_page;
@@ -273,12 +273,32 @@ pub(super) fn execute_update(
             catalog,
         )?;
 
-        for (idx_root, idx_col_indices) in &table_indexes {
-            let old_key = build_index_key(&old_values, idx_col_indices, &plan.table_columns, rowid);
-            let _ = btree_index_delete(pager, *idx_root, &old_key);
+        for (idx_root, idx_col_indices, predicate) in &table_indexes {
+            let old_in = index_predicate_matches(
+                predicate.as_deref(),
+                &old_values,
+                &plan.table_columns,
+                pager,
+                catalog,
+            )?;
+            let new_in = index_predicate_matches(
+                predicate.as_deref(),
+                &new_values,
+                &plan.table_columns,
+                pager,
+                catalog,
+            )?;
 
-            let new_key = build_index_key(&new_values, idx_col_indices, &plan.table_columns, rowid);
-            let _ = btree_index_insert(pager, *idx_root, &new_key);
+            if old_in {
+                let old_key =
+                    build_index_key(&old_values, idx_col_indices, &plan.table_columns, rowid);
+                let _ = btree_index_delete(pager, *idx_root, &old_key);
+            }
+            if new_in {
+                let new_key =
+                    build_index_key(&new_values, idx_col_indices, &plan.table_columns, rowid);
+                let _ = btree_index_insert(pager, *idx_root, &new_key);
+            }
         }
 
         btree_delete(pager, current_root, rowid)?;

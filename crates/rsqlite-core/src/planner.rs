@@ -41,9 +41,14 @@ pub struct CreateColumnDef {
 pub struct CreateIndexPlan {
     pub index_name: String,
     pub table_name: String,
+    /// Column expressions in source form. Most are simple identifiers; the
+    /// AST parser also accepts arbitrary expressions like `lower(name)`.
     pub columns: Vec<String>,
     pub sql: String,
     pub if_not_exists: bool,
+    /// WHERE clause for a partial index (in source form). Only rows matching
+    /// the predicate are included in the index.
+    pub predicate: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1513,6 +1518,12 @@ fn try_index_scan(
         if idx_def.columns.is_empty() {
             continue;
         }
+        // Partial indexes: skipping at the planner level is the safe default.
+        // The query predicate would have to imply the index predicate for it
+        // to be safe to use, and that analysis isn't implemented yet.
+        if idx_def.predicate.is_some() {
+            continue;
+        }
 
         if eq_parts.len() >= idx_def.columns.len() {
             let mut lookup_values = Vec::new();
@@ -1579,6 +1590,10 @@ fn try_range_scan(
             continue;
         }
         if idx_def.columns.len() != 1 {
+            continue;
+        }
+        // Same caveat as try_index_scan: skip partial indexes.
+        if idx_def.predicate.is_some() {
             continue;
         }
 
@@ -1814,6 +1829,7 @@ fn plan_create_index(ci: &ast::CreateIndex) -> Result<Plan> {
     let table_name = ci.table_name.to_string();
 
     let columns: Vec<String> = ci.columns.iter().map(|c| c.expr.to_string()).collect();
+    let predicate = ci.predicate.as_ref().map(|p| p.to_string());
 
     let sql = format!("{ci}");
 
@@ -1823,6 +1839,7 @@ fn plan_create_index(ci: &ast::CreateIndex) -> Result<Plan> {
         columns,
         sql,
         if_not_exists: ci.if_not_exists,
+        predicate,
     }))
 }
 

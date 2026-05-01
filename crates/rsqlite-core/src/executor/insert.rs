@@ -19,7 +19,8 @@ use super::constraints::{
 use super::eval::eval_expr;
 use super::helpers::{
     apply_column_defaults, apply_generated_columns, build_index_key, build_returning_result,
-    eval_insert_row, get_table_indexes, map_query_row_to_insert, read_row_by_rowid,
+    eval_insert_row, get_table_indexes_with_predicates, index_predicate_matches,
+    map_query_row_to_insert, read_row_by_rowid,
 };
 use super::state::{set_changes, set_last_insert_rowid};
 use super::trigger::fire_triggers;
@@ -62,7 +63,7 @@ fn execute_insert_inner(
         }
     }
 
-    let table_indexes = get_table_indexes(catalog, &plan.table_name);
+    let table_indexes = get_table_indexes_with_predicates(catalog, &plan.table_name);
     let mut rows_affected = 0u64;
     let mut current_root = plan.root_page;
     let is_autoincrement = catalog
@@ -138,7 +139,16 @@ fn execute_insert_inner(
             if rowid > max_rowid_inserted {
                 max_rowid_inserted = rowid;
             }
-            for (idx_root, idx_col_indices) in &table_indexes {
+            for (idx_root, idx_col_indices, predicate) in &table_indexes {
+                if !index_predicate_matches(
+                    predicate.as_deref(),
+                    &values,
+                    &plan.table_columns,
+                    pager,
+                    catalog,
+                )? {
+                    continue;
+                }
                 let key = build_index_key(&values, idx_col_indices, &plan.table_columns, rowid);
                 btree_index_insert(pager, *idx_root, &key)
                     .map_err(|e| Error::Other(e.to_string()))?;
@@ -213,7 +223,7 @@ fn execute_insert_inner(
 
         if plan.or_replace && btree_row_exists(pager, current_root, rowid)? {
             let old_values = read_row_by_rowid(pager, current_root, rowid, &plan.table_columns)?;
-            for (idx_root, idx_col_indices) in &table_indexes {
+            for (idx_root, idx_col_indices, _) in &table_indexes {
                 let old_key =
                     build_index_key(&old_values, idx_col_indices, &plan.table_columns, rowid);
                 let _ = btree_index_delete(pager, *idx_root, &old_key);
@@ -225,7 +235,7 @@ fn execute_insert_inner(
             if let Some(existing_rowid) = conflict_rowid {
                 let old_values =
                     read_row_by_rowid(pager, current_root, existing_rowid, &plan.table_columns)?;
-                for (idx_root, idx_col_indices) in &table_indexes {
+                for (idx_root, idx_col_indices, _) in &table_indexes {
                     let old_key = build_index_key(
                         &old_values,
                         idx_col_indices,
@@ -340,7 +350,16 @@ fn execute_insert_inner(
                                 })?;
                             updated[idx] = val;
                         }
-                        for (idx_root, idx_col_indices) in &table_indexes {
+                        for (idx_root, idx_col_indices, predicate) in &table_indexes {
+                            if !index_predicate_matches(
+                                predicate.as_deref(),
+                                &old_values,
+                                &plan.table_columns,
+                                pager,
+                                catalog,
+                            )? {
+                                continue;
+                            }
                             let old_key = build_index_key(
                                 &old_values,
                                 idx_col_indices,
@@ -356,7 +375,16 @@ fn execute_insert_inner(
                             values: updated.clone(),
                         };
                         current_root = btree_insert(pager, current_root, existing_rowid, &record)?;
-                        for (idx_root, idx_col_indices) in &table_indexes {
+                        for (idx_root, idx_col_indices, predicate) in &table_indexes {
+                            if !index_predicate_matches(
+                                predicate.as_deref(),
+                                &updated,
+                                &plan.table_columns,
+                                pager,
+                                catalog,
+                            )? {
+                                continue;
+                            }
                             let new_key = build_index_key(
                                 &updated,
                                 idx_col_indices,
@@ -422,7 +450,16 @@ fn execute_insert_inner(
             max_rowid_inserted = rowid;
         }
 
-        for (idx_root, idx_col_indices) in &table_indexes {
+        for (idx_root, idx_col_indices, predicate) in &table_indexes {
+            if !index_predicate_matches(
+                predicate.as_deref(),
+                &values,
+                &plan.table_columns,
+                pager,
+                catalog,
+            )? {
+                continue;
+            }
             let key = build_index_key(&values, idx_col_indices, &plan.table_columns, rowid);
             btree_index_insert(pager, *idx_root, &key).map_err(|e| Error::Other(e.to_string()))?;
         }

@@ -147,7 +147,11 @@ pub(super) fn execute_create_index(
         .ok_or_else(|| Error::Other(format!("table not found: {}", plan.table_name)))?;
     let table_root = table_def.root_page;
 
-    let col_indices: Vec<usize> = plan
+    // Resolve each indexed expression. Plain column names are looked up in
+    // the table; arbitrary expressions become None here and are emitted as
+    // NULL keys (acceptable since query-side use of expression indexes is
+    // not yet implemented — we just want the index to build without error).
+    let col_indices: Vec<Option<usize>> = plan
         .columns
         .iter()
         .map(|col_name| {
@@ -155,14 +159,8 @@ pub(super) fn execute_create_index(
                 .columns
                 .iter()
                 .position(|c| c.name.eq_ignore_ascii_case(col_name))
-                .ok_or_else(|| {
-                    Error::Other(format!(
-                        "column {} not found in table {}",
-                        col_name, plan.table_name
-                    ))
-                })
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect();
 
     let has_rowid_alias = table_def.columns.iter().any(|c| c.is_rowid_alias);
 
@@ -173,21 +171,73 @@ pub(super) fn execute_create_index(
         .collect_all()
         .map_err(|e| Error::Other(e.to_string()))?;
 
+    // Build planning-side ColumnRefs once for the predicate evaluator.
+    let plan_columns: Vec<crate::planner::ColumnRef> = table_def
+        .columns
+        .iter()
+        .map(|c| crate::planner::ColumnRef {
+            name: c.name.clone(),
+            column_index: c.column_index,
+            is_rowid_alias: c.is_rowid_alias,
+            table: None,
+            nullable: c.nullable,
+            is_primary_key: c.is_primary_key,
+            is_unique: c.is_unique,
+        })
+        .collect();
+    let col_names: Vec<String> = table_def.columns.iter().map(|c| c.name.clone()).collect();
+    let predicate_plan = predicate_from_sql(plan.predicate.as_deref(), &plan_columns, catalog);
+
     let mut current_root = root_page;
     for row in &rows {
+        // Build the row in user-facing column order (rowid alias gets the
+        // rowid, otherwise pull from the record).
+        let row_values: Vec<Value> = table_def
+            .columns
+            .iter()
+            .map(|c| {
+                if c.is_rowid_alias {
+                    Value::Integer(row.rowid)
+                } else {
+                    row.record
+                        .values
+                        .get(c.column_index)
+                        .cloned()
+                        .unwrap_or(Value::Null)
+                }
+            })
+            .collect();
+        let row_obj = crate::types::Row {
+            values: row_values.clone(),
+        };
+
+        // Partial index: only include rows where the predicate is truthy.
+        if let Some(pred) = &predicate_plan {
+            let v =
+                super::eval::eval_expr(pred, &row_obj, &col_names, pager, catalog)?;
+            if !crate::eval_helpers::is_truthy(&v) {
+                continue;
+            }
+        }
+
         let mut key_values: Vec<Value> = Vec::new();
-        for &col_idx in &col_indices {
-            let table_col = &table_def.columns[col_idx];
-            if table_col.is_rowid_alias {
-                key_values.push(Value::Integer(row.rowid));
-            } else {
-                let val = row
-                    .record
-                    .values
-                    .get(col_idx)
-                    .cloned()
-                    .unwrap_or(Value::Null);
-                key_values.push(val);
+        for &col_idx_opt in &col_indices {
+            match col_idx_opt {
+                Some(col_idx) => {
+                    let table_col = &table_def.columns[col_idx];
+                    if table_col.is_rowid_alias {
+                        key_values.push(Value::Integer(row.rowid));
+                    } else {
+                        key_values.push(
+                            row.record
+                                .values
+                                .get(col_idx)
+                                .cloned()
+                                .unwrap_or(Value::Null),
+                        );
+                    }
+                }
+                None => key_values.push(Value::Null),
             }
         }
         key_values.push(Value::Integer(row.rowid));
@@ -216,6 +266,27 @@ pub(super) fn execute_create_index(
     catalog.reload(pager)?;
 
     Ok(ExecResult::affected(0))
+}
+
+/// Parse a partial-index WHERE clause back into a PlanExpr. Returns None
+/// for missing or unparseable predicates (the index then behaves as a
+/// non-partial index — safer than silently filtering nothing).
+pub(super) fn predicate_from_sql(
+    sql: Option<&str>,
+    columns: &[crate::planner::ColumnRef],
+    catalog: &Catalog,
+) -> Option<crate::planner::PlanExpr> {
+    let s = sql?;
+    let parsed = rsqlite_parser::parse::parse_sql(&format!("SELECT 1 WHERE {s}")).ok()?;
+    let stmt = parsed.into_iter().next()?;
+    if let sqlparser::ast::Statement::Query(q) = stmt {
+        if let sqlparser::ast::SetExpr::Select(sel) = *q.body {
+            if let Some(expr) = sel.selection {
+                return crate::planner::plan_expr(&expr, columns, catalog).ok();
+            }
+        }
+    }
+    None
 }
 
 pub(super) fn execute_alter_rename(

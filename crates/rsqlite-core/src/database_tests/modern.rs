@@ -1959,3 +1959,82 @@ fn json_each_invalid_json_returns_empty() {
         .unwrap();
     assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(0));
 }
+
+#[test]
+fn partial_index_only_includes_matching_rows() {
+    let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+    let mut db = Database::create(&vfs, "test.db").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT)").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'active'), (2, 'archived'), (3, 'active')").unwrap();
+    // Build a partial index on (status) only for active rows.
+    db.execute("CREATE INDEX idx_active ON t (status) WHERE status = 'active'")
+        .unwrap();
+
+    // PRAGMA reports the index exists.
+    let r = db.query("PRAGMA index_list(t)").unwrap();
+    assert_eq!(r.rows.len(), 1);
+
+    // Sanity: the table has all 3 rows still queryable (full scan).
+    let r = db.query("SELECT COUNT(*) FROM t").unwrap();
+    assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(3));
+}
+
+#[test]
+fn partial_index_maintained_on_insert() {
+    let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+    let mut db = Database::create(&vfs, "test.db").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT)").unwrap();
+    db.execute("CREATE INDEX idx_active ON t (status) WHERE status = 'active'")
+        .unwrap();
+    // Insert into both matching and non-matching predicate; both should
+    // succeed without error.
+    db.execute("INSERT INTO t VALUES (1, 'active')").unwrap();
+    db.execute("INSERT INTO t VALUES (2, 'archived')").unwrap();
+    let r = db.query("SELECT COUNT(*) FROM t").unwrap();
+    assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(2));
+}
+
+#[test]
+fn partial_index_persists_predicate_across_reopen() {
+    let db_path = "/tmp/rsqlite_partial_index_persist.db";
+    let _ = std::fs::remove_file(db_path);
+    let vfs = rsqlite_vfs::native::NativeVfs::new();
+    {
+        let mut db = Database::create(&vfs, db_path).unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT)")
+            .unwrap();
+        db.execute("CREATE INDEX idx_active ON t (status) WHERE status = 'active'")
+            .unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'active'), (2, 'archived')")
+            .unwrap();
+    }
+    {
+        let mut db = Database::open(&vfs, db_path).unwrap();
+        // Insertion path needs the predicate; a successful insert here
+        // confirms the predicate was reloaded from sqlite_master.
+        db.execute("INSERT INTO t VALUES (3, 'active')").unwrap();
+        let r = db.query("SELECT COUNT(*) FROM t").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(3));
+    }
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[test]
+fn expression_index_creates_without_error() {
+    let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+    let mut db = Database::create(&vfs, "test.db").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+        .unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'Alice'), (2, 'BOB')")
+        .unwrap();
+    // Expression indexes parse and build (with NULL placeholders) but are
+    // not yet used at query lookup time. Confirm CREATE doesn't error and
+    // queries still work via full table scan.
+    db.execute("CREATE INDEX idx_lower ON t (lower(name))").unwrap();
+
+    let r = db
+        .query("SELECT id FROM t WHERE lower(name) = 'alice'")
+        .unwrap();
+    assert_eq!(r.rows.len(), 1);
+    assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(1));
+}

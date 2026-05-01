@@ -132,6 +132,9 @@ pub struct IndexDef {
     pub root_page: u32,
     pub columns: Vec<String>,
     pub sql: Option<String>,
+    /// WHERE clause for a partial index. Re-parsed into an expression at use
+    /// time; stored as source text on the catalog.
+    pub predicate: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -464,6 +467,7 @@ fn parse_index_def(entry: &SchemaEntry) -> Result<Option<IndexDef>> {
                 root_page: entry.rootpage,
                 columns: vec![],
                 sql: None,
+                predicate: None,
             }));
         }
     };
@@ -477,6 +481,7 @@ fn parse_index_def(entry: &SchemaEntry) -> Result<Option<IndexDef>> {
                 root_page: entry.rootpage,
                 columns: vec![],
                 sql: Some(sql.clone()),
+                predicate: None,
             }));
         }
     };
@@ -488,6 +493,7 @@ fn parse_index_def(entry: &SchemaEntry) -> Result<Option<IndexDef>> {
 
     if let Statement::CreateIndex(ci) = stmt {
         let columns: Vec<String> = ci.columns.iter().map(|c| c.expr.to_string()).collect();
+        let predicate = ci.predicate.as_ref().map(|p| p.to_string());
 
         Ok(Some(IndexDef {
             name: entry.name.clone(),
@@ -495,6 +501,7 @@ fn parse_index_def(entry: &SchemaEntry) -> Result<Option<IndexDef>> {
             root_page: entry.rootpage,
             columns,
             sql: Some(sql.clone()),
+            predicate,
         }))
     } else {
         Ok(None)
