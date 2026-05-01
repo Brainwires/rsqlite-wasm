@@ -43,12 +43,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/nightness/rsqlite-wasm.git",
+    "url": "git+https://github.com/Brainwires/rsqlite-wasm.git",
     "directory": "js"
   },
-  "homepage": "https://github.com/nightness/rsqlite-wasm#readme",
+  "homepage": "https://github.com/Brainwires/rsqlite-wasm#readme",
   "bugs": {
-    "url": "https://github.com/nightness/rsqlite-wasm/issues"
+    "url": "https://github.com/Brainwires/rsqlite-wasm/issues"
   },
   "engines": {
     "node": ">=18"
