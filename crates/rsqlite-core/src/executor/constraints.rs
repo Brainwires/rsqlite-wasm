@@ -709,7 +709,7 @@ fn cascade_delete_child_rows(
     for (rowid, values) in &snapshots {
         for (idx_root, idx_col_indices) in &table_indexes {
             let key =
-                super::helpers::build_index_key(values, idx_col_indices, &plan_columns, *rowid);
+                super::helpers::build_index_key(values, idx_col_indices, &plan_columns, pager, catalog, *rowid)?;
             let _ = btree_index_delete(pager, *idx_root, &key);
         }
         btree_delete(pager, child_table.root_page, *rowid)

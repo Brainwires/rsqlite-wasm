@@ -144,7 +144,7 @@ pub(super) fn execute_delete(
         }
 
         for (idx_root, idx_col_indices) in &table_indexes {
-            let old_key = build_index_key(&old_values, idx_col_indices, &plan.table_columns, rowid);
+            let old_key = build_index_key(&old_values, idx_col_indices, &plan.table_columns, pager, catalog, rowid)?;
             let _ = btree_index_delete(pager, *idx_root, &old_key);
         }
         btree_delete(pager, plan.root_page, rowid)?;

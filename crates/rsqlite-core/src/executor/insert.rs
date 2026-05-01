@@ -150,7 +150,7 @@ fn execute_insert_inner(
                 )? {
                     continue;
                 }
-                let key = build_index_key(&values, idx_col_indices, &plan.table_columns, rowid);
+                let key = build_index_key(&values, idx_col_indices, &plan.table_columns, pager, catalog, rowid)?;
                 btree_index_insert(pager, *idx_root, &key)
                     .map_err(|e| Error::Other(e.to_string()))?;
             }
@@ -226,7 +226,7 @@ fn execute_insert_inner(
             let old_values = read_row_by_rowid(pager, current_root, rowid, &plan.table_columns)?;
             for (idx_root, idx_col_indices, _) in &table_indexes {
                 let old_key =
-                    build_index_key(&old_values, idx_col_indices, &plan.table_columns, rowid);
+                    build_index_key(&old_values, idx_col_indices, &plan.table_columns, pager, catalog, rowid)?;
                 let _ = btree_index_delete(pager, *idx_root, &old_key);
             }
             btree_delete(pager, current_root, rowid).map_err(|e| Error::Other(e.to_string()))?;
@@ -237,12 +237,7 @@ fn execute_insert_inner(
                 let old_values =
                     read_row_by_rowid(pager, current_root, existing_rowid, &plan.table_columns)?;
                 for (idx_root, idx_col_indices, _) in &table_indexes {
-                    let old_key = build_index_key(
-                        &old_values,
-                        idx_col_indices,
-                        &plan.table_columns,
-                        existing_rowid,
-                    );
+                    let old_key = build_index_key(&old_values, idx_col_indices, &plan.table_columns, pager, catalog, existing_rowid)?;
                     let _ = btree_index_delete(pager, *idx_root, &old_key);
                 }
                 btree_delete(pager, current_root, existing_rowid)
@@ -359,12 +354,7 @@ fn execute_insert_inner(
                             )? {
                                 continue;
                             }
-                            let old_key = build_index_key(
-                                &old_values,
-                                idx_col_indices,
-                                &plan.table_columns,
-                                existing_rowid,
-                            );
+                            let old_key = build_index_key(&old_values, idx_col_indices, &plan.table_columns, pager, catalog, existing_rowid)?;
                             btree_index_delete(pager, *idx_root, &old_key)
                                 .map_err(|e| Error::Other(e.to_string()))?;
                         }
@@ -384,12 +374,7 @@ fn execute_insert_inner(
                             )? {
                                 continue;
                             }
-                            let new_key = build_index_key(
-                                &updated,
-                                idx_col_indices,
-                                &plan.table_columns,
-                                existing_rowid,
-                            );
+                            let new_key = build_index_key(&updated, idx_col_indices, &plan.table_columns, pager, catalog, existing_rowid)?;
                             btree_index_insert(pager, *idx_root, &new_key)
                                 .map_err(|e| Error::Other(e.to_string()))?;
                         }
@@ -460,7 +445,7 @@ fn execute_insert_inner(
             )? {
                 continue;
             }
-            let key = build_index_key(&values, idx_col_indices, &plan.table_columns, rowid);
+            let key = build_index_key(&values, idx_col_indices, &plan.table_columns, pager, catalog, rowid)?;
             btree_index_insert(pager, *idx_root, &key).map_err(|e| Error::Other(e.to_string()))?;
         }
 

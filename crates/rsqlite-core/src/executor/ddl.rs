@@ -148,17 +148,21 @@ pub(super) fn execute_create_index(
     let table_root = table_def.root_page;
 
     // Resolve each indexed expression. Plain column names are looked up in
-    // the table; arbitrary expressions become None here and are emitted as
-    // NULL keys (acceptable since query-side use of expression indexes is
-    // not yet implemented — we just want the index to build without error).
-    let col_indices: Vec<Option<usize>> = plan
+    // the table; non-column entries are stored as expression sources and
+    // re-evaluated against each row when building the index key.
+    use super::helpers::IndexCol;
+    let cols: Vec<IndexCol> = plan
         .columns
         .iter()
-        .map(|col_name| {
-            table_def
+        .map(|col_src| {
+            match table_def
                 .columns
                 .iter()
-                .position(|c| c.name.eq_ignore_ascii_case(col_name))
+                .position(|c| c.name.eq_ignore_ascii_case(col_src))
+            {
+                Some(idx) => IndexCol::Col(idx),
+                None => IndexCol::Expr(col_src.clone()),
+            }
         })
         .collect();
 
@@ -218,23 +222,32 @@ pub(super) fn execute_create_index(
         }
 
         let mut key_values: Vec<Value> = Vec::new();
-        for &col_idx_opt in &col_indices {
-            match col_idx_opt {
-                Some(col_idx) => {
-                    let table_col = &table_def.columns[col_idx];
+        for col in &cols {
+            match col {
+                IndexCol::Col(col_idx) => {
+                    let table_col = &table_def.columns[*col_idx];
                     if table_col.is_rowid_alias {
                         key_values.push(Value::Integer(row.rowid));
                     } else {
                         key_values.push(
                             row.record
                                 .values
-                                .get(col_idx)
+                                .get(*col_idx)
                                 .cloned()
                                 .unwrap_or(Value::Null),
                         );
                     }
                 }
-                None => key_values.push(Value::Null),
+                IndexCol::Expr(src) => {
+                    let v = super::helpers::eval_index_expression(
+                        src,
+                        &row_values,
+                        &plan_columns,
+                        pager,
+                        catalog,
+                    )?;
+                    key_values.push(v);
+                }
             }
         }
         key_values.push(Value::Integer(row.rowid));

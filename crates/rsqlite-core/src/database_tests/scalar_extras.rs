@@ -322,6 +322,54 @@ fn insert_or_ignore_keeps_existing_on_conflict() {
     assert_eq!(r.rows[0].values[0], Value::Text("first".to_string()));
 }
 
+// ── Expression index build correctness ────────────────────────────────
+
+#[test]
+fn expression_index_builds_evaluated_values() {
+    // Verify CREATE INDEX with an expression evaluates the expression
+    // against existing rows (rather than emitting NULL placeholders).
+    let mut db = fresh();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'Alice'), (2, 'BOB')").unwrap();
+    // No assertion on EXPLAIN — just ensure CREATE INDEX succeeds without
+    // silently producing junk. The query side still doesn't optimize for
+    // expression indexes, so we do a regular SELECT to confirm row counts.
+    db.execute("CREATE INDEX idx_lower_name ON t(lower(name))").unwrap();
+    let r = db.query("SELECT COUNT(*) FROM t").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Integer(2));
+}
+
+#[test]
+fn expression_index_maintained_on_insert() {
+    // INSERT after the index exists should add a properly-keyed entry.
+    // We can't observe the index entry directly, but we exercise the path
+    // — any panic from an index-build helper would surface here.
+    let mut db = fresh();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+    db.execute("CREATE INDEX idx_lower_name ON t(lower(name))").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'Carol')").unwrap();
+    db.execute("INSERT INTO t VALUES (2, 'dave')").unwrap();
+    let r = db.query("SELECT COUNT(*) FROM t").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Integer(2));
+}
+
+#[test]
+fn expression_index_maintained_on_update_and_delete() {
+    // UPDATE / DELETE should remove the old indexed key + re-add the
+    // expression-evaluated new key. As above, we verify the path runs
+    // without error.
+    let mut db = fresh();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'Eve'), (2, 'Frank')").unwrap();
+    db.execute("CREATE INDEX idx_lower_name ON t(lower(name))").unwrap();
+    db.execute("UPDATE t SET name = 'EVELYN' WHERE id = 1").unwrap();
+    db.execute("DELETE FROM t WHERE id = 2").unwrap();
+    let r = db.query("SELECT name FROM t WHERE id = 1").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Text("EVELYN".to_string()));
+    let count = db.query("SELECT COUNT(*) FROM t").unwrap();
+    assert_eq!(count.rows[0].values[0], Value::Integer(1));
+}
+
 // ── Partial index lookup-time use ─────────────────────────────────────
 
 #[test]

@@ -307,12 +307,12 @@ pub(super) fn execute_update(
 
             if old_in {
                 let old_key =
-                    build_index_key(&old_values, idx_col_indices, &plan.table_columns, rowid);
+                    build_index_key(&old_values, idx_col_indices, &plan.table_columns, pager, catalog, rowid)?;
                 let _ = btree_index_delete(pager, *idx_root, &old_key);
             }
             if new_in {
                 let new_key =
-                    build_index_key(&new_values, idx_col_indices, &plan.table_columns, rowid);
+                    build_index_key(&new_values, idx_col_indices, &plan.table_columns, pager, catalog, rowid)?;
                 let _ = btree_index_insert(pager, *idx_root, &new_key);
             }
         }

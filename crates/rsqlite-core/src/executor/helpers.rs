@@ -128,7 +128,17 @@ pub(super) fn row_values_for_rowid(
     vec![Value::Null; table_columns.len()]
 }
 
-pub(super) fn get_table_indexes(catalog: &Catalog, table_name: &str) -> Vec<(u32, Vec<usize>)> {
+/// One position within an index's key tuple. Most indexes are column-only
+/// (`IndexCol::Col`); CREATE INDEX over an expression like `lower(name)`
+/// produces an `IndexCol::Expr` whose source text is re-parsed and
+/// evaluated each time the key is built.
+#[derive(Debug, Clone)]
+pub(super) enum IndexCol {
+    Col(usize),
+    Expr(String),
+}
+
+pub(super) fn get_table_indexes(catalog: &Catalog, table_name: &str) -> Vec<(u32, Vec<IndexCol>)> {
     get_table_indexes_with_predicates(catalog, table_name)
         .into_iter()
         .map(|(root, cols, _)| (root, cols))
@@ -141,7 +151,7 @@ pub(super) fn get_table_indexes(catalog: &Catalog, table_name: &str) -> Vec<(u32
 pub(super) fn get_table_indexes_with_predicates(
     catalog: &Catalog,
     table_name: &str,
-) -> Vec<(u32, Vec<usize>, Option<String>)> {
+) -> Vec<(u32, Vec<IndexCol>, Option<String>)> {
     let table_def = match catalog.get_table(table_name) {
         Some(t) => t,
         None => return vec![],
@@ -151,24 +161,68 @@ pub(super) fn get_table_indexes_with_predicates(
         .indexes
         .values()
         .filter(|idx| idx.table_name.eq_ignore_ascii_case(table_name) && !idx.columns.is_empty())
-        .filter_map(|idx| {
-            let col_indices: Vec<usize> = idx
+        .map(|idx| {
+            let cols: Vec<IndexCol> = idx
                 .columns
                 .iter()
-                .filter_map(|col_name| {
-                    table_def
+                .map(|col_src| {
+                    match table_def
                         .columns
                         .iter()
-                        .position(|c| c.name.eq_ignore_ascii_case(col_name))
+                        .position(|c| c.name.eq_ignore_ascii_case(col_src))
+                    {
+                        Some(idx) => IndexCol::Col(idx),
+                        None => IndexCol::Expr(col_src.clone()),
+                    }
                 })
                 .collect();
-            if col_indices.len() == idx.columns.len() {
-                Some((idx.root_page, col_indices, idx.predicate.clone()))
-            } else {
-                None
-            }
+            (idx.root_page, cols, idx.predicate.clone())
         })
         .collect()
+}
+
+/// Evaluate one indexed expression against the given row's column values.
+/// Used for `CREATE INDEX … ON t(lower(name))`-style expression indexes
+/// during INSERT/UPDATE/DELETE so the index stays in sync.
+pub(super) fn eval_index_expression(
+    expr_src: &str,
+    values: &[Value],
+    table_columns: &[ColumnRef],
+    pager: &mut Pager,
+    catalog: &Catalog,
+) -> Result<Value> {
+    let parsed = match rsqlite_parser::parse::parse_sql(&format!("SELECT {expr_src}")) {
+        Ok(p) => p,
+        Err(_) => return Ok(Value::Null),
+    };
+    let expr_ast = parsed.into_iter().next().and_then(|stmt| {
+        if let sqlparser::ast::Statement::Query(q) = stmt {
+            if let sqlparser::ast::SetExpr::Select(sel) = *q.body {
+                return sel.projection.into_iter().next().and_then(|item| {
+                    if let sqlparser::ast::SelectItem::UnnamedExpr(e) = item {
+                        Some(e)
+                    } else {
+                        None
+                    }
+                });
+            }
+        }
+        None
+    });
+    let expr_ast = match expr_ast {
+        Some(e) => e,
+        None => return Ok(Value::Null),
+    };
+    let plan_expr = match crate::planner::plan_expr(&expr_ast, table_columns, catalog) {
+        Ok(pe) => pe,
+        Err(_) => return Ok(Value::Null),
+    };
+    let row = crate::types::Row {
+        values: values.to_vec(),
+        rowid: None,
+    };
+    let col_names: Vec<String> = table_columns.iter().map(|c| c.name.clone()).collect();
+    super::eval::eval_expr(&plan_expr, &row, &col_names, pager, catalog)
 }
 
 /// Evaluate a partial-index predicate (in source form) against a row of
@@ -216,20 +270,30 @@ pub(super) fn index_predicate_matches(
 
 pub(super) fn build_index_key(
     values: &[Value],
-    col_indices: &[usize],
+    cols: &[IndexCol],
     table_columns: &[ColumnRef],
+    pager: &mut Pager,
+    catalog: &Catalog,
     rowid: i64,
-) -> Record {
+) -> Result<Record> {
     let mut key_values: Vec<Value> = Vec::new();
-    for &col_idx in col_indices {
-        if table_columns[col_idx].is_rowid_alias {
-            key_values.push(Value::Integer(rowid));
-        } else {
-            key_values.push(values.get(col_idx).cloned().unwrap_or(Value::Null));
+    for col in cols {
+        match col {
+            IndexCol::Col(idx) => {
+                if table_columns[*idx].is_rowid_alias {
+                    key_values.push(Value::Integer(rowid));
+                } else {
+                    key_values.push(values.get(*idx).cloned().unwrap_or(Value::Null));
+                }
+            }
+            IndexCol::Expr(src) => {
+                let v = eval_index_expression(src, values, table_columns, pager, catalog)?;
+                key_values.push(v);
+            }
         }
     }
     key_values.push(Value::Integer(rowid));
-    Record { values: key_values }
+    Ok(Record { values: key_values })
 }
 
 pub(super) fn eval_insert_row(
