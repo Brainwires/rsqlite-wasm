@@ -1,9 +1,13 @@
 # The "files" field in package.json is the source of truth for what
 # ships. This file just unblocks the *.wasm pattern inherited from the
-# repo-wide .gitignore.
+# repo-wide .gitignore and excludes test artifacts.
 !*.wasm
 !dist/wasm/
 node_modules
 src
+test
 tsconfig.json
+vitest.config.ts
 .npmignore
+# Don't ship the Node-target build — it's only used by Vitest.
+dist/wasm-node
