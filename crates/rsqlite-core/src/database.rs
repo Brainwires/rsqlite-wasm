@@ -376,6 +376,7 @@ fn describe_plan_recursive(
         }
         Plan::IndexScan {
             table,
+            index_name,
             index_columns,
             ..
         } => {
@@ -385,11 +386,12 @@ fn describe_plan_recursive(
                     Value::Integer(my_id),
                     Value::Integer(parent),
                     Value::Integer(0),
-                    Value::Text(format!("{indent}SEARCH TABLE {table} USING INDEX ({cols})")),
+                    Value::Text(format!("{indent}SEARCH TABLE {table} USING INDEX {index_name} ({cols})")),
                 ], rowid: None });
         }
         Plan::IndexRangeScan {
             table,
+            index_name,
             index_column,
             ..
         } => {
@@ -399,7 +401,7 @@ fn describe_plan_recursive(
                     Value::Integer(parent),
                     Value::Integer(0),
                     Value::Text(format!(
-                        "{indent}SEARCH TABLE {table} USING INDEX ({index_column} range)"
+                        "{indent}SEARCH TABLE {table} USING INDEX {index_name} ({index_column} range)"
                     )),
                 ], rowid: None });
         }

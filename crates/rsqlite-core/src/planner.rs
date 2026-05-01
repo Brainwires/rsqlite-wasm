@@ -217,6 +217,7 @@ pub enum Plan {
         table: String,
         table_root_page: u32,
         index_root_page: u32,
+        index_name: String,
         columns: Vec<ColumnRef>,
         index_columns: Vec<String>,
         lookup_values: Vec<PlanExpr>,
@@ -225,6 +226,7 @@ pub enum Plan {
         table: String,
         table_root_page: u32,
         index_root_page: u32,
+        index_name: String,
         columns: Vec<ColumnRef>,
         index_column: String,
         lower_bound: Option<(PlanExpr, bool)>,
@@ -1668,11 +1670,146 @@ fn query_predicate_implies_index_predicate(
     let query_conjuncts = collect_and_conjuncts(query_predicate);
     let idx_conjuncts = collect_and_conjuncts(&idx_predicate);
 
+    // Each conjunct of the index's WHERE must be implied by the query's WHERE.
+    // For each idx conjunct, look for a query conjunct that semantically
+    // implies it — verbatim equality is the easiest case, then range
+    // tightening / equality-into-range / IN-list subsetting.
     idx_conjuncts.iter().all(|ip| {
         query_conjuncts
             .iter()
-            .any(|qp| plan_exprs_structurally_equal(qp, ip))
+            .any(|qp| query_conjunct_implies(qp, ip))
     })
+}
+
+/// Does the query conjunct `qp` imply the index conjunct `ip`?
+///
+/// The recursion handles structural equality first (the cheap case shipped
+/// originally), then specific comparison-to-comparison shapes for ranges,
+/// equality-into-range, and IN-list subsetting. Returns false for anything
+/// not explicitly recognized — partial-index matching must err on the side
+/// of *not* picking the index when implication is unclear.
+fn query_conjunct_implies(qp: &PlanExpr, ip: &PlanExpr) -> bool {
+    if plan_exprs_structurally_equal(qp, ip) {
+        return true;
+    }
+    if let (
+        PlanExpr::BinaryOp { left: ql, op: qo, right: qr },
+        PlanExpr::BinaryOp { left: il, op: io, right: ir },
+    ) = (qp, ip)
+    {
+        // The two predicates must be talking about the same column.
+        // Allow either orientation: `col op lit` and `lit op col`.
+        if let Some((q_op, q_lit)) = column_compared_to_literal(ql, qo, qr) {
+            if let Some((i_op, i_lit)) = column_compared_to_literal(il, io, ir) {
+                if matches!(qp_column_name(ql, qr), Some(qn)
+                    if matches!(qp_column_name(il, ir), Some(in_) if qn.eq_ignore_ascii_case(&in_)))
+                {
+                    return comparison_implies(q_op, &q_lit, i_op, &i_lit);
+                }
+            }
+        }
+        // IN-list subset check: qp = `col IN (a, b)`, ip = `col IS NOT NULL`.
+        // Handled below.
+    }
+    if let (PlanExpr::InList { expr: q_e, list: q_list, negated: false }, _) = (qp, ip) {
+        if let PlanExpr::IsNotNull(i_e) = ip {
+            if plan_exprs_structurally_equal(q_e, i_e) && !q_list.is_empty() {
+                let all_non_null = q_list
+                    .iter()
+                    .all(|e| !matches!(e, PlanExpr::Literal(LiteralValue::Null)));
+                if all_non_null {
+                    return true;
+                }
+            }
+        }
+        if let PlanExpr::InList { expr: i_e, list: i_list, negated: false } = ip {
+            // q's list must be a subset of i's list. Conservative literal-equality.
+            if plan_exprs_structurally_equal(q_e, i_e) {
+                return q_list.iter().all(|q_item| {
+                    i_list
+                        .iter()
+                        .any(|i_item| plan_exprs_structurally_equal(q_item, i_item))
+                });
+            }
+        }
+    }
+    false
+}
+
+/// If `(left op right)` is `<column> <op> <literal>` (or its mirror),
+/// return the operator (oriented as column-on-the-left) plus the literal.
+fn column_compared_to_literal<'a>(
+    left: &'a PlanExpr,
+    op: &BinOp,
+    right: &'a PlanExpr,
+) -> Option<(BinOp, &'a LiteralValue)> {
+    match (left, right) {
+        (PlanExpr::Column(_), PlanExpr::Literal(lit)) => Some((*op, lit)),
+        (PlanExpr::Literal(lit), PlanExpr::Column(_)) => Some((flip_comparison(*op), lit)),
+        _ => None,
+    }
+}
+
+fn qp_column_name(left: &PlanExpr, right: &PlanExpr) -> Option<String> {
+    if let PlanExpr::Column(c) = left {
+        return Some(c.name.clone());
+    }
+    if let PlanExpr::Column(c) = right {
+        return Some(c.name.clone());
+    }
+    None
+}
+
+/// Re-orient a comparison when its operands are swapped: `5 > col` ↔
+/// `col < 5`.
+fn flip_comparison(op: BinOp) -> BinOp {
+    match op {
+        BinOp::Lt => BinOp::Gt,
+        BinOp::LtEq => BinOp::GtEq,
+        BinOp::Gt => BinOp::Lt,
+        BinOp::GtEq => BinOp::LtEq,
+        // Symmetric ops stay the same.
+        other => other,
+    }
+}
+
+/// Does `(col q_op q_lit)` imply `(col i_op i_lit)` for the same column?
+///
+/// All `BinOp` variants reaching here are comparisons (Eq/NotEq/Lt/LtEq/Gt/GtEq).
+fn comparison_implies(q_op: BinOp, q_lit: &LiteralValue, i_op: BinOp, i_lit: &LiteralValue) -> bool {
+    let cmp = match compare_literal(q_lit, i_lit) {
+        Some(c) => c,
+        None => return false,
+    };
+    use std::cmp::Ordering;
+    match (q_op, i_op) {
+        // Equality implies any range that admits the value.
+        (BinOp::Eq, BinOp::Eq) => cmp == Ordering::Equal,
+        (BinOp::Eq, BinOp::Lt) => cmp == Ordering::Less,
+        (BinOp::Eq, BinOp::LtEq) => cmp != Ordering::Greater,
+        (BinOp::Eq, BinOp::Gt) => cmp == Ordering::Greater,
+        (BinOp::Eq, BinOp::GtEq) => cmp != Ordering::Less,
+        // Range tightening (same direction).
+        (BinOp::Gt, BinOp::Gt) | (BinOp::GtEq, BinOp::Gt) => cmp == Ordering::Greater,
+        (BinOp::Gt, BinOp::GtEq) | (BinOp::GtEq, BinOp::GtEq) => cmp != Ordering::Less,
+        (BinOp::Lt, BinOp::Lt) | (BinOp::LtEq, BinOp::Lt) => cmp == Ordering::Less,
+        (BinOp::Lt, BinOp::LtEq) | (BinOp::LtEq, BinOp::LtEq) => cmp != Ordering::Greater,
+        // Mixed directions / NotEq don't imply cleanly.
+        _ => false,
+    }
+}
+
+fn compare_literal(a: &LiteralValue, b: &LiteralValue) -> Option<std::cmp::Ordering> {
+    use LiteralValue::*;
+    match (a, b) {
+        (Integer(x), Integer(y)) => Some(x.cmp(y)),
+        (Real(x), Real(y)) => x.partial_cmp(y),
+        (Integer(x), Real(y)) => (*x as f64).partial_cmp(y),
+        (Real(x), Integer(y)) => x.partial_cmp(&(*y as f64)),
+        (Text(x), Text(y)) => Some(x.cmp(y)),
+        (Bool(x), Bool(y)) => Some(x.cmp(y)),
+        _ => None,
+    }
 }
 
 /// Flatten a nested `And` tree into a list of leaf conjuncts. Non-And nodes
@@ -1861,6 +1998,7 @@ fn try_index_scan(
                     table: table_name.clone(),
                     table_root_page: table_root,
                     index_root_page: idx_def.root_page,
+                    index_name: idx_def.name.clone(),
                     columns: columns.clone(),
                     index_columns: idx_def.columns.clone(),
                     lookup_values,
@@ -1994,6 +2132,7 @@ fn try_expression_index_scan(
                     table: table_name.to_string(),
                     table_root_page: table_root,
                     index_root_page: idx_def.root_page,
+                    index_name: idx_def.name.clone(),
                     columns: columns.to_vec(),
                     index_columns: idx_def.columns.clone(),
                     lookup_values,
@@ -2090,6 +2229,7 @@ fn try_range_scan(
             table: table_name.to_string(),
             table_root_page: table_root,
             index_root_page: idx_def.root_page,
+            index_name: idx_def.name.clone(),
             columns: columns.to_vec(),
             index_column: idx_col.clone(),
             lower_bound: lower,

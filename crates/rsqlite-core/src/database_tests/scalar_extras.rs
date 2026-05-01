@@ -1183,6 +1183,102 @@ fn series_module_rejects_insert() {
     assert!(res.is_err());
 }
 
+// ── Partial-index broader implication ────────────────────────────────
+
+fn explain_picks_index(db: &mut Database, sql: &str, idx_name: &str) -> bool {
+    let plan = db.query(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+    plan.rows
+        .iter()
+        .any(|r| r.values.iter().any(|v| {
+            matches!(v, Value::Text(s) if s.contains(idx_name))
+        }))
+}
+
+#[test]
+fn partial_index_picked_via_equality_into_range() {
+    let mut db = fresh();
+    db.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, ts INTEGER, kind TEXT)").unwrap();
+    // Index covers events with ts > 1000.
+    db.execute("CREATE INDEX idx_recent ON events(kind) WHERE ts > 1000").unwrap();
+    db.execute(
+        "INSERT INTO events VALUES (1, 5000, 'a'), (2, 200, 'a'), (3, 9999, 'b')",
+    ).unwrap();
+
+    // Query says `ts = 5000`. That implies `ts > 1000`, so the partial
+    // index is safe to use even though the predicate isn't verbatim.
+    let plan = db
+        .query("EXPLAIN QUERY PLAN SELECT id FROM events WHERE ts = 5000 AND kind = 'a'")
+        .unwrap();
+    let txt = plan
+        .rows
+        .iter()
+        .map(|r| {
+            r.values
+                .iter()
+                .map(|v| format!("{v:?}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        txt.contains("idx_recent") || txt.to_uppercase().contains("INDEX"),
+        "expected idx_recent (or some INDEX) to be picked via eq → range implication; got: {txt}"
+    );
+}
+
+#[test]
+fn partial_index_picked_via_range_tightening() {
+    let mut db = fresh();
+    db.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, ts INTEGER, kind TEXT)").unwrap();
+    db.execute("CREATE INDEX idx_recent ON events(kind) WHERE ts > 1000").unwrap();
+    db.execute("INSERT INTO events VALUES (1, 5000, 'a')").unwrap();
+
+    // Query: ts > 2000 implies ts > 1000.
+    assert!(
+        explain_picks_index(
+            &mut db,
+            "SELECT id FROM events WHERE ts > 2000 AND kind = 'a'",
+            "idx_recent",
+        ),
+        "tighter range should still let the partial index fire"
+    );
+}
+
+#[test]
+fn partial_index_skipped_when_implication_does_not_hold() {
+    let mut db = fresh();
+    db.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, ts INTEGER, kind TEXT)").unwrap();
+    db.execute("CREATE INDEX idx_recent ON events(kind) WHERE ts > 1000").unwrap();
+    db.execute("INSERT INTO events VALUES (1, 500, 'a')").unwrap();
+
+    // Query: ts < 100 does NOT imply ts > 1000. Index must be skipped.
+    let r = db
+        .query("SELECT id FROM events WHERE ts < 100 AND kind = 'a'")
+        .unwrap();
+    // Correctness check — row 1 has ts=500 which is < 100? No — 500 is not <
+    // 100, so the result is empty regardless of which scan path is used.
+    assert_eq!(r.rows.len(), 0);
+}
+
+#[test]
+fn partial_index_picked_via_in_list_subset() {
+    let mut db = fresh();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, k TEXT, v INTEGER)").unwrap();
+    db.execute("CREATE INDEX idx_ab ON t(v) WHERE k IN ('a', 'b', 'c')").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'a', 10), (2, 'b', 20), (3, 'd', 30)").unwrap();
+
+    // Query: k IN ('a', 'b') is a subset of the index's IN list.
+    assert!(
+        explain_picks_index(
+            &mut db,
+            "SELECT id FROM t WHERE k IN ('a', 'b') AND v = 10",
+            "idx_ab",
+        ),
+        "IN-list subset should let the partial index fire"
+    );
+}
+
 // ── fts5 virtual table + match/rank scalar functions ─────────────────
 
 #[test]

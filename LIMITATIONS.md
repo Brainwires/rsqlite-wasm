@@ -57,11 +57,13 @@ Inherited from `sqlparser-rs` 0.55's `SQLiteDialect`:
 ## Indexes
 
 - **Partial indexes** (`CREATE INDEX ... WHERE ...`) build correctly,
-  are maintained on INSERT/UPDATE, and are picked at query lookup time
-  when the query's WHERE clause has the index's WHERE predicate as a
-  top-level conjunct (the conservative case). More elaborate
-  predicate-implication shapes still fall back to full scan; correctness
-  is preserved either way.
+  are maintained on INSERT/UPDATE, and are picked at query lookup
+  time. The implication checker handles verbatim conjunct match,
+  equality-into-range (`x = 5` implies `x > 1`), range tightening
+  (`x > 10` implies `x > 1`), and IN-list subsetting
+  (`x IN ('a','b')` implies `x IN ('a','b','c')`). Predicates that
+  fall outside those shapes still fall back to a full scan;
+  correctness is preserved either way.
 - **Expression indexes** (`CREATE INDEX ... ON t(lower(name))`) build
   with the expression evaluated against each row, and INSERT /
   UPDATE / DELETE keep the index in sync. The planner picks the
@@ -140,14 +142,12 @@ Inherited from `sqlparser-rs` 0.55's `SQLiteDialect`:
 These are tracked as v0.2 candidates:
 
 1. sqlite_schema root-page split (btree restructure).
-2. Partial-index implication beyond the verbatim-conjunct + literal
-   range cases (e.g. semantic implication of two `IN` lists).
-3. Real HNSW graph + R*-Tree split heuristic + FTS5 inverted index +
+2. Real HNSW graph + R*-Tree split heuristic + FTS5 inverted index +
    BM25 (the brute-force `vec_index`, `rtree`, and `fts5` shipped
    today are API-shaped for the swap; multi-column FTS5 with
    per-column weights and the native `MATCH` operator also belong
    here).
-4. WITHOUT ROWID storage rewrite — the syntax is accepted and PK
+3. WITHOUT ROWID storage rewrite — the syntax is accepted and PK
    uniqueness enforced today, but real composite-PK-as-btree-key
    storage (for SQLite file-format compat on those tables) is
    deferred to v0.2.
