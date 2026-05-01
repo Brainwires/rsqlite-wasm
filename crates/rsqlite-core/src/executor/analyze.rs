@@ -119,14 +119,43 @@ pub(super) fn execute_analyze(pager: &mut Pager, catalog: &mut Catalog) -> Resul
             .collect();
 
         for (idx_name, idx_root) in index_defs {
-            let idx_count = {
+            let entries = {
                 let mut idx_cursor = IndexCursor::new(pager, idx_root);
                 idx_cursor
                     .collect_all()
                     .map_err(|e| Error::Other(e.to_string()))?
-                    .len() as i64
             };
-            let stat = format!("{idx_count} 1");
+            let idx_count = entries.len() as i64;
+            // Per the SQLite sqlite_stat1 format, the stat string is
+            // `<row_count> <avg_per_first_col> <avg_per_first_two_cols> …`.
+            // For each prefix length we count distinct prefixes among the
+            // (already btree-sorted) entries and compute
+            // round_up(row_count / distinct_count) as the average — that's
+            // what SQLite's optimizer interprets as "rows touched per
+            // equality lookup on these prefix columns."
+            let mut stat = format!("{idx_count}");
+            if idx_count > 0 {
+                // Find the index width — every entry's `values` is the key
+                // tuple followed by the trailing rowid, so width = len-1.
+                let key_width = entries
+                    .first()
+                    .map(|e| e.values.len().saturating_sub(1))
+                    .unwrap_or(0);
+                for prefix_len in 1..=key_width {
+                    let mut distinct: i64 = 1;
+                    let mut prev: &[Value] = &entries[0].values[..prefix_len];
+                    for entry in entries.iter().skip(1) {
+                        let cur = &entry.values[..prefix_len];
+                        if cur != prev {
+                            distinct += 1;
+                            prev = cur;
+                        }
+                    }
+                    let avg = (idx_count + distinct - 1) / distinct.max(1);
+                    stat.push(' ');
+                    stat.push_str(&avg.to_string());
+                }
+            }
             run_sql_with_params(
                 "INSERT INTO sqlite_stat1 VALUES (?, ?, ?)",
                 vec![

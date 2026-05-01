@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use rsqlite_parser::parse::parse_sql;
-use rsqlite_storage::btree::{SchemaEntry, read_schema};
+use rsqlite_storage::btree::{BTreeCursor, SchemaEntry, read_schema};
+use rsqlite_storage::codec::Value;
 use rsqlite_storage::pager::Pager;
 use sqlparser::ast::{self, ColumnOption, Statement};
 use sqlparser::tokenizer::Token;
@@ -151,12 +152,29 @@ pub struct ViewDef {
     pub sql: String,
 }
 
+/// One row from `sqlite_stat1`. The `stat` column is the SQLite-format
+/// `<row_count> <avg_per_first_col> <avg_per_first_two_cols> …` string;
+/// we parse out the per-prefix averages here so the planner can read them
+/// without re-tokenizing on every plan.
 #[derive(Debug, Clone)]
+pub struct IndexStat {
+    pub row_count: i64,
+    /// Average rows touched per equality lookup at each prefix length.
+    /// `avg_per_prefix[0]` is the avg for the leading column; subsequent
+    /// entries cover wider prefixes (single-column indexes have len 1).
+    pub avg_per_prefix: Vec<i64>,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct Catalog {
     pub tables: HashMap<String, TableDef>,
     pub indexes: HashMap<String, IndexDef>,
     pub views: HashMap<String, ViewDef>,
     pub triggers: HashMap<String, TriggerDef>,
+    /// Per-index stats keyed by lowercased index name. Loaded from
+    /// `sqlite_stat1` at catalog-load time and refreshed by ANALYZE.
+    /// Empty when `sqlite_stat1` doesn't exist or is empty.
+    pub index_stats: HashMap<String, IndexStat>,
 }
 
 impl Catalog {
@@ -201,11 +219,14 @@ impl Catalog {
             }
         }
 
+        let index_stats = load_index_stats(pager, &tables).unwrap_or_default();
+
         Ok(Catalog {
             tables,
             indexes,
             views,
             triggers,
+            index_stats,
         })
     }
 
@@ -527,6 +548,51 @@ fn parse_index_def(entry: &SchemaEntry) -> Result<Option<IndexDef>> {
     } else {
         Ok(None)
     }
+}
+
+/// Walk `sqlite_stat1` (if it exists in the schema) and return per-index
+/// statistics keyed by the lowercased index name. Best-effort: any parse
+/// failure on a row drops just that row so a partially-corrupt stat1
+/// can't sink catalog loading.
+fn load_index_stats(
+    pager: &mut Pager,
+    tables: &HashMap<String, TableDef>,
+) -> Option<HashMap<String, IndexStat>> {
+    let stat1 = tables.get("sqlite_stat1")?;
+    let mut cursor = BTreeCursor::new(pager, stat1.root_page);
+    let rows = cursor.collect_all().ok()?;
+    let mut out = HashMap::new();
+    for row in rows {
+        // sqlite_stat1 schema: (tbl TEXT, idx TEXT, stat TEXT)
+        let vals = &row.record.values;
+        if vals.len() < 3 {
+            continue;
+        }
+        let idx_name = match &vals[1] {
+            Value::Text(s) => s.clone(),
+            // Per-table rows have idx = NULL — skip them; we only need
+            // per-index stats for plan choice.
+            _ => continue,
+        };
+        let stat_str = match &vals[2] {
+            Value::Text(s) => s,
+            _ => continue,
+        };
+        let mut parts = stat_str.split_whitespace();
+        let row_count: i64 = match parts.next().and_then(|s| s.parse().ok()) {
+            Some(n) => n,
+            None => continue,
+        };
+        let avg_per_prefix: Vec<i64> = parts.filter_map(|s| s.parse::<i64>().ok()).collect();
+        out.insert(
+            idx_name.to_lowercase(),
+            IndexStat {
+                row_count,
+                avg_per_prefix,
+            },
+        );
+    }
+    Some(out)
 }
 
 fn parse_trigger_def(name: &str, tbl_name: &str, sql: &str) -> Option<TriggerDef> {

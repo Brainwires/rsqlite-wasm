@@ -1624,6 +1624,26 @@ fn plan_exprs_structurally_equal(a: &PlanExpr, b: &PlanExpr) -> bool {
     }
 }
 
+/// Estimated rows touched per equality lookup using the index named
+/// `idx_name`'s leading `prefix_len` columns. Read from
+/// `catalog.index_stats` (populated by ANALYZE); returns `i64::MAX`
+/// when no stats are available so the planner falls back to its old
+/// first-match-wins behavior.
+fn index_lookup_cost(catalog: &Catalog, idx_name: &str, prefix_len: usize) -> i64 {
+    let stat = match catalog.index_stats.get(&idx_name.to_lowercase()) {
+        Some(s) => s,
+        None => return i64::MAX,
+    };
+    if prefix_len == 0 {
+        return stat.row_count.max(1);
+    }
+    let idx = prefix_len.min(stat.avg_per_prefix.len()).saturating_sub(1);
+    stat.avg_per_prefix
+        .get(idx)
+        .copied()
+        .unwrap_or(stat.row_count.max(1))
+}
+
 /// Walk `expr` and return true if any embedded Column refers to a name
 /// that's an alias from `output_names` but does not exist as a real
 /// underlying column in `table_columns`. Used to decide whether a Sort
@@ -1679,6 +1699,12 @@ fn try_index_scan(
     let eq_parts = extract_equality_parts(predicate);
     let eq_parts_ref: &[_] = eq_parts.as_deref().unwrap_or(&[]);
 
+    // Collect all equality-matching candidate indexes, then pick the most
+    // selective one according to ANALYZE's per-index avg_per_first_col.
+    // Without stats every candidate scores i64::MAX and the iteration
+    // order of the catalog HashMap decides — same as the previous
+    // first-match behavior.
+    let mut candidates: Vec<(i64, Plan)> = Vec::new();
     for idx_def in catalog.indexes.values() {
         if !idx_def.table_name.eq_ignore_ascii_case(table_name) {
             continue;
@@ -1725,16 +1751,22 @@ fn try_index_scan(
                     lookup_values,
                 };
 
-                return if let Some(remaining) = remaining_predicate {
-                    Some(Plan::Filter {
+                let plan = if let Some(remaining) = remaining_predicate {
+                    Plan::Filter {
                         input: Box::new(index_scan),
                         predicate: remaining,
-                    })
+                    }
                 } else {
-                    Some(index_scan)
+                    index_scan
                 };
+                let cost = index_lookup_cost(catalog, &idx_def.name, idx_def.columns.len());
+                candidates.push((cost, plan));
             }
         }
+    }
+    if !candidates.is_empty() {
+        candidates.sort_by_key(|(cost, _)| *cost);
+        return Some(candidates.into_iter().next().unwrap().1);
     }
 
     // Try expression-index lookup. Single-column expression indexes only

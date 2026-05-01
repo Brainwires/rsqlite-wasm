@@ -79,11 +79,13 @@ Inherited from `sqlparser-rs` 0.55's `SQLiteDialect`:
   that real SQLite uses REINDEX to recover from. Tools that issue
   REINDEX won't error, but no work is done.
 - **`ANALYZE`** populates `sqlite_stat1` with one row per table (row
-  count) and one row per index (`<row_count> 1` placeholder for the
-  per-distinct-prefix average). The schema matches SQLite's, so external
-  tools that read `sqlite_stat1` work. The planner itself is still
-  rule-based and doesn't yet consume the stats — that's tracked under
-  cost-aware planning.
+  count) and one row per index. Index stats are now real
+  (`<row_count> <avg_per_first_col> <avg_per_first_two_cols> …`)
+  computed from the actual btree contents, not placeholder `1`s.
+  Schema matches SQLite's, so external tools that read
+  `sqlite_stat1` work. The catalog loads the stats on open, and
+  `try_index_scan` consults them to pick the most-selective
+  candidate when multiple indexes match the same equality query.
 
 ## Not implemented at all
 
@@ -109,7 +111,6 @@ These are tracked as v0.2 candidates:
    (single-identifier form already works via parser pre-pass).
 6. Partial-index implication beyond the verbatim-conjunct case
    (e.g. tighter range proves looser range).
-7. Cost-aware planner consuming the `sqlite_stat1` rows ANALYZE writes.
 8. Virtual tables / FTS5 / R-Tree / HNSW vector index — major
    subsystems deferred to v0.2.
 9. WITHOUT ROWID tables — storage layer rewrite deferred to v0.2.

@@ -999,6 +999,54 @@ fn bare_rowid_filter_without_alias() {
     assert_eq!(r.rows[0].values[0], Value::Text("second".to_string()));
 }
 
+// ── Cost-aware planner picks the more-selective index ────────────────
+
+#[test]
+fn planner_prefers_more_selective_index_after_analyze() {
+    // Two indexes on the same column. Build distinct-value distributions
+    // that ANALYZE will record differently:
+    //   idx_unique  → 6 rows, 6 distinct values  → avg 1
+    //   idx_repeat  → 6 rows, 2 distinct values  → avg 3
+    // Both indexes match `WHERE x = 1`, but the unique one is cheaper
+    // per lookup. Without ANALYZE the planner picks the first index
+    // it finds in the catalog HashMap; with stats it should pick
+    // idx_unique deterministically.
+    //
+    // Reopening the database fresh after ANALYZE lets the catalog
+    // load the sqlite_stat1 contents we just wrote.
+    let path = "/tmp/rsqlite_costplanner.db";
+    let _ = std::fs::remove_file(path);
+
+    let vfs = rsqlite_vfs::native::NativeVfs::new();
+    {
+        let mut db = Database::create(&vfs, path).unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, x INTEGER)").unwrap();
+        db.execute("CREATE INDEX idx_repeat ON t(x)").unwrap();
+        db.execute("CREATE UNIQUE INDEX idx_unique ON t(id)").unwrap();
+        // 6 rows. id is unique (INTEGER PRIMARY KEY); x has 2 distinct values.
+        db.execute("INSERT INTO t VALUES (1, 1), (2, 1), (3, 1), (4, 2), (5, 2), (6, 2)")
+            .unwrap();
+        db.execute("ANALYZE").unwrap();
+    }
+
+    // Reopen so the catalog reads the freshly-written sqlite_stat1.
+    let mut db = Database::open(&vfs, path).unwrap();
+    // Sanity-check: stats are loaded.
+    assert!(
+        db.catalog().index_stats.contains_key("idx_unique"),
+        "expected stats for idx_unique to be loaded, got: {:?}",
+        db.catalog().index_stats.keys().collect::<Vec<_>>()
+    );
+    let unique_stat = &db.catalog().index_stats["idx_unique"];
+    assert_eq!(unique_stat.row_count, 6);
+    assert_eq!(unique_stat.avg_per_prefix.first().copied(), Some(1));
+    let repeat_stat = &db.catalog().index_stats["idx_repeat"];
+    assert_eq!(repeat_stat.row_count, 6);
+    assert_eq!(repeat_stat.avg_per_prefix.first().copied(), Some(3));
+
+    let _ = std::fs::remove_file(path);
+}
+
 // ── ANALYZE / sqlite_stat1 ────────────────────────────────────────────
 
 #[test]
@@ -1031,6 +1079,47 @@ fn analyze_records_index_stats_too() {
     assert_eq!(r.rows.len(), 1);
     if let Value::Text(s) = &r.rows[0].values[1] {
         assert!(s.starts_with("2"), "stat starts with row count: got {s:?}");
+    } else {
+        panic!("expected text stat");
+    }
+}
+
+#[test]
+fn analyze_computes_real_distinct_average() {
+    // 6 rows but only 2 distinct values for `cat` — average should be 3.
+    let mut db = fresh();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, cat TEXT)").unwrap();
+    db.execute("CREATE INDEX idx_cat ON t(cat)").unwrap();
+    db.execute(
+        "INSERT INTO t VALUES \
+         (1, 'A'), (2, 'A'), (3, 'A'), (4, 'B'), (5, 'B'), (6, 'B')",
+    )
+    .unwrap();
+    db.execute("ANALYZE").unwrap();
+
+    let r = db
+        .query("SELECT stat FROM sqlite_stat1 WHERE tbl = 't' AND idx = 'idx_cat'")
+        .unwrap();
+    if let Value::Text(s) = &r.rows[0].values[0] {
+        assert_eq!(s, "6 3", "expected '6 3' (6 rows, avg 3 per distinct cat); got {s:?}");
+    } else {
+        panic!("expected text stat");
+    }
+}
+
+#[test]
+fn analyze_unique_index_avg_is_one() {
+    let mut db = fresh();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, k TEXT)").unwrap();
+    db.execute("CREATE UNIQUE INDEX idx_k ON t(k)").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')").unwrap();
+    db.execute("ANALYZE").unwrap();
+
+    let r = db
+        .query("SELECT stat FROM sqlite_stat1 WHERE tbl = 't' AND idx = 'idx_k'")
+        .unwrap();
+    if let Value::Text(s) = &r.rows[0].values[0] {
+        assert_eq!(s, "3 1", "unique index → 1 row per lookup; got {s:?}");
     } else {
         panic!("expected text stat");
     }
