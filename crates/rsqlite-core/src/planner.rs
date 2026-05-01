@@ -57,6 +57,21 @@ pub struct InsertPlan {
     pub on_conflict: Option<OnConflictPlan>,
     pub or_replace: bool,
     pub returning: Option<Vec<ProjectionItem>>,
+    pub conflict_strategy: ConflictStrategy,
+}
+
+/// What to do when a row in this INSERT statement violates a constraint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictStrategy {
+    /// Default: abort this row, leave previously-inserted rows in place,
+    /// surface the error.
+    Abort,
+    /// Skip the failing row, continue inserting subsequent rows.
+    Ignore,
+    /// Stop on the first failure but keep already-inserted rows committed.
+    Fail,
+    /// Roll the active transaction back, propagating the failure.
+    Rollback,
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +95,17 @@ pub struct UpdatePlan {
     pub assignments: Vec<(String, PlanExpr)>,
     pub predicate: Option<PlanExpr>,
     pub returning: Option<Vec<ProjectionItem>>,
+    /// Optional FROM clause: target rows are joined with these tables before
+    /// the WHERE predicate is evaluated and assignments are computed. The
+    /// combined column context lets assignments reference FROM-table values.
+    pub from: Option<UpdateFromPlan>,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateFromPlan {
+    pub table_name: String,
+    pub root_page: u32,
+    pub columns: Vec<ColumnRef>,
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +115,8 @@ pub struct DeletePlan {
     pub table_columns: Vec<ColumnRef>,
     pub predicate: Option<PlanExpr>,
     pub returning: Option<Vec<ProjectionItem>>,
+    pub order_by: Vec<SortKey>,
+    pub limit: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -235,6 +263,11 @@ pub enum Plan {
         argument: Option<String>,
     },
     Vacuum,
+    Reindex {
+        /// Target table or index name; empty string means "all".
+        target: String,
+    },
+    Analyze,
     CreateTrigger {
         name: String,
         table_name: String,
@@ -272,8 +305,9 @@ pub fn plan_statement(stmt: &Statement, catalog: &Catalog) -> Result<Plan> {
             assignments,
             selection,
             returning,
+            from,
             ..
-        } => plan_update(table, assignments, selection.as_ref(), returning.as_deref(), catalog),
+        } => plan_update(table, assignments, selection.as_ref(), returning.as_deref(), from.as_ref(), catalog),
         Statement::Delete(delete) => plan_delete(delete, catalog),
         Statement::Drop {
             object_type,
@@ -360,6 +394,16 @@ pub fn plan_statement(stmt: &Statement, catalog: &Catalog) -> Result<Plan> {
             let pragma_name = name.to_string().to_lowercase();
             if pragma_name == "__vacuum" {
                 return Ok(Plan::Vacuum);
+            }
+            if pragma_name == "__reindex" {
+                let target = match &value {
+                    Some(ast::Value::SingleQuotedString(s)) => s.clone(),
+                    _ => String::new(),
+                };
+                return Ok(Plan::Reindex { target });
+            }
+            if pragma_name == "__analyze" {
+                return Ok(Plan::Analyze);
             }
             if pragma_name == "__create_trigger" {
                 if let Some(val) = &value {
@@ -1795,6 +1839,18 @@ fn plan_insert(insert: &ast::Insert, catalog: &Catalog) -> Result<Plan> {
         .map(|items| plan_select_items(items, &all_columns, catalog))
         .transpose()?;
 
+    let conflict_strategy = match insert.or {
+        Some(ast::SqliteOnConflict::Rollback) => ConflictStrategy::Rollback,
+        Some(ast::SqliteOnConflict::Fail) => ConflictStrategy::Fail,
+        Some(ast::SqliteOnConflict::Ignore) => ConflictStrategy::Ignore,
+        // Replace is handled via or_replace + on_conflict; treat as Abort
+        // for the strategy field (won't fire because conflicts get handled
+        // before strategy applies).
+        Some(ast::SqliteOnConflict::Replace) | Some(ast::SqliteOnConflict::Abort) | None => {
+            ConflictStrategy::Abort
+        }
+    };
+
     Ok(Plan::Insert(InsertPlan {
         table_name,
         root_page: table_def.root_page,
@@ -1805,6 +1861,7 @@ fn plan_insert(insert: &ast::Insert, catalog: &Catalog) -> Result<Plan> {
         on_conflict,
         or_replace,
         returning,
+        conflict_strategy,
     }))
 }
 
@@ -1813,6 +1870,7 @@ fn plan_update(
     assignments: &[ast::Assignment],
     selection: Option<&Expr>,
     returning: Option<&[ast::SelectItem]>,
+    from: Option<&ast::UpdateTableFromKind>,
     catalog: &Catalog,
 ) -> Result<Plan> {
     let table_name = match &table.relation {
@@ -1835,12 +1893,57 @@ fn plan_update(
             name: c.name.clone(),
             column_index: c.column_index,
             is_rowid_alias: c.is_rowid_alias,
-            table: None,
+            table: Some(table_name.clone()),
             nullable: c.nullable,
             is_primary_key: c.is_primary_key,
             is_unique: c.is_unique,
         })
         .collect();
+
+    // Optional FROM clause: parse the first table in the joins list. Only a
+    // single FROM table is supported; assignments and the WHERE predicate
+    // see the combined column context.
+    let from_plan: Option<UpdateFromPlan> = match from {
+        None => None,
+        Some(ast::UpdateTableFromKind::BeforeSet(t))
+        | Some(ast::UpdateTableFromKind::AfterSet(t)) => {
+            let first = t.first().ok_or_else(|| {
+                Error::Other("UPDATE FROM requires a table".to_string())
+            })?;
+            let from_table_name = match &first.relation {
+                TableFactor::Table { name, .. } => name.to_string(),
+                _ => return Err(Error::Other(
+                    "only simple table references are supported in UPDATE FROM".to_string(),
+                )),
+            };
+            let from_def = catalog.get_table(&from_table_name).ok_or_else(|| {
+                Error::Other(format!("table not found: {from_table_name}"))
+            })?;
+            let from_columns: Vec<ColumnRef> = from_def
+                .columns
+                .iter()
+                .map(|c| ColumnRef {
+                    name: c.name.clone(),
+                    column_index: all_columns.len() + c.column_index,
+                    is_rowid_alias: c.is_rowid_alias,
+                    table: Some(from_table_name.clone()),
+                    nullable: c.nullable,
+                    is_primary_key: c.is_primary_key,
+                    is_unique: c.is_unique,
+                })
+                .collect();
+            Some(UpdateFromPlan {
+                table_name: from_table_name,
+                root_page: from_def.root_page,
+                columns: from_columns,
+            })
+        }
+    };
+
+    let mut combined_columns = all_columns.clone();
+    if let Some(fp) = &from_plan {
+        combined_columns.extend(fp.columns.iter().cloned());
+    }
 
     let mut planned_assignments = Vec::new();
     for assignment in assignments {
@@ -1852,12 +1955,12 @@ fn plan_update(
                 ))
             }
         };
-        let expr = plan_expr(&assignment.value, &all_columns, catalog)?;
+        let expr = plan_expr(&assignment.value, &combined_columns, catalog)?;
         planned_assignments.push((col_name, expr));
     }
 
     let predicate = selection
-        .map(|s| plan_expr(s, &all_columns, catalog))
+        .map(|s| plan_expr(s, &combined_columns, catalog))
         .transpose()?;
 
     let returning_planned = returning
@@ -1871,6 +1974,7 @@ fn plan_update(
         assignments: planned_assignments,
         predicate,
         returning: returning_planned,
+        from: from_plan,
     }))
 }
 
@@ -1924,11 +2028,32 @@ fn plan_delete(delete: &ast::Delete, catalog: &Catalog) -> Result<Plan> {
         .map(|items| plan_select_items(items, &all_columns, catalog))
         .transpose()?;
 
+    let order_by = delete
+        .order_by
+        .iter()
+        .map(|ob| -> Result<SortKey> {
+            let expr = plan_expr(&ob.expr, &all_columns, catalog)?;
+            Ok(SortKey {
+                expr,
+                descending: ob.options.asc == Some(false),
+                nulls_first: ob.options.nulls_first,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let limit = delete
+        .limit
+        .as_ref()
+        .map(|e| plan_limit_expr(e).map(|n| n as i64))
+        .transpose()?;
+
     Ok(Plan::Delete(DeletePlan {
         table_name,
         root_page: table_def.root_page,
         table_columns: all_columns,
         predicate,
         returning,
+        order_by,
+        limit,
     }))
 }

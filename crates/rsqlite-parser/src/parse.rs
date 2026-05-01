@@ -9,6 +9,12 @@ pub fn parse_sql(sql: &str) -> Result<Vec<sqlparser::ast::Statement>, ParseError
     if is_vacuum(&preprocessed) {
         return Ok(vec![make_pragma_statement("__vacuum", None)]);
     }
+    if let Some(arg) = strip_keyword(&preprocessed, "REINDEX") {
+        return Ok(vec![make_pragma_statement("__reindex", Some(&arg))]);
+    }
+    if let Some(arg) = strip_keyword(&preprocessed, "ANALYZE") {
+        return Ok(vec![make_pragma_statement("__analyze", Some(&arg))]);
+    }
     if let Some(stmt) = parse_trigger_statement(&preprocessed) {
         return Ok(vec![stmt]);
     }
@@ -168,6 +174,22 @@ fn parse_drop_trigger(sql: &str) -> Option<sqlparser::ast::Statement> {
 fn is_vacuum(sql: &str) -> bool {
     let trimmed = sql.trim().trim_end_matches(';').trim();
     trimmed.eq_ignore_ascii_case("VACUUM")
+}
+
+/// If `sql` starts with `keyword`, return everything after it (trimmed).
+/// `REINDEX` and `ANALYZE` accept an optional table/index name, so the
+/// argument may be empty.
+fn strip_keyword(sql: &str, keyword: &str) -> Option<String> {
+    let trimmed = sql.trim().trim_end_matches(';').trim();
+    let upper = trimmed.to_uppercase();
+    if upper == keyword {
+        return Some(String::new());
+    }
+    let prefix = format!("{keyword} ");
+    if upper.starts_with(&prefix) {
+        return Some(trimmed[prefix.len()..].trim().to_string());
+    }
+    None
 }
 
 fn make_pragma_statement(name: &str, value: Option<&str>) -> sqlparser::ast::Statement {

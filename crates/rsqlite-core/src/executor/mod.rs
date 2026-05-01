@@ -303,6 +303,8 @@ pub fn execute(plan: &Plan, pager: &mut Pager, catalog: &Catalog) -> Result<Quer
         | Plan::Release(_)
         | Plan::RollbackTo(_)
         | Plan::Vacuum
+        | Plan::Reindex { .. }
+        | Plan::Analyze
         | Plan::CreateTrigger { .. }
         | Plan::DropTrigger { .. }
         | Plan::AttachDatabase { .. }
@@ -353,6 +355,13 @@ pub fn execute_mut(
             query,
         } => execute_create_table_as_select(table_name, *if_not_exists, query, pager, catalog),
         Plan::Vacuum => execute_vacuum(pager, catalog),
+        // REINDEX is currently a no-op: our btree implementation doesn't
+        // suffer from the corruption modes (collation changes, etc.) that
+        // real SQLite addresses with REINDEX. Accepted for tool compat.
+        Plan::Reindex { .. } => Ok(ExecResult::affected(0)),
+        // ANALYZE would populate sqlite_stat1 for a cost-based planner; our
+        // planner is rule-based, so this is a no-op stub.
+        Plan::Analyze => Ok(ExecResult::affected(0)),
         Plan::CreateTrigger { name, table_name, sql, if_not_exists } => {
             execute_create_trigger(name, table_name, sql, *if_not_exists, pager, catalog)
         }

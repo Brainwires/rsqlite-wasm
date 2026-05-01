@@ -24,6 +24,8 @@ pub(super) fn execute_delete(plan: &DeletePlan, pager: &mut Pager, catalog: &Cat
         .map_err(|e| Error::Other(e.to_string()))?;
 
     let mut to_delete: Vec<i64> = Vec::new();
+    // Track per-rowid sort keys for LIMIT/ORDER BY ordering.
+    let mut sort_keys: Vec<(i64, Vec<crate::types::Value>)> = Vec::new();
 
     for btree_row in &btree_rows {
         let record_values = &btree_row.record.values;
@@ -55,7 +57,40 @@ pub(super) fn execute_delete(plan: &DeletePlan, pager: &mut Pager, catalog: &Cat
 
         if matches {
             to_delete.push(btree_row.rowid);
+            if !plan.order_by.is_empty() {
+                let keys: Vec<crate::types::Value> = plan
+                    .order_by
+                    .iter()
+                    .map(|sk| eval_expr(&sk.expr, &row, &column_names, pager, catalog))
+                    .collect::<Result<Vec<_>>>()?;
+                sort_keys.push((btree_row.rowid, keys));
+            }
         }
+    }
+
+    // ORDER BY + LIMIT: sort the matched rowids, then truncate.
+    if !plan.order_by.is_empty() {
+        sort_keys.sort_by(|a, b| {
+            for (i, sk) in plan.order_by.iter().enumerate() {
+                let cmp = crate::eval_helpers::compare(&a.1[i], &b.1[i]);
+                let ordering = if cmp < 0 {
+                    std::cmp::Ordering::Less
+                } else if cmp > 0 {
+                    std::cmp::Ordering::Greater
+                } else {
+                    std::cmp::Ordering::Equal
+                };
+                let ordering = if sk.descending { ordering.reverse() } else { ordering };
+                if ordering != std::cmp::Ordering::Equal {
+                    return ordering;
+                }
+            }
+            std::cmp::Ordering::Equal
+        });
+        to_delete = sort_keys.iter().map(|(r, _)| *r).collect();
+    }
+    if let Some(limit) = plan.limit {
+        to_delete.truncate(limit as usize);
     }
 
     let rows_affected = to_delete.len() as u64;

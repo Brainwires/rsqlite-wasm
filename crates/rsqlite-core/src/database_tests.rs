@@ -6477,6 +6477,106 @@
     }
 
     #[test]
+    fn reindex_succeeds_as_noop() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+        db.execute("CREATE INDEX idx_name ON t(name)").unwrap();
+        // Both forms should accept without error.
+        db.execute("REINDEX").unwrap();
+        db.execute("REINDEX idx_name").unwrap();
+        db.execute("REINDEX t").unwrap();
+    }
+
+    #[test]
+    fn analyze_succeeds_as_noop() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)").unwrap();
+        db.execute("ANALYZE").unwrap();
+        db.execute("ANALYZE t").unwrap();
+    }
+
+    #[test]
+    fn insert_or_rollback_undoes_transaction() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT NOT NULL)").unwrap();
+        db.execute("BEGIN").unwrap();
+        db.execute("INSERT INTO t VALUES (1, 'good')").unwrap();
+        // OR ROLLBACK on NOT NULL violation should rollback both rows.
+        let res = db.execute("INSERT OR ROLLBACK INTO t VALUES (2, NULL)");
+        assert!(res.is_err());
+
+        // Both inserts should be gone since the txn rolled back.
+        let r = db.query("SELECT COUNT(*) FROM t").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(0));
+    }
+
+    #[test]
+    fn insert_or_fail_keeps_prior_rows() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT NOT NULL)").unwrap();
+        // First insert succeeds; multi-row INSERT OR FAIL stops on bad row but
+        // keeps the good ones above it.
+        let res = db.execute("INSERT OR FAIL INTO t VALUES (1, 'a'), (2, NULL), (3, 'c')");
+        assert!(res.is_err());
+        let r = db.query("SELECT id FROM t ORDER BY id").unwrap();
+        assert_eq!(r.rows.len(), 1);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(1));
+    }
+
+    #[test]
+    fn delete_with_limit() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)").unwrap();
+        db.execute("INSERT INTO t VALUES (1), (2), (3), (4), (5)").unwrap();
+        db.execute("DELETE FROM t LIMIT 2").unwrap();
+        let r = db.query("SELECT COUNT(*) FROM t").unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(3));
+    }
+
+    #[test]
+    fn delete_with_order_by_and_limit() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)").unwrap();
+        db.execute("INSERT INTO t VALUES (1, 10), (2, 30), (3, 20), (4, 50), (5, 40)")
+            .unwrap();
+        // Delete the 2 highest-n rows: (4,50) and (5,40).
+        db.execute("DELETE FROM t ORDER BY n DESC LIMIT 2").unwrap();
+        let r = db.query("SELECT id FROM t ORDER BY id").unwrap();
+        assert_eq!(r.rows.len(), 3);
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(1));
+        assert_eq!(r.rows[1].values[0], crate::types::Value::Integer(2));
+        assert_eq!(r.rows[2].values[0], crate::types::Value::Integer(3));
+    }
+
+    #[test]
+    fn update_from_basic() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE inventory (sku TEXT PRIMARY KEY, qty INTEGER)").unwrap();
+        db.execute("CREATE TABLE sold (sku TEXT, amount INTEGER)").unwrap();
+        db.execute("INSERT INTO inventory VALUES ('A', 100), ('B', 50), ('C', 10)").unwrap();
+        db.execute("INSERT INTO sold VALUES ('A', 30), ('B', 5)").unwrap();
+
+        db.execute(
+            "UPDATE inventory SET qty = qty - sold.amount FROM sold WHERE inventory.sku = sold.sku",
+        )
+        .unwrap();
+
+        let r = db
+            .query("SELECT sku, qty FROM inventory ORDER BY sku")
+            .unwrap();
+        assert_eq!(r.rows[0].values[1], crate::types::Value::Integer(70)); // A: 100 - 30
+        assert_eq!(r.rows[1].values[1], crate::types::Value::Integer(45)); // B: 50 - 5
+        assert_eq!(r.rows[2].values[1], crate::types::Value::Integer(10)); // C: untouched
+    }
+
+    #[test]
     fn default_persists_across_reopen() {
         let db_path = "/tmp/rsqlite_db_default_persist.db";
         let _ = std::fs::remove_file(db_path);

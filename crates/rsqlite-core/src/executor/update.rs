@@ -29,6 +29,51 @@ pub(super) fn execute_update(plan: &UpdatePlan, pager: &mut Pager, catalog: &Cat
         .collect_all()
         .map_err(|e| Error::Other(e.to_string()))?;
 
+    // For UPDATE FROM, snapshot the FROM table rows once.
+    let from_rows: Vec<Vec<Value>> = if let Some(from) = &plan.from {
+        let mut from_cursor = BTreeCursor::new(pager, from.root_page);
+        let raw = from_cursor
+            .collect_all()
+            .map_err(|e| Error::Other(e.to_string()))?;
+        raw.into_iter()
+            .map(|br| {
+                from.columns
+                    .iter()
+                    .map(|c| {
+                        if c.is_rowid_alias {
+                            Value::Integer(br.rowid)
+                        } else {
+                            // c.column_index is offset by table_columns.len();
+                            // map back to the local index into the FROM record.
+                            let local_idx = c.column_index - plan.table_columns.len();
+                            br.record.values.get(local_idx).cloned().unwrap_or(Value::Null)
+                        }
+                    })
+                    .collect()
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let combined_column_names: Vec<String> = if plan.from.is_some() {
+        // Qualify both sides so eval_expr's "table.col" lookup finds the
+        // intended side instead of falling back to bare-name matching.
+        let mut names: Vec<String> = plan
+            .table_columns
+            .iter()
+            .map(|c| format!("{}.{}", plan.table_name, c.name))
+            .collect();
+        if let Some(from) = &plan.from {
+            for c in &from.columns {
+                names.push(format!("{}.{}", from.table_name, c.name));
+            }
+        }
+        names
+    } else {
+        column_names.clone()
+    };
+
     let mut to_update: Vec<(i64, Vec<Value>)> = Vec::new();
 
     for btree_row in &btree_rows {
@@ -45,6 +90,49 @@ pub(super) fn execute_update(plan: &UpdatePlan, pager: &mut Pager, catalog: &Cat
                     .unwrap_or(Value::Null);
                 row_values.push(val);
             }
+        }
+
+        if let Some(_) = &plan.from {
+            // For each FROM row, extend the target row and check the predicate.
+            // Use the LAST matching FROM row's values for assignments (matches
+            // SQLite's "implementation-defined" behavior on multi-match).
+            let mut last_match_combined: Option<Vec<Value>> = None;
+            for from_row in &from_rows {
+                let mut combined = row_values.clone();
+                combined.extend_from_slice(from_row);
+                let combined_row = Row { values: combined.clone() };
+
+                let matches = match &plan.predicate {
+                    Some(pred) => {
+                        let val = eval_expr(pred, &combined_row, &combined_column_names, pager, catalog)?;
+                        is_truthy(&val)
+                    }
+                    None => true,
+                };
+                if matches {
+                    last_match_combined = Some(combined);
+                }
+            }
+            if let Some(combined) = last_match_combined {
+                let combined_row = Row { values: combined };
+                let mut new_values = row_values.clone();
+                for (col_name, expr) in &plan.assignments {
+                    let col_idx = column_names
+                        .iter()
+                        .position(|c| c.eq_ignore_ascii_case(col_name))
+                        .ok_or_else(|| {
+                            Error::Other(format!("unknown column: {col_name}"))
+                        })?;
+                    new_values[col_idx] =
+                        eval_expr(expr, &combined_row, &combined_column_names, pager, catalog)?;
+                }
+                check_not_null_constraints(&new_values, &plan.table_columns, &plan.table_name)?;
+                check_unique_constraints(&new_values, &plan.table_columns, &plan.table_name, pager, plan.root_page, Some(btree_row.rowid))?;
+                check_check_constraints(&new_values, &plan.table_columns, &plan.table_name, pager, catalog)?;
+                check_foreign_key_insert(&new_values, &plan.table_columns, &plan.table_name, pager, catalog)?;
+                to_update.push((btree_row.rowid, new_values));
+            }
+            continue;
         }
 
         let row = Row {

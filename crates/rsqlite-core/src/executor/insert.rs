@@ -25,6 +25,19 @@ use super::trigger::fire_triggers;
 use super::ExecResult;
 
 pub(super) fn execute_insert(plan: &InsertPlan, pager: &mut Pager, catalog: &Catalog) -> Result<ExecResult> {
+    let result = execute_insert_inner(plan, pager, catalog);
+    // INSERT OR ROLLBACK: on any failure, roll the active transaction back
+    // before propagating. Without an active transaction this is a no-op.
+    if result.is_err()
+        && plan.conflict_strategy == crate::planner::ConflictStrategy::Rollback
+        && pager.in_transaction()
+    {
+        let _ = pager.rollback();
+    }
+    result
+}
+
+fn execute_insert_inner(plan: &InsertPlan, pager: &mut Pager, catalog: &Catalog) -> Result<ExecResult> {
     let table_indexes = get_table_indexes(catalog, &plan.table_name);
     let mut rows_affected = 0u64;
     let mut current_root = plan.root_page;
