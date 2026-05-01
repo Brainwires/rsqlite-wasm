@@ -213,8 +213,7 @@ pub(super) fn execute_create_index(
 
         // Partial index: only include rows where the predicate is truthy.
         if let Some(pred) = &predicate_plan {
-            let v =
-                super::eval::eval_expr(pred, &row_obj, &col_names, pager, catalog)?;
+            let v = super::eval::eval_expr(pred, &row_obj, &col_names, pager, catalog)?;
             if !crate::eval_helpers::is_truthy(&v) {
                 continue;
             }

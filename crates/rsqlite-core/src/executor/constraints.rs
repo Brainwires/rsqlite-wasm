@@ -181,9 +181,7 @@ pub(super) fn check_unique_constraints(
                         .map(|(_, name)| format!("{table_name}.{name}"))
                         .collect::<Vec<_>>()
                         .join(", ");
-                    return Err(Error::Other(format!(
-                        "UNIQUE constraint failed: {names}"
-                    )));
+                    return Err(Error::Other(format!("UNIQUE constraint failed: {names}")));
                 }
             }
         }

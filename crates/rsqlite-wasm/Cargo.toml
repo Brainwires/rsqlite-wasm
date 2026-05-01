@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "WebAssembly bindings for rsqlite — SQLite in the browser"
 
 [package.metadata.wasm-pack.profile.release]

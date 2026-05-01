@@ -70,6 +70,10 @@ for row in &result.rows {
 
 ## Quick Start — JavaScript (Browser)
 
+```bash
+npm install rsqlite-wasm
+```
+
 ```typescript
 import { WorkerDatabase } from 'rsqlite-wasm';
 

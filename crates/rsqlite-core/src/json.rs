@@ -801,6 +801,7 @@ mod tests {
     // ---- parse edge cases ----
 
     #[test]
+    #[allow(clippy::approx_constant)] // arbitrary float, not PI
     fn parse_negative_and_decimal_numbers() {
         assert_eq!(parse_json("-0").unwrap(), JsonValue::Number(0.0));
         assert_eq!(parse_json("-42").unwrap(), JsonValue::Number(-42.0));

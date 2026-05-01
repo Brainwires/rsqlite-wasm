@@ -1680,5 +1680,9 @@ fn single_column_pk_still_enforced() {
     db.execute("INSERT INTO t VALUES ('a', 'x')").unwrap();
     let r = db.execute("INSERT INTO t VALUES ('a', 'y')");
     assert!(r.is_err());
-    assert!(r.unwrap_err().to_string().contains("UNIQUE constraint failed"));
+    assert!(
+        r.unwrap_err()
+            .to_string()
+            .contains("UNIQUE constraint failed")
+    );
 }

@@ -1287,6 +1287,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // testing CAST behavior, not PI
     fn cast_real_paths() {
         assert_eq!(eval_cast(i(5), "REAL").unwrap(), r(5.0));
         assert_eq!(eval_cast(t("3.14"), "REAL").unwrap(), r(3.14));
@@ -1342,9 +1343,15 @@ mod tests {
     #[test]
     fn binop_is_and_is_not_with_null() {
         // NULL IS NULL = 1; NULL IS x = 0.
-        assert_eq!(eval_binop(BinOp::Is, &Value::Null, &Value::Null).unwrap(), i(1));
+        assert_eq!(
+            eval_binop(BinOp::Is, &Value::Null, &Value::Null).unwrap(),
+            i(1)
+        );
         assert_eq!(eval_binop(BinOp::Is, &Value::Null, &i(5)).unwrap(), i(0));
-        assert_eq!(eval_binop(BinOp::IsNot, &Value::Null, &Value::Null).unwrap(), i(0));
+        assert_eq!(
+            eval_binop(BinOp::IsNot, &Value::Null, &Value::Null).unwrap(),
+            i(0)
+        );
         assert_eq!(eval_binop(BinOp::IsNot, &Value::Null, &i(5)).unwrap(), i(1));
     }
 
@@ -1379,8 +1386,14 @@ mod tests {
 
     #[test]
     fn binop_bitwise() {
-        assert_eq!(eval_binop(BinOp::BitAnd, &i(0b1100), &i(0b1010)).unwrap(), i(0b1000));
-        assert_eq!(eval_binop(BinOp::BitOr, &i(0b1100), &i(0b0011)).unwrap(), i(0b1111));
+        assert_eq!(
+            eval_binop(BinOp::BitAnd, &i(0b1100), &i(0b1010)).unwrap(),
+            i(0b1000)
+        );
+        assert_eq!(
+            eval_binop(BinOp::BitOr, &i(0b1100), &i(0b0011)).unwrap(),
+            i(0b1111)
+        );
         assert_eq!(eval_binop(BinOp::ShiftLeft, &i(1), &i(3)).unwrap(), i(8));
         assert_eq!(eval_binop(BinOp::ShiftRight, &i(16), &i(2)).unwrap(), i(4));
     }
@@ -1391,14 +1404,20 @@ mod tests {
     fn unary_not_truthiness() {
         assert_eq!(eval_unaryop(UnaryOp::Not, &i(0)).unwrap(), i(1));
         assert_eq!(eval_unaryop(UnaryOp::Not, &i(5)).unwrap(), i(0));
-        assert_eq!(eval_unaryop(UnaryOp::Not, &Value::Null).unwrap(), Value::Null);
+        assert_eq!(
+            eval_unaryop(UnaryOp::Not, &Value::Null).unwrap(),
+            Value::Null
+        );
     }
 
     #[test]
     fn unary_neg_numeric() {
         assert_eq!(eval_unaryop(UnaryOp::Neg, &i(5)).unwrap(), i(-5));
         assert_eq!(eval_unaryop(UnaryOp::Neg, &r(2.5)).unwrap(), r(-2.5));
-        assert_eq!(eval_unaryop(UnaryOp::Neg, &Value::Null).unwrap(), Value::Null);
+        assert_eq!(
+            eval_unaryop(UnaryOp::Neg, &Value::Null).unwrap(),
+            Value::Null
+        );
     }
 
     #[test]
@@ -1414,13 +1433,22 @@ mod tests {
         assert_eq!(eval_scalar_function("LENGTH", &[t("hello")]).unwrap(), i(5));
         // 4 chars, not 8 bytes, for "café"
         assert_eq!(eval_scalar_function("LENGTH", &[t("café")]).unwrap(), i(4));
-        assert_eq!(eval_scalar_function("LENGTH", &[Value::Null]).unwrap(), Value::Null);
+        assert_eq!(
+            eval_scalar_function("LENGTH", &[Value::Null]).unwrap(),
+            Value::Null
+        );
     }
 
     #[test]
     fn scalar_upper_lower_unicode() {
-        assert_eq!(eval_scalar_function("UPPER", &[t("hello")]).unwrap(), t("HELLO"));
-        assert_eq!(eval_scalar_function("LOWER", &[t("WORLD")]).unwrap(), t("world"));
+        assert_eq!(
+            eval_scalar_function("UPPER", &[t("hello")]).unwrap(),
+            t("HELLO")
+        );
+        assert_eq!(
+            eval_scalar_function("LOWER", &[t("WORLD")]).unwrap(),
+            t("world")
+        );
         // Unicode case folding works for ascii-only here; locale-dependent
         // characters like 'İ' may not roundtrip, which is SQLite-correct.
         assert_eq!(eval_scalar_function("UPPER", &[t("ß")]).unwrap(), t("SS"));
@@ -1459,26 +1487,53 @@ mod tests {
 
     #[test]
     fn scalar_ifnull_and_nullif() {
-        assert_eq!(eval_scalar_function("IFNULL", &[Value::Null, t("x")]).unwrap(), t("x"));
-        assert_eq!(eval_scalar_function("IFNULL", &[i(1), t("x")]).unwrap(), i(1));
-        assert_eq!(eval_scalar_function("NULLIF", &[i(1), i(1)]).unwrap(), Value::Null);
+        assert_eq!(
+            eval_scalar_function("IFNULL", &[Value::Null, t("x")]).unwrap(),
+            t("x")
+        );
+        assert_eq!(
+            eval_scalar_function("IFNULL", &[i(1), t("x")]).unwrap(),
+            i(1)
+        );
+        assert_eq!(
+            eval_scalar_function("NULLIF", &[i(1), i(1)]).unwrap(),
+            Value::Null
+        );
         assert_eq!(eval_scalar_function("NULLIF", &[i(1), i(2)]).unwrap(), i(1));
     }
 
     #[test]
     fn scalar_typeof_each_type() {
-        assert_eq!(eval_scalar_function("TYPEOF", &[Value::Null]).unwrap(), t("null"));
-        assert_eq!(eval_scalar_function("TYPEOF", &[i(0)]).unwrap(), t("integer"));
-        assert_eq!(eval_scalar_function("TYPEOF", &[r(0.0)]).unwrap(), t("real"));
-        assert_eq!(eval_scalar_function("TYPEOF", &[t("x")]).unwrap(), t("text"));
-        assert_eq!(eval_scalar_function("TYPEOF", &[Value::Blob(vec![1])]).unwrap(), t("blob"));
+        assert_eq!(
+            eval_scalar_function("TYPEOF", &[Value::Null]).unwrap(),
+            t("null")
+        );
+        assert_eq!(
+            eval_scalar_function("TYPEOF", &[i(0)]).unwrap(),
+            t("integer")
+        );
+        assert_eq!(
+            eval_scalar_function("TYPEOF", &[r(0.0)]).unwrap(),
+            t("real")
+        );
+        assert_eq!(
+            eval_scalar_function("TYPEOF", &[t("x")]).unwrap(),
+            t("text")
+        );
+        assert_eq!(
+            eval_scalar_function("TYPEOF", &[Value::Blob(vec![1])]).unwrap(),
+            t("blob")
+        );
     }
 
     #[test]
     fn scalar_abs_paths() {
         assert_eq!(eval_scalar_function("ABS", &[i(-5)]).unwrap(), i(5));
         assert_eq!(eval_scalar_function("ABS", &[r(-2.5)]).unwrap(), r(2.5));
-        assert_eq!(eval_scalar_function("ABS", &[Value::Null]).unwrap(), Value::Null);
+        assert_eq!(
+            eval_scalar_function("ABS", &[Value::Null]).unwrap(),
+            Value::Null
+        );
     }
 
     #[test]
@@ -1487,15 +1542,30 @@ mod tests {
             eval_scalar_function("REPLACE", &[t("hello world"), t("world"), t("rust")]).unwrap(),
             t("hello rust")
         );
-        assert_eq!(eval_scalar_function("INSTR", &[t("hello"), t("ll")]).unwrap(), i(3));
-        assert_eq!(eval_scalar_function("INSTR", &[t("hello"), t("xx")]).unwrap(), i(0));
+        assert_eq!(
+            eval_scalar_function("INSTR", &[t("hello"), t("ll")]).unwrap(),
+            i(3)
+        );
+        assert_eq!(
+            eval_scalar_function("INSTR", &[t("hello"), t("xx")]).unwrap(),
+            i(0)
+        );
     }
 
     #[test]
     fn scalar_trim_variants() {
-        assert_eq!(eval_scalar_function("TRIM", &[t("  hi  ")]).unwrap(), t("hi"));
-        assert_eq!(eval_scalar_function("LTRIM", &[t("  hi  ")]).unwrap(), t("hi  "));
-        assert_eq!(eval_scalar_function("RTRIM", &[t("  hi  ")]).unwrap(), t("  hi"));
+        assert_eq!(
+            eval_scalar_function("TRIM", &[t("  hi  ")]).unwrap(),
+            t("hi")
+        );
+        assert_eq!(
+            eval_scalar_function("LTRIM", &[t("  hi  ")]).unwrap(),
+            t("hi  ")
+        );
+        assert_eq!(
+            eval_scalar_function("RTRIM", &[t("  hi  ")]).unwrap(),
+            t("  hi")
+        );
     }
 
     #[test]
@@ -1503,8 +1573,14 @@ mod tests {
         assert_eq!(eval_scalar_function("SIGN", &[i(5)]).unwrap(), i(1));
         assert_eq!(eval_scalar_function("SIGN", &[i(-5)]).unwrap(), i(-1));
         assert_eq!(eval_scalar_function("SIGN", &[i(0)]).unwrap(), i(0));
-        assert_eq!(eval_scalar_function("SIGN", &[Value::Null]).unwrap(), Value::Null);
-        assert_eq!(eval_scalar_function("SIGN", &[t("garbage")]).unwrap(), Value::Null);
+        assert_eq!(
+            eval_scalar_function("SIGN", &[Value::Null]).unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            eval_scalar_function("SIGN", &[t("garbage")]).unwrap(),
+            Value::Null
+        );
     }
 
     #[test]

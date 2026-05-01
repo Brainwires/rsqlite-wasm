@@ -14,6 +14,11 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 rust-version = "1.85"
+repository = "https://github.com/Brainwires/rsqlite-wasm"
+homepage = "https://github.com/Brainwires/rsqlite-wasm"
+authors = ["The rsqlite-wasm contributors"]
+keywords = ["sqlite", "wasm", "database", "sql", "browser"]
+categories = ["database", "wasm", "no-std"]
 
 [workspace.dependencies]
 rsqlite-parser = { path = "crates/rsqlite-parser" }

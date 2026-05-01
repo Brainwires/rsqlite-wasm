@@ -1874,10 +1874,8 @@ fn generated_column_rejects_explicit_update() {
 fn generated_column_in_pragma_table_xinfo() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute(
-        "CREATE TABLE t (a INTEGER, c INTEGER GENERATED ALWAYS AS (a * 2) STORED)",
-    )
-    .unwrap();
+    db.execute("CREATE TABLE t (a INTEGER, c INTEGER GENERATED ALWAYS AS (a * 2) STORED)")
+        .unwrap();
     let r = db.query("PRAGMA table_xinfo(t)").unwrap();
     let c_row = r
         .rows
@@ -1964,8 +1962,10 @@ fn json_each_invalid_json_returns_empty() {
 fn partial_index_only_includes_matching_rows() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT)").unwrap();
-    db.execute("INSERT INTO t VALUES (1, 'active'), (2, 'archived'), (3, 'active')").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT)")
+        .unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'active'), (2, 'archived'), (3, 'active')")
+        .unwrap();
     // Build a partial index on (status) only for active rows.
     db.execute("CREATE INDEX idx_active ON t (status) WHERE status = 'active'")
         .unwrap();
@@ -1983,7 +1983,8 @@ fn partial_index_only_includes_matching_rows() {
 fn partial_index_maintained_on_insert() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT)")
+        .unwrap();
     db.execute("CREATE INDEX idx_active ON t (status) WHERE status = 'active'")
         .unwrap();
     // Insert into both matching and non-matching predicate; both should
@@ -2030,7 +2031,8 @@ fn expression_index_creates_without_error() {
     // Expression indexes parse and build (with NULL placeholders) but are
     // not yet used at query lookup time. Confirm CREATE doesn't error and
     // queries still work via full table scan.
-    db.execute("CREATE INDEX idx_lower ON t (lower(name))").unwrap();
+    db.execute("CREATE INDEX idx_lower ON t (lower(name))")
+        .unwrap();
 
     let r = db
         .query("SELECT id FROM t WHERE lower(name) = 'alice'")
