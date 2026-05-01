@@ -5963,6 +5963,155 @@
     }
 
     #[test]
+    fn named_window_basic() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (g TEXT, n INTEGER)").unwrap();
+        db.execute("INSERT INTO t VALUES ('a', 1), ('a', 2), ('b', 10)").unwrap();
+        let r = db
+            .query(
+                "SELECT g, n, SUM(n) OVER w FROM t WINDOW w AS (PARTITION BY g) ORDER BY g, n",
+            )
+            .unwrap();
+        assert_eq!(r.rows[0].values[2], crate::types::Value::Integer(3));
+        assert_eq!(r.rows[1].values[2], crate::types::Value::Integer(3));
+        assert_eq!(r.rows[2].values[2], crate::types::Value::Integer(10));
+    }
+
+    #[test]
+    fn named_window_multiple_uses() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (n INTEGER)").unwrap();
+        db.execute("INSERT INTO t VALUES (1), (2), (3)").unwrap();
+        let r = db
+            .query(
+                "SELECT n, COUNT(*) OVER w, SUM(n) OVER w FROM t WINDOW w AS (ORDER BY n) ORDER BY n",
+            )
+            .unwrap();
+        assert_eq!(r.rows[0].values[1], crate::types::Value::Integer(1));
+        assert_eq!(r.rows[2].values[1], crate::types::Value::Integer(3));
+    }
+
+    #[test]
+    fn aggregate_filter_basic() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (n INTEGER, label TEXT)").unwrap();
+        db.execute(
+            "INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'a'), (4, 'b'), (5, 'a')",
+        )
+        .unwrap();
+        // SUM only of rows where label='a': 1 + 3 + 5 = 9
+        let r = db
+            .query("SELECT SUM(n) FILTER (WHERE label = 'a') FROM t")
+            .unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(9));
+    }
+
+    #[test]
+    fn aggregate_filter_count() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (n INTEGER)").unwrap();
+        db.execute("INSERT INTO t VALUES (1), (2), (3), (4), (5)").unwrap();
+        let r = db
+            .query("SELECT COUNT(*) FILTER (WHERE n > 2) FROM t")
+            .unwrap();
+        assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(3));
+    }
+
+    #[test]
+    fn aggregate_filter_with_group_by() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (g TEXT, n INTEGER)").unwrap();
+        db.execute("INSERT INTO t VALUES ('a', 1), ('a', 2), ('b', 5), ('b', 10)").unwrap();
+        let r = db
+            .query("SELECT g, SUM(n) FILTER (WHERE n > 1) FROM t GROUP BY g ORDER BY g")
+            .unwrap();
+        assert_eq!(r.rows[0].values[1], crate::types::Value::Integer(2));
+        assert_eq!(r.rows[1].values[1], crate::types::Value::Integer(15));
+    }
+
+    #[test]
+    fn window_filter_count() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (n INTEGER)").unwrap();
+        db.execute("INSERT INTO t VALUES (1), (2), (3), (4)").unwrap();
+        // Running count of even values
+        let r = db
+            .query(
+                "SELECT n, COUNT(*) FILTER (WHERE n % 2 = 0) OVER (ORDER BY n) FROM t ORDER BY n",
+            )
+            .unwrap();
+        assert_eq!(r.rows[0].values[1], crate::types::Value::Integer(0)); // 1: no evens yet
+        assert_eq!(r.rows[1].values[1], crate::types::Value::Integer(1)); // 2: one even
+        assert_eq!(r.rows[2].values[1], crate::types::Value::Integer(1)); // 3: still one
+        assert_eq!(r.rows[3].values[1], crate::types::Value::Integer(2)); // 4: two evens
+    }
+
+    #[test]
+    fn window_nth_value() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (n INTEGER)").unwrap();
+        db.execute("INSERT INTO t VALUES (10), (20), (30), (40)").unwrap();
+        let r = db
+            .query("SELECT n, NTH_VALUE(n, 2) OVER (ORDER BY n) FROM t ORDER BY n")
+            .unwrap();
+        // 2nd row in partition is value 20; all rows see it
+        for row in &r.rows {
+            assert_eq!(row.values[1], crate::types::Value::Integer(20));
+        }
+    }
+
+    #[test]
+    fn window_nth_value_out_of_range() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (n INTEGER)").unwrap();
+        db.execute("INSERT INTO t VALUES (1), (2)").unwrap();
+        let r = db
+            .query("SELECT NTH_VALUE(n, 99) OVER (ORDER BY n) FROM t")
+            .unwrap();
+        for row in &r.rows {
+            assert_eq!(row.values[0], crate::types::Value::Null);
+        }
+    }
+
+    #[test]
+    fn window_percent_rank() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (n INTEGER)").unwrap();
+        db.execute("INSERT INTO t VALUES (1), (2), (3), (4), (5)").unwrap();
+        let r = db
+            .query("SELECT n, PERCENT_RANK() OVER (ORDER BY n) FROM t ORDER BY n")
+            .unwrap();
+        // 5 rows: percent_rank values are 0, 0.25, 0.5, 0.75, 1.0
+        assert_eq!(r.rows[0].values[1], crate::types::Value::Real(0.0));
+        assert_eq!(r.rows[2].values[1], crate::types::Value::Real(0.5));
+        assert_eq!(r.rows[4].values[1], crate::types::Value::Real(1.0));
+    }
+
+    #[test]
+    fn window_cume_dist() {
+        let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+        let mut db = Database::create(&vfs, "test.db").unwrap();
+        db.execute("CREATE TABLE t (n INTEGER)").unwrap();
+        db.execute("INSERT INTO t VALUES (1), (2), (3), (4)").unwrap();
+        let r = db
+            .query("SELECT n, CUME_DIST() OVER (ORDER BY n) FROM t ORDER BY n")
+            .unwrap();
+        // 4 rows, no ties: 0.25, 0.5, 0.75, 1.0
+        assert_eq!(r.rows[0].values[1], crate::types::Value::Real(0.25));
+        assert_eq!(r.rows[1].values[1], crate::types::Value::Real(0.5));
+        assert_eq!(r.rows[3].values[1], crate::types::Value::Real(1.0));
+    }
+
+    #[test]
     fn default_persists_across_reopen() {
         let db_path = "/tmp/rsqlite_db_default_persist.db";
         let _ = std::fs::remove_file(db_path);

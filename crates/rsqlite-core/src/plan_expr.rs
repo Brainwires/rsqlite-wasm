@@ -7,6 +7,24 @@ use crate::error::{Error, Result};
 
 thread_local! {
     pub(super) static PARAM_AUTO_INDEX: RefCell<usize> = RefCell::new(0);
+    /// Named windows visible to the current SELECT being planned.
+    /// Populated by plan_select_body via with_named_windows; consulted by
+    /// plan_window_function when an OVER clause references a name.
+    pub(super) static NAMED_WINDOWS: RefCell<std::collections::HashMap<String, ast::WindowSpec>>
+        = RefCell::new(std::collections::HashMap::new());
+}
+
+/// RAII helper: install a fresh named-windows map for the duration of the
+/// closure, then restore the previous one. Required so subqueries don't see
+/// the outer SELECT's WINDOW clause.
+pub fn with_named_windows<R>(
+    map: std::collections::HashMap<String, ast::WindowSpec>,
+    f: impl FnOnce() -> R,
+) -> R {
+    let prev = NAMED_WINDOWS.with(|cell| std::mem::replace(&mut *cell.borrow_mut(), map));
+    let result = f();
+    NAMED_WINDOWS.with(|cell| *cell.borrow_mut() = prev);
+    result
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +78,7 @@ pub enum PlanExpr {
         func: AggFunc,
         arg: Box<PlanExpr>,
         distinct: bool,
+        filter: Option<Box<PlanExpr>>,
     },
     Function {
         name: String,
@@ -102,6 +121,7 @@ pub enum PlanExpr {
         partition_by: Vec<PlanExpr>,
         order_by: Vec<(PlanExpr, bool)>,
         frame: Option<WindowFrameSpec>,
+        filter: Option<Box<PlanExpr>>,
     },
     Collate {
         expr: Box<PlanExpr>,
@@ -511,8 +531,14 @@ pub fn plan_expr(expr: &Expr, columns: &[ColumnRef], catalog: &Catalog) -> Resul
 fn plan_function_expr(func: &ast::Function, columns: &[ColumnRef], catalog: &Catalog) -> Result<PlanExpr> {
     let name = func.name.to_string().to_uppercase();
 
+    let filter = func
+        .filter
+        .as_ref()
+        .map(|e| plan_expr(e, columns, catalog).map(Box::new))
+        .transpose()?;
+
     if let Some(ref over) = func.over {
-        return plan_window_function(&name, func, over, columns, catalog);
+        return plan_window_function(&name, func, over, columns, catalog, filter);
     }
 
     if name == "GROUP_CONCAT" {
@@ -551,6 +577,7 @@ fn plan_function_expr(func: &ast::Function, columns: &[ColumnRef], catalog: &Cat
             func: AggFunc::GroupConcat { separator },
             arg: Box::new(arg),
             distinct,
+            filter,
         });
     }
 
@@ -572,6 +599,7 @@ fn plan_function_expr(func: &ast::Function, columns: &[ColumnRef], catalog: &Cat
             func: AggFunc::JsonGroupArray,
             arg: Box::new(arg),
             distinct: false,
+            filter,
         });
     }
 
@@ -598,6 +626,7 @@ fn plan_function_expr(func: &ast::Function, columns: &[ColumnRef], catalog: &Cat
             func: AggFunc::JsonGroupObject { key: Box::new(key) },
             arg: Box::new(value),
             distinct: false,
+            filter,
         });
     }
 
@@ -653,6 +682,7 @@ fn plan_function_expr(func: &ast::Function, columns: &[ColumnRef], catalog: &Cat
             func: func_type,
             arg: Box::new(arg),
             distinct,
+            filter,
         });
     }
 
@@ -886,10 +916,18 @@ pub(super) fn contains_aggregate(expr: &PlanExpr) -> bool {
     }
 }
 
-pub(super) fn collect_aggregates(expr: &PlanExpr, out: &mut Vec<(AggFunc, PlanExpr, bool)>) {
+pub(super) fn collect_aggregates(
+    expr: &PlanExpr,
+    out: &mut Vec<(AggFunc, PlanExpr, bool, Option<PlanExpr>)>,
+) {
     match expr {
-        PlanExpr::Aggregate { func, arg, distinct } => {
-            out.push((func.clone(), arg.as_ref().clone(), *distinct));
+        PlanExpr::Aggregate { func, arg, distinct, filter } => {
+            out.push((
+                func.clone(),
+                arg.as_ref().clone(),
+                *distinct,
+                filter.as_ref().map(|f| (**f).clone()),
+            ));
         }
         PlanExpr::BinaryOp { left, right, .. } => {
             collect_aggregates(left, out);
@@ -919,11 +957,26 @@ fn plan_window_function(
     over: &ast::WindowType,
     columns: &[ColumnRef],
     catalog: &Catalog,
+    filter: Option<Box<PlanExpr>>,
 ) -> Result<PlanExpr> {
-    let spec = match over {
+    // Resolve the OVER clause to a concrete WindowSpec, following named
+    // window references and inheritance.
+    let owned_spec_storage;
+    let spec: &ast::WindowSpec = match over {
         ast::WindowType::WindowSpec(spec) => spec,
-        ast::WindowType::NamedWindow(_) => {
-            return Err(Error::Other("named windows are not yet supported".into()));
+        ast::WindowType::NamedWindow(name) => {
+            let resolved = NAMED_WINDOWS.with(|cell| cell.borrow().get(&name.value).cloned());
+            match resolved {
+                Some(s) => {
+                    owned_spec_storage = s;
+                    &owned_spec_storage
+                }
+                None => {
+                    return Err(Error::Other(format!(
+                        "unknown named window: {}", name.value
+                    )));
+                }
+            }
         }
     };
 
@@ -965,7 +1018,8 @@ fn plan_window_function(
 
     static KNOWN_WINDOW_FUNCS: &[&str] = &[
         "ROW_NUMBER", "RANK", "DENSE_RANK", "NTILE",
-        "LAG", "LEAD", "FIRST_VALUE", "LAST_VALUE",
+        "LAG", "LEAD", "FIRST_VALUE", "LAST_VALUE", "NTH_VALUE",
+        "PERCENT_RANK", "CUME_DIST",
         "COUNT", "SUM", "AVG", "MIN", "MAX", "TOTAL",
     ];
 
@@ -994,6 +1048,7 @@ fn plan_window_function(
         partition_by,
         order_by,
         frame,
+        filter,
     })
 }
 

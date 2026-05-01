@@ -19,7 +19,9 @@ pub(super) fn execute_window(
     let mut rows: Vec<Vec<Value>> = inner.rows.iter().map(|r| r.values.clone()).collect();
 
     for (win_expr, _alias) in window_exprs {
-        if let PlanExpr::WindowFunction { func_name, args, partition_by, order_by, frame } = win_expr {
+        if let PlanExpr::WindowFunction {
+            func_name, args, partition_by, order_by, frame, filter,
+        } = win_expr {
             let partitions = partition_rows(&rows, partition_by, input_columns, output_columns, pager, catalog)?;
 
             let mut result_values: Vec<Value> = vec![Value::Null; rows.len()];
@@ -30,7 +32,8 @@ pub(super) fn execute_window(
                 }
 
                 compute_window_for_partition(
-                    func_name, args, order_by, frame.as_ref(), &partition_indices, &rows,
+                    func_name, args, order_by, frame.as_ref(), filter.as_deref(),
+                    &partition_indices, &rows,
                     input_columns, output_columns,
                     &mut result_values, pager, catalog,
                 )?;
@@ -133,6 +136,7 @@ fn compute_window_for_partition(
     args: &[PlanExpr],
     order_by: &[(PlanExpr, bool)],
     frame: Option<&WindowFrameSpec>,
+    filter: Option<&PlanExpr>,
     partition_indices: &[usize],
     rows: &[Vec<Value>],
     input_columns: &[String],
@@ -275,6 +279,86 @@ fn compute_window_for_partition(
                 }
             }
         }
+        "NTH_VALUE" => {
+            // NTH_VALUE(expr, n): return expr from the n-th row (1-based) of
+            // the partition; NULL if out of range.
+            if args.len() < 2 {
+                return Err(Error::Other("NTH_VALUE requires 2 arguments".into()));
+            }
+            let n_row = Row { values: rows[partition_indices[0]].clone() };
+            let n = match super::eval::eval_expr(&args[1], &n_row, cols, pager, catalog)? {
+                Value::Integer(n) if n >= 1 => n as usize,
+                _ => 0,
+            };
+            let val = if n >= 1 && n <= partition_len {
+                let target_row = Row { values: rows[partition_indices[n - 1]].clone() };
+                super::eval::eval_expr(&args[0], &target_row, cols, pager, catalog)?
+            } else {
+                Value::Null
+            };
+            for &row_idx in partition_indices {
+                result_values[row_idx] = val.clone();
+            }
+        }
+        "PERCENT_RANK" => {
+            // (rank - 1) / (partition_size - 1); 0 when partition has one row.
+            let order_exprs: Vec<&PlanExpr> = order_by.iter().map(|(e, _)| e).collect();
+            let denom = if partition_len > 1 { (partition_len - 1) as f64 } else { 1.0 };
+            let mut rank = 1i64;
+            for i in 0..partition_len {
+                let row_idx = partition_indices[i];
+                if i > 0 {
+                    let prev_idx = partition_indices[i - 1];
+                    let prev_row = Row { values: rows[prev_idx].clone() };
+                    let curr_row = Row { values: rows[row_idx].clone() };
+                    let same = order_exprs.is_empty() || {
+                        let prev_vals: Vec<Value> = order_exprs.iter()
+                            .map(|a| super::eval::eval_expr(a, &prev_row, cols, pager, catalog).unwrap_or(Value::Null))
+                            .collect();
+                        let curr_vals: Vec<Value> = order_exprs.iter()
+                            .map(|a| super::eval::eval_expr(a, &curr_row, cols, pager, catalog).unwrap_or(Value::Null))
+                            .collect();
+                        prev_vals == curr_vals
+                    };
+                    if !same {
+                        rank = (i + 1) as i64;
+                    }
+                }
+                result_values[row_idx] = if partition_len > 1 {
+                    Value::Real((rank as f64 - 1.0) / denom)
+                } else {
+                    Value::Real(0.0)
+                };
+            }
+        }
+        "CUME_DIST" => {
+            // (number of rows with order key <= current) / partition_size.
+            // For peer rows, all share the same value (count includes peers).
+            let order_exprs: Vec<&PlanExpr> = order_by.iter().map(|(e, _)| e).collect();
+            let order_keys: Vec<Vec<Value>> = (0..partition_len)
+                .map(|i| -> Vec<Value> {
+                    let r = Row { values: rows[partition_indices[i]].clone() };
+                    order_exprs.iter()
+                        .map(|e| super::eval::eval_expr(e, &r, cols, pager, catalog).unwrap_or(Value::Null))
+                        .collect()
+                })
+                .collect();
+            for i in 0..partition_len {
+                let row_idx = partition_indices[i];
+                let key = &order_keys[i];
+                let count = if order_exprs.is_empty() {
+                    partition_len
+                } else {
+                    // Number of rows whose key is <= current key (count peers).
+                    let mut last_peer = i;
+                    while last_peer + 1 < partition_len && order_keys[last_peer + 1] == *key {
+                        last_peer += 1;
+                    }
+                    last_peer + 1
+                };
+                result_values[row_idx] = Value::Real(count as f64 / partition_len as f64);
+            }
+        }
         "COUNT" | "SUM" | "AVG" | "MIN" | "MAX" | "TOTAL" => {
             let arg = args.first();
             let is_count_star = arg.is_none() || matches!(arg, Some(PlanExpr::Wildcard));
@@ -283,10 +367,16 @@ fn compute_window_for_partition(
             let row_values: Vec<Option<Value>> = partition_indices
                 .iter()
                 .map(|&row_idx| -> Result<Option<Value>> {
+                    let tmp_row = Row { values: rows[row_idx].clone() };
+                    if let Some(pred) = filter {
+                        let v = super::eval::eval_expr(pred, &tmp_row, cols, pager, catalog)?;
+                        if !crate::eval_helpers::is_truthy(&v) {
+                            return Ok(None);
+                        }
+                    }
                     if is_count_star {
                         Ok(Some(Value::Integer(1)))
                     } else if let Some(arg_expr) = arg {
-                        let tmp_row = Row { values: rows[row_idx].clone() };
                         let val = super::eval::eval_expr(arg_expr, &tmp_row, cols, pager, catalog)?;
                         if matches!(val, Value::Null) {
                             Ok(None)

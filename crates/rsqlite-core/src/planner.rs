@@ -172,7 +172,7 @@ pub enum Plan {
     Aggregate {
         input: Box<Plan>,
         group_by: Vec<PlanExpr>,
-        aggregates: Vec<(AggFunc, PlanExpr, bool)>,
+        aggregates: Vec<(AggFunc, PlanExpr, bool, Option<PlanExpr>)>,
         having: Option<PlanExpr>,
     },
     NestedLoopJoin {
@@ -839,6 +839,34 @@ fn plan_select_body(
     catalog: &Catalog,
     ctes: &CteMap,
 ) -> Result<(Plan, Vec<ColumnRef>, Vec<String>)> {
+    // Build a name -> WindowSpec map from the SELECT's WINDOW clause. Resolve
+    // chained references (WINDOW w1 AS w2) eagerly.
+    let mut named_windows: HashMap<String, ast::WindowSpec> = HashMap::new();
+    for def in &select.named_window {
+        let name = def.0.value.clone();
+        let resolved_spec = match &def.1 {
+            ast::NamedWindowExpr::WindowSpec(spec) => spec.clone(),
+            ast::NamedWindowExpr::NamedWindow(other) => named_windows
+                .get(&other.value)
+                .cloned()
+                .ok_or_else(|| {
+                    Error::Other(format!(
+                        "named window references unknown window: {}",
+                        other.value
+                    ))
+                })?,
+        };
+        named_windows.insert(name, resolved_spec);
+    }
+
+    expr::with_named_windows(named_windows, || plan_select_body_inner(select, catalog, ctes))
+}
+
+fn plan_select_body_inner(
+    select: &ast::Select,
+    catalog: &Catalog,
+    ctes: &CteMap,
+) -> Result<(Plan, Vec<ColumnRef>, Vec<String>)> {
     if select.from.is_empty() {
         let plan = Plan::SingleRow;
         let all_columns: Vec<ColumnRef> = vec![];
@@ -996,7 +1024,7 @@ fn plan_select_body(
     let has_aggregates = outputs.iter().any(|o| contains_aggregate(&o.expr));
 
     if has_aggregates || !group_by_exprs.is_empty() {
-        let mut aggregates: Vec<(AggFunc, PlanExpr, bool)> = Vec::new();
+        let mut aggregates: Vec<(AggFunc, PlanExpr, bool, Option<PlanExpr>)> = Vec::new();
         for o in &outputs {
             collect_aggregates(&o.expr, &mut aggregates);
         }
@@ -1043,7 +1071,7 @@ fn plan_select_body(
                         names.push(format!("{:?}", gb));
                     }
                 }
-                for (func, arg, distinct) in aggregates {
+                for (func, arg, distinct, _filter) in aggregates {
                     names.push(agg_column_name(func, arg, *distinct));
                 }
                 names

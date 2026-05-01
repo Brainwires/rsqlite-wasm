@@ -10,7 +10,7 @@ use crate::types::{QueryResult, Row};
 pub(super) fn execute_aggregate(
     input: &Plan,
     group_by: &[PlanExpr],
-    aggregates: &[(AggFunc, PlanExpr, bool)],
+    aggregates: &[(AggFunc, PlanExpr, bool, Option<PlanExpr>)],
     having: Option<&PlanExpr>,
     pager: &mut Pager,
     catalog: &Catalog,
@@ -58,7 +58,7 @@ pub(super) fn execute_aggregate(
         };
         output_columns.push(name);
     }
-    for (func, arg, distinct) in aggregates {
+    for (func, arg, distinct, _filter) in aggregates {
         output_columns.push(agg_column_name(func, arg, *distinct));
     }
 
@@ -67,9 +67,23 @@ pub(super) fn execute_aggregate(
         let group_rows: Vec<&Row> = row_indices.iter().map(|&i| &inner.rows[i]).collect();
         let mut row_values = key_values.clone();
 
-        for (func, arg, distinct) in aggregates {
+        for (func, arg, distinct, filter) in aggregates {
+            // FILTER (WHERE pred): keep only rows where pred is truthy.
+            let filtered_rows: Vec<&Row> = match filter {
+                None => group_rows.clone(),
+                Some(pred) => {
+                    let mut kept = Vec::new();
+                    for r in &group_rows {
+                        let v = super::eval::eval_expr(pred, r, input_columns, pager, catalog)?;
+                        if is_truthy(&v) {
+                            kept.push(*r);
+                        }
+                    }
+                    kept
+                }
+            };
             let agg_val =
-                compute_aggregate(func, arg, *distinct, &group_rows, input_columns, pager, catalog)?;
+                compute_aggregate(func, arg, *distinct, &filtered_rows, input_columns, pager, catalog)?;
             row_values.push(agg_val);
         }
 

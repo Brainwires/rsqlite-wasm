@@ -84,7 +84,7 @@ pub(super) fn eval_expr(expr: &PlanExpr, row: &Row, columns: &[String], pager: &
             }))
         }
         PlanExpr::Wildcard => Err(Error::Other("wildcard in expression context".to_string())),
-        PlanExpr::Aggregate { func, arg, distinct } => {
+        PlanExpr::Aggregate { func, arg, distinct, .. } => {
             let name = agg_column_name(func, arg, *distinct);
             let idx = columns
                 .iter()
