@@ -42,6 +42,32 @@ jobs:
       - name: Clippy (warnings allowed, errors fail)
         run: cargo clippy --workspace --all-targets
 
+  wasm-tests:
+    name: WASM-target unit tests
+    runs-on: ubuntu-latest
+    needs: rust
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Run Node-target tests (lib.rs surface)
+        run: wasm-pack test --node crates/rsqlite-wasm
+
+      - name: Run browser-target tests (OPFS / IndexedDB)
+        # GitHub-hosted runners ship Chrome by default. The
+        # --headless --chrome runner uses chromedriver under the hood.
+        run: wasm-pack test --headless --chrome crates/rsqlite-wasm
+
   coverage-rust:
     name: Rust coverage
     runs-on: ubuntu-latest
@@ -63,8 +89,9 @@ jobs:
       - name: Run coverage (gate + summary)
         # --fail-under-lines is the gate. Bump as coverage grows;
         # never lower without justification. The rsqlite-wasm crate
-        # is excluded — it's the wasm-bindgen surface and only runs
-        # in a browser, not under cargo test.
+        # is excluded here because its tests run under
+        # `wasm-pack test` (see the `wasm-tests` job), not native
+        # `cargo test`, so cargo-llvm-cov never sees them execute.
         run: |
           cargo llvm-cov --workspace --summary-only \
             --ignore-filename-regex '(_tests\.rs|/tests/|target/|crates/rsqlite-wasm/)' \

@@ -162,17 +162,25 @@ cd js && npm test             # JS package (rebuilds the WASM glue first)
 ### Coverage
 
 CI runs `cargo-llvm-cov` against the Rust workspace and fails if line
-coverage drops below 75%. Reproduce locally with:
+coverage drops below 75%. The wasm-bindgen-only `rsqlite-wasm` crate
+is excluded from that gate because its tests run under
+`wasm-pack test` (Node + headless Chrome) instead of native
+`cargo test`. CI runs those separately in the `wasm-tests` job, so
+both surfaces are exercised.
+
+Reproduce locally with:
 
 ```bash
-scripts/coverage.sh           # both Rust + JS (informational)
-scripts/coverage.sh rust      # gate-checked Rust only
-scripts/coverage.sh js        # JS only
+scripts/coverage.sh           # native Rust + JS + wasm-bindgen-test
+scripts/coverage.sh rust      # gate-checked Rust llvm-cov
+scripts/coverage.sh js        # JS coverage report (informational)
+scripts/coverage.sh wasm      # wasm-pack test --node + --chrome
 ```
 
-Requires `cargo install cargo-llvm-cov` and `rustup component add
-llvm-tools-preview`. The wasm-bindgen-only crate (`crates/rsqlite-wasm`)
-is excluded — it can't run under `cargo test`.
+Requires:
+- `cargo install cargo-llvm-cov`
+- `rustup component add llvm-tools-preview`
+- `wasm-pack` (and Chrome on PATH for `wasm` mode)
 
 ## Architecture
 
