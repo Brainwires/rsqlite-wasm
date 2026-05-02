@@ -9,9 +9,11 @@ use crate::planner::{ColumnRef, PlanExpr};
 use crate::types::{QueryResult, Row};
 
 pub(super) fn execute_scan(
+    table: &str,
     root_page: u32,
     columns: &[ColumnRef],
     pager: &mut Pager,
+    catalog: &Catalog,
 ) -> Result<QueryResult> {
     let column_names: Vec<String> = columns
         .iter()
@@ -23,6 +25,40 @@ pub(super) fn execute_scan(
             }
         })
         .collect();
+
+    // WITHOUT ROWID tables: rows live in an index-format btree as
+    // `[pk_cols..., non_pk_cols...]`. Read via IndexCursor and reorder
+    // back into declared column order before projecting.
+    if catalog.get_table(table).is_some_and(|t| t.without_rowid) {
+        let pk_indices = super::helpers::without_rowid_pk_indices(catalog, table);
+        let table_def = catalog.get_table(table).unwrap();
+        let n_columns = table_def.columns.len();
+
+        let mut cursor = IndexCursor::new(pager, root_page);
+        let records = cursor
+            .collect_all()
+            .map_err(|e| Error::Other(e.to_string()))?;
+
+        let mut rows = Vec::with_capacity(records.len());
+        for rec in &records {
+            let declared = super::helpers::storage_to_declared_order(
+                &rec.values,
+                &pk_indices,
+                n_columns,
+            );
+            let mut row_values = Vec::with_capacity(columns.len());
+            for col in columns {
+                let val = declared.get(col.column_index).cloned().unwrap_or(Value::Null);
+                row_values.push(val);
+            }
+            rows.push(Row::new(row_values));
+        }
+
+        return Ok(QueryResult {
+            columns: column_names,
+            rows,
+        });
+    }
 
     let mut cursor = BTreeCursor::new(pager, root_page);
     let btree_rows = cursor

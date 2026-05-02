@@ -1,5 +1,6 @@
 use rsqlite_storage::btree::{
-    BTreeCursor, btree_delete, btree_index_delete, btree_index_insert, btree_insert,
+    BTreeCursor, IndexCursor, btree_delete, btree_index_delete, btree_index_delete_by_prefix,
+    btree_index_insert, btree_insert,
 };
 use rsqlite_storage::codec::{Record, Value};
 use rsqlite_storage::pager::Pager;
@@ -17,8 +18,9 @@ use super::constraints::{
 };
 use super::eval::eval_expr;
 use super::helpers::{
-    apply_generated_columns, build_index_key, build_returning_result,
+    apply_generated_columns, build_index_key, build_returning_result, declared_to_storage_order,
     get_table_indexes_with_predicates, index_predicate_matches, row_values_for_rowid,
+    storage_to_declared_order, without_rowid_pk_indices,
 };
 use super::state::set_changes;
 use super::trigger::fire_triggers;
@@ -44,6 +46,13 @@ pub(super) fn execute_update(
                 }
             }
         }
+    }
+
+    if catalog
+        .get_table(&plan.table_name)
+        .is_some_and(|t| t.without_rowid)
+    {
+        return execute_update_without_rowid(plan, pager, catalog);
     }
 
     let column_names: Vec<String> = plan.table_columns.iter().map(|c| c.name.clone()).collect();
@@ -343,6 +352,240 @@ pub(super) fn execute_update(
                 }
             }
             returning_values.push(row_for_returning);
+        }
+    }
+
+    if !pager.in_transaction() {
+        pager.flush()?;
+    }
+
+    set_changes(rows_affected as i64);
+    let returning = if let Some(items) = &plan.returning {
+        Some(build_returning_result(
+            items,
+            &returning_values,
+            &plan.table_columns,
+            pager,
+            catalog,
+        )?)
+    } else {
+        None
+    };
+    Ok(ExecResult {
+        rows_affected,
+        returning,
+    })
+}
+
+/// UPDATE path for WITHOUT ROWID tables. The table btree is index-formatted
+/// with the PK as the leading prefix. We materialize candidate rows via
+/// IndexCursor, evaluate the WHERE predicate against declared-order values,
+/// and rewrite each match by deleting the old PK-prefix entry and inserting
+/// the new PK-first record.
+fn execute_update_without_rowid(
+    plan: &UpdatePlan,
+    pager: &mut Pager,
+    catalog: &Catalog,
+) -> Result<ExecResult> {
+    if plan.from.is_some() {
+        return Err(Error::Other(
+            "UPDATE FROM is not supported on WITHOUT ROWID tables yet".to_string(),
+        ));
+    }
+
+    let column_names: Vec<String> = plan.table_columns.iter().map(|c| c.name.clone()).collect();
+    let pk_indices = without_rowid_pk_indices(catalog, &plan.table_name);
+    let n_columns = plan.table_columns.len();
+
+    let mut cursor = IndexCursor::new(pager, plan.root_page);
+    let records = cursor
+        .collect_all()
+        .map_err(|e| Error::Other(e.to_string()))?;
+
+    let mut to_update: Vec<(Vec<Value>, Vec<Value>)> = Vec::new();
+    for rec in &records {
+        let old_declared = storage_to_declared_order(&rec.values, &pk_indices, n_columns);
+        let row = Row::new(old_declared.clone());
+
+        let matches = match &plan.predicate {
+            Some(pred) => {
+                let val = eval_expr(pred, &row, &column_names, pager, catalog)?;
+                is_truthy(&val)
+            }
+            None => true,
+        };
+        if !matches {
+            continue;
+        }
+
+        let mut new_values = old_declared.clone();
+        for (col_name, expr) in &plan.assignments {
+            let col_idx = column_names
+                .iter()
+                .position(|c| c.eq_ignore_ascii_case(col_name))
+                .ok_or_else(|| Error::Other(format!("unknown column: {col_name}")))?;
+            new_values[col_idx] = eval_expr(expr, &row, &column_names, pager, catalog)?;
+        }
+        apply_generated_columns(
+            &mut new_values,
+            &plan.table_name,
+            &plan.table_columns,
+            pager,
+            catalog,
+        )?;
+        check_not_null_constraints(&new_values, &plan.table_columns, &plan.table_name)?;
+        check_check_constraints(
+            &new_values,
+            &plan.table_columns,
+            &plan.table_name,
+            pager,
+            catalog,
+        )?;
+        check_foreign_key_insert(
+            &new_values,
+            &plan.table_columns,
+            &plan.table_name,
+            pager,
+            catalog,
+        )?;
+
+        let old_pk: Vec<Value> = pk_indices
+            .iter()
+            .map(|&i| old_declared.get(i).cloned().unwrap_or(Value::Null))
+            .collect();
+        let new_pk: Vec<Value> = pk_indices
+            .iter()
+            .map(|&i| new_values.get(i).cloned().unwrap_or(Value::Null))
+            .collect();
+        let pk_changed = old_pk
+            .iter()
+            .zip(new_pk.iter())
+            .any(|(o, n)| !super::helpers::values_equal(o, n));
+        if pk_changed {
+            for other in &records {
+                let other_declared =
+                    storage_to_declared_order(&other.values, &pk_indices, n_columns);
+                let other_pk: Vec<Value> = pk_indices
+                    .iter()
+                    .map(|&i| other_declared.get(i).cloned().unwrap_or(Value::Null))
+                    .collect();
+                if other_pk
+                    .iter()
+                    .zip(old_pk.iter())
+                    .all(|(o, p)| super::helpers::values_equal(o, p))
+                {
+                    continue;
+                }
+                if other_pk
+                    .iter()
+                    .zip(new_pk.iter())
+                    .all(|(o, n)| super::helpers::values_equal(o, n))
+                {
+                    let names = pk_indices
+                        .iter()
+                        .map(|&i| format!("{}.{}", plan.table_name, plan.table_columns[i].name))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    return Err(Error::Other(format!("UNIQUE constraint failed: {names}")));
+                }
+            }
+        }
+
+        to_update.push((old_declared, new_values));
+    }
+
+    let rows_affected = to_update.len() as u64;
+    let table_indexes = get_table_indexes_with_predicates(catalog, &plan.table_name);
+    let mut returning_values: Vec<Vec<Value>> = Vec::new();
+
+    for (old_values, new_values) in to_update {
+        let old_named: Vec<(String, Value)> = plan
+            .table_columns
+            .iter()
+            .zip(old_values.iter())
+            .map(|(c, v)| (c.name.clone(), v.clone()))
+            .collect();
+        let new_named: Vec<(String, Value)> = plan
+            .table_columns
+            .iter()
+            .zip(new_values.iter())
+            .map(|(c, v)| (c.name.clone(), v.clone()))
+            .collect();
+
+        fire_triggers(
+            &plan.table_name,
+            &crate::catalog::TriggerTiming::Before,
+            &crate::catalog::TriggerEvent::Update,
+            Some(&old_named),
+            Some(&new_named),
+            pager,
+            catalog,
+        )?;
+
+        for (idx_root, idx_col_indices, predicate) in &table_indexes {
+            let old_in = index_predicate_matches(
+                predicate.as_deref(),
+                &old_values,
+                &plan.table_columns,
+                pager,
+                catalog,
+            )?;
+            let new_in = index_predicate_matches(
+                predicate.as_deref(),
+                &new_values,
+                &plan.table_columns,
+                pager,
+                catalog,
+            )?;
+            if old_in {
+                let old_key = build_index_key(
+                    &old_values,
+                    idx_col_indices,
+                    &plan.table_columns,
+                    pager,
+                    catalog,
+                    0,
+                )?;
+                let _ = btree_index_delete(pager, *idx_root, &old_key);
+            }
+            if new_in {
+                let new_key = build_index_key(
+                    &new_values,
+                    idx_col_indices,
+                    &plan.table_columns,
+                    pager,
+                    catalog,
+                    0,
+                )?;
+                let _ = btree_index_insert(pager, *idx_root, &new_key);
+            }
+        }
+
+        let old_pk_record = Record {
+            values: pk_indices
+                .iter()
+                .map(|&i| old_values.get(i).cloned().unwrap_or(Value::Null))
+                .collect(),
+        };
+        btree_index_delete_by_prefix(pager, plan.root_page, &old_pk_record, pk_indices.len())
+            .map_err(|e| Error::Other(e.to_string()))?;
+
+        let stored = declared_to_storage_order(&new_values, &pk_indices);
+        btree_index_insert(pager, plan.root_page, &Record { values: stored })
+            .map_err(|e| Error::Other(e.to_string()))?;
+
+        fire_triggers(
+            &plan.table_name,
+            &crate::catalog::TriggerTiming::After,
+            &crate::catalog::TriggerEvent::Update,
+            Some(&old_named),
+            Some(&new_named),
+            pager,
+            catalog,
+        )?;
+
+        if plan.returning.is_some() {
+            returning_values.push(new_values);
         }
     }
 

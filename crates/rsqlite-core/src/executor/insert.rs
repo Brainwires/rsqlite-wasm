@@ -1,6 +1,6 @@
 use rsqlite_storage::btree::{
-    btree_delete, btree_index_delete, btree_index_insert, btree_insert, btree_max_rowid,
-    btree_row_exists,
+    IndexCursor, btree_delete, btree_index_delete, btree_index_insert, btree_insert,
+    btree_max_rowid, btree_row_exists,
 };
 use rsqlite_storage::codec::{Record, Value};
 use rsqlite_storage::pager::Pager;
@@ -19,8 +19,9 @@ use super::constraints::{
 use super::eval::eval_expr;
 use super::helpers::{
     apply_column_defaults, apply_generated_columns, build_index_key, build_returning_result,
-    eval_insert_row, get_table_indexes_with_predicates, index_predicate_matches,
-    map_query_row_to_insert, read_row_by_rowid,
+    declared_to_storage_order, eval_insert_row, get_table_indexes_with_predicates,
+    index_predicate_matches, map_query_row_to_insert, read_row_by_rowid,
+    without_rowid_pk_indices,
 };
 use super::state::{set_changes, set_last_insert_rowid};
 use super::trigger::fire_triggers;
@@ -61,6 +62,18 @@ fn execute_insert_inner(
                 }
             }
         }
+    }
+
+    // WITHOUT ROWID tables use index-format storage with the PK columns
+    // as the sort key and the full row record as the payload. Branch
+    // into a dedicated path so we don't have to weave WITHOUT ROWID
+    // handling through the rowid-keyed code below (autoincrement,
+    // ON CONFLICT-by-rowid, etc.).
+    if catalog
+        .get_table(&plan.table_name)
+        .is_some_and(|t| t.without_rowid)
+    {
+        return execute_insert_without_rowid(plan, pager, catalog);
     }
 
     let table_indexes = get_table_indexes_with_predicates(catalog, &plan.table_name);
@@ -510,4 +523,185 @@ fn row_with_rowid(
             }
         })
         .collect()
+}
+
+/// INSERT path for `CREATE TABLE … WITHOUT ROWID` tables. The btree at
+/// `plan.root_page` is an index-format btree (LeafIndex/InteriorIndex
+/// pages); the stored record is the row reordered as
+/// `[pk_cols..., non_pk_cols...]` so the leading prefix functions as
+/// the btree key. No rowid is generated.
+fn execute_insert_without_rowid(
+    plan: &InsertPlan,
+    pager: &mut Pager,
+    catalog: &Catalog,
+) -> Result<ExecResult> {
+    let pk_indices = without_rowid_pk_indices(catalog, &plan.table_name);
+    if pk_indices.is_empty() {
+        return Err(Error::Other(format!(
+            "WITHOUT ROWID table {} has no primary key columns",
+            plan.table_name
+        )));
+    }
+
+    let mut rows_affected = 0u64;
+    let mut returning_values: Vec<Vec<Value>> = Vec::new();
+
+    let row_iter: Vec<(Vec<Value>, Vec<bool>)> = if let Some(source) = &plan.source_query {
+        let query_result = super::execute(source, pager, catalog)?;
+        query_result
+            .rows
+            .iter()
+            .map(|row| {
+                map_query_row_to_insert(&row.values, &plan.table_columns, &plan.target_columns)
+            })
+            .collect::<Result<_>>()?
+    } else {
+        plan.rows
+            .iter()
+            .map(|row_exprs| {
+                eval_insert_row(row_exprs, &plan.table_columns, &plan.target_columns)
+            })
+            .collect::<Result<_>>()?
+    };
+
+    for (mut values, explicitly_set) in row_iter {
+        apply_column_defaults(
+            &mut values,
+            &explicitly_set,
+            &plan.table_name,
+            &plan.table_columns,
+            pager,
+            catalog,
+        )?;
+        apply_generated_columns(
+            &mut values,
+            &plan.table_name,
+            &plan.table_columns,
+            pager,
+            catalog,
+        )?;
+
+        check_not_null_constraints(&values, &plan.table_columns, &plan.table_name)?;
+
+        let pk_prefix: Vec<Value> = pk_indices
+            .iter()
+            .map(|&i| values.get(i).cloned().unwrap_or(Value::Null))
+            .collect();
+        for (slot, &i) in pk_indices.iter().enumerate() {
+            if matches!(pk_prefix[slot], Value::Null) {
+                return Err(Error::Other(format!(
+                    "NOT NULL constraint failed: {}.{}",
+                    plan.table_name, plan.table_columns[i].name
+                )));
+            }
+        }
+        let prefix_record = Record { values: pk_prefix };
+        let mut probe = IndexCursor::new(pager, plan.root_page);
+        let exists = probe
+            .seek_first_with_prefix(&prefix_record)
+            .map_err(|e| Error::Other(e.to_string()))?;
+        if exists {
+            let names = pk_indices
+                .iter()
+                .map(|&i| format!("{}.{}", plan.table_name, plan.table_columns[i].name))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(Error::Other(format!("UNIQUE constraint failed: {names}")));
+        }
+
+        check_check_constraints(
+            &values,
+            &plan.table_columns,
+            &plan.table_name,
+            pager,
+            catalog,
+        )?;
+        check_foreign_key_insert(
+            &values,
+            &plan.table_columns,
+            &plan.table_name,
+            pager,
+            catalog,
+        )?;
+
+        let new_named: Vec<(String, Value)> = plan
+            .table_columns
+            .iter()
+            .zip(values.iter())
+            .map(|(c, v)| (c.name.clone(), v.clone()))
+            .collect();
+        fire_triggers(
+            &plan.table_name,
+            &crate::catalog::TriggerTiming::Before,
+            &crate::catalog::TriggerEvent::Insert,
+            None,
+            Some(&new_named),
+            pager,
+            catalog,
+        )?;
+
+        let stored = declared_to_storage_order(&values, &pk_indices);
+        let record = Record { values: stored };
+        btree_index_insert(pager, plan.root_page, &record)
+            .map_err(|e| Error::Other(e.to_string()))?;
+
+        let table_indexes = get_table_indexes_with_predicates(catalog, &plan.table_name);
+        for (idx_root, idx_col_indices, predicate) in &table_indexes {
+            if !index_predicate_matches(
+                predicate.as_deref(),
+                &values,
+                &plan.table_columns,
+                pager,
+                catalog,
+            )? {
+                continue;
+            }
+            let key = build_index_key(
+                &values,
+                idx_col_indices,
+                &plan.table_columns,
+                pager,
+                catalog,
+                0,
+            )?;
+            btree_index_insert(pager, *idx_root, &key)
+                .map_err(|e| Error::Other(e.to_string()))?;
+        }
+
+        fire_triggers(
+            &plan.table_name,
+            &crate::catalog::TriggerTiming::After,
+            &crate::catalog::TriggerEvent::Insert,
+            None,
+            Some(&new_named),
+            pager,
+            catalog,
+        )?;
+
+        if plan.returning.is_some() {
+            returning_values.push(values.clone());
+        }
+        rows_affected += 1;
+    }
+
+    if !pager.in_transaction() {
+        pager.flush()?;
+    }
+
+    set_changes(rows_affected as i64);
+    let returning = if let Some(items) = &plan.returning {
+        Some(build_returning_result(
+            items,
+            &returning_values,
+            &plan.table_columns,
+            pager,
+            catalog,
+        )?)
+    } else {
+        None
+    };
+    Ok(ExecResult {
+        rows_affected,
+        returning,
+    })
 }

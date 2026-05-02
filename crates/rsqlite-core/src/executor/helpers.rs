@@ -508,6 +508,85 @@ pub(super) fn apply_column_defaults(
     Ok(())
 }
 
+/// PK column indices (in declared order) for a WITHOUT ROWID table.
+/// Returns the empty Vec for tables that aren't WITHOUT ROWID or whose
+/// catalog definition isn't loaded.
+pub(super) fn without_rowid_pk_indices(catalog: &Catalog, table_name: &str) -> Vec<usize> {
+    let table_def = match catalog.get_table(table_name) {
+        Some(td) => td,
+        None => return Vec::new(),
+    };
+    if !table_def.without_rowid {
+        return Vec::new();
+    }
+    if !table_def.pk_columns.is_empty() {
+        // Composite PK: respect the declared order in pk_columns.
+        table_def
+            .pk_columns
+            .iter()
+            .filter_map(|name| {
+                table_def
+                    .columns
+                    .iter()
+                    .position(|c| c.name.eq_ignore_ascii_case(name))
+            })
+            .collect()
+    } else {
+        // Single-column PK from inline `PRIMARY KEY` on a column.
+        table_def
+            .columns
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| if c.is_primary_key { Some(i) } else { None })
+            .collect()
+    }
+}
+
+/// Reorder a row of values from declared column order to the WITHOUT
+/// ROWID storage order: PK columns first (in PK declaration order),
+/// then non-PK columns in declared order.
+pub(super) fn declared_to_storage_order(values: &[Value], pk_indices: &[usize]) -> Vec<Value> {
+    let mut out = Vec::with_capacity(values.len());
+    for &i in pk_indices {
+        out.push(values.get(i).cloned().unwrap_or(Value::Null));
+    }
+    for (i, v) in values.iter().enumerate() {
+        if !pk_indices.contains(&i) {
+            out.push(v.clone());
+        }
+    }
+    out
+}
+
+/// Reverse of [`declared_to_storage_order`]: take values stored in the
+/// WITHOUT ROWID `[pk..., non-pk...]` layout and return them in declared
+/// column order.
+pub(super) fn storage_to_declared_order(
+    stored: &[Value],
+    pk_indices: &[usize],
+    n_columns: usize,
+) -> Vec<Value> {
+    let mut out = vec![Value::Null; n_columns];
+    for (slot, &i) in pk_indices.iter().enumerate() {
+        if let Some(v) = stored.get(slot) {
+            if i < n_columns {
+                out[i] = v.clone();
+            }
+        }
+    }
+    let mut tail = pk_indices.len();
+    for (i, slot) in out.iter_mut().enumerate().take(n_columns) {
+        if pk_indices.contains(&i) {
+            continue;
+        }
+        if let Some(v) = stored.get(tail) {
+            *slot = v.clone();
+        }
+        tail += 1;
+    }
+    out
+}
+
 pub(super) fn eval_literal(expr: &PlanExpr) -> Result<Value> {
     match expr {
         PlanExpr::Literal(lit) => Ok(literal_to_value(lit)),

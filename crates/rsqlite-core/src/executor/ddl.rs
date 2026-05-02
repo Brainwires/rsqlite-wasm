@@ -27,7 +27,14 @@ pub(super) fn execute_create_table(
         )));
     }
 
-    let root_page = btree_create_table(pager)?;
+    // WITHOUT ROWID tables store full rows in an index-format btree
+    // (rows ordered by their PK columns); regular tables get a leaf-table
+    // btree keyed by an integer rowid.
+    let root_page = if plan.without_rowid {
+        btree_create_index(pager)?
+    } else {
+        btree_create_table(pager)?
+    };
 
     insert_schema_entry(
         pager,

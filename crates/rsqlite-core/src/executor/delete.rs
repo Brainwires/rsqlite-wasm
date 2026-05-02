@@ -1,5 +1,7 @@
-use rsqlite_storage::btree::{BTreeCursor, btree_delete, btree_index_delete};
-use rsqlite_storage::codec::Value;
+use rsqlite_storage::btree::{
+    BTreeCursor, IndexCursor, btree_delete, btree_index_delete, btree_index_delete_by_prefix,
+};
+use rsqlite_storage::codec::{Record, Value};
 use rsqlite_storage::pager::Pager;
 
 use crate::catalog::Catalog;
@@ -13,6 +15,7 @@ use super::constraints::check_foreign_key_delete;
 use super::eval::eval_expr;
 use super::helpers::{
     build_index_key, build_returning_result, get_table_indexes, row_values_for_rowid,
+    storage_to_declared_order, without_rowid_pk_indices,
 };
 use super::state::set_changes;
 use super::trigger::fire_triggers;
@@ -22,6 +25,13 @@ pub(super) fn execute_delete(
     pager: &mut Pager,
     catalog: &Catalog,
 ) -> Result<ExecResult> {
+    if catalog
+        .get_table(&plan.table_name)
+        .is_some_and(|t| t.without_rowid)
+    {
+        return execute_delete_without_rowid(plan, pager, catalog);
+    }
+
     let column_names: Vec<String> = plan.table_columns.iter().map(|c| c.name.clone()).collect();
 
     let mut cursor = BTreeCursor::new(pager, plan.root_page);
@@ -148,6 +158,161 @@ pub(super) fn execute_delete(
             let _ = btree_index_delete(pager, *idx_root, &old_key);
         }
         btree_delete(pager, plan.root_page, rowid)?;
+
+        fire_triggers(
+            &plan.table_name,
+            &crate::catalog::TriggerTiming::After,
+            &crate::catalog::TriggerEvent::Delete,
+            Some(&old_named),
+            None,
+            pager,
+            catalog,
+        )?;
+    }
+
+    if !pager.in_transaction() {
+        pager.flush()?;
+    }
+
+    set_changes(rows_affected as i64);
+    let returning = if let Some(items) = &plan.returning {
+        Some(build_returning_result(
+            items,
+            &returning_values,
+            &plan.table_columns,
+            pager,
+            catalog,
+        )?)
+    } else {
+        None
+    };
+    Ok(ExecResult {
+        rows_affected,
+        returning,
+    })
+}
+
+/// DELETE path for WITHOUT ROWID tables. Iterates the index-format btree,
+/// filters by the WHERE predicate, and removes matching rows by their PK
+/// prefix.
+fn execute_delete_without_rowid(
+    plan: &DeletePlan,
+    pager: &mut Pager,
+    catalog: &Catalog,
+) -> Result<ExecResult> {
+    let column_names: Vec<String> = plan.table_columns.iter().map(|c| c.name.clone()).collect();
+    let pk_indices = without_rowid_pk_indices(catalog, &plan.table_name);
+    let n_columns = plan.table_columns.len();
+
+    let mut cursor = IndexCursor::new(pager, plan.root_page);
+    let records = cursor
+        .collect_all()
+        .map_err(|e| Error::Other(e.to_string()))?;
+
+    let mut to_delete: Vec<Vec<Value>> = Vec::new();
+    let mut sort_keys: Vec<(Vec<Value>, Vec<Value>)> = Vec::new();
+
+    for rec in &records {
+        let declared = storage_to_declared_order(&rec.values, &pk_indices, n_columns);
+        let row = Row::new(declared.clone());
+
+        let matches = match &plan.predicate {
+            Some(pred) => {
+                let val = eval_expr(pred, &row, &column_names, pager, catalog)?;
+                is_truthy(&val)
+            }
+            None => true,
+        };
+        if matches {
+            to_delete.push(declared.clone());
+            if !plan.order_by.is_empty() {
+                let keys: Vec<Value> = plan
+                    .order_by
+                    .iter()
+                    .map(|sk| eval_expr(&sk.expr, &row, &column_names, pager, catalog))
+                    .collect::<Result<Vec<_>>>()?;
+                sort_keys.push((declared, keys));
+            }
+        }
+    }
+
+    if !plan.order_by.is_empty() {
+        sort_keys.sort_by(|a, b| {
+            for (i, sk) in plan.order_by.iter().enumerate() {
+                let cmp = crate::eval_helpers::compare(&a.1[i], &b.1[i]);
+                let ordering = if cmp < 0 {
+                    std::cmp::Ordering::Less
+                } else if cmp > 0 {
+                    std::cmp::Ordering::Greater
+                } else {
+                    std::cmp::Ordering::Equal
+                };
+                let ordering = if sk.descending {
+                    ordering.reverse()
+                } else {
+                    ordering
+                };
+                if ordering != std::cmp::Ordering::Equal {
+                    return ordering;
+                }
+            }
+            std::cmp::Ordering::Equal
+        });
+        to_delete = sort_keys.into_iter().map(|(values, _)| values).collect();
+    }
+    if let Some(limit) = plan.limit {
+        to_delete.truncate(limit as usize);
+    }
+
+    let rows_affected = to_delete.len() as u64;
+    let table_indexes = get_table_indexes(catalog, &plan.table_name);
+    let mut returning_values: Vec<Vec<Value>> = Vec::new();
+
+    for old_values in to_delete {
+        let old_named: Vec<(String, Value)> = plan
+            .table_columns
+            .iter()
+            .zip(old_values.iter())
+            .map(|(c, v)| (c.name.clone(), v.clone()))
+            .collect();
+
+        fire_triggers(
+            &plan.table_name,
+            &crate::catalog::TriggerTiming::Before,
+            &crate::catalog::TriggerEvent::Delete,
+            Some(&old_named),
+            None,
+            pager,
+            catalog,
+        )?;
+
+        if plan.returning.is_some() {
+            returning_values.push(old_values.clone());
+        }
+
+        for (idx_root, idx_col_indices) in &table_indexes {
+            let old_key = build_index_key(
+                &old_values,
+                idx_col_indices,
+                &plan.table_columns,
+                pager,
+                catalog,
+                0,
+            )?;
+            let _ = btree_index_delete(pager, *idx_root, &old_key);
+        }
+
+        let pk_values: Vec<Value> = pk_indices
+            .iter()
+            .map(|&i| old_values.get(i).cloned().unwrap_or(Value::Null))
+            .collect();
+        btree_index_delete_by_prefix(
+            pager,
+            plan.root_page,
+            &Record { values: pk_values },
+            pk_indices.len(),
+        )
+        .map_err(|e| Error::Other(e.to_string()))?;
 
         fire_triggers(
             &plan.table_name,

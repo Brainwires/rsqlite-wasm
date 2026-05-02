@@ -1,8 +1,9 @@
 use crate::btree::{
     BTreeCursor, IndexCursor, PageType, btree_header_offset, build_index_leaf_cell,
-    compare_records, init_interior_index_page, init_interior_page, init_leaf_index_page,
-    init_leaf_page, parse_btree_header, parse_index_interior_cell, parse_index_leaf_cell,
-    parse_table_interior_cell, parse_table_leaf_cell, read_cell_pointers, write_cell_pointers,
+    compare_records, compare_records_by_prefix, init_interior_index_page, init_interior_page,
+    init_leaf_index_page, init_leaf_page, parse_btree_header, parse_index_interior_cell,
+    parse_index_leaf_cell, parse_table_interior_cell, parse_table_leaf_cell, read_cell_pointers,
+    write_cell_pointers,
 };
 use crate::codec::{Record, Value};
 use crate::error::{Result, StorageError};
@@ -794,6 +795,36 @@ pub fn btree_index_delete(pager: &mut Pager, root_page: u32, key: &Record) -> Re
     let cells: Vec<(i64, Vec<u8>)> = remaining.into_iter().map(|raw| (0, raw)).collect();
     rewrite_index_leaf_page(pager, root_page, &cells)?;
 
+    Ok(())
+}
+
+/// Delete the first record in the index btree whose leading
+/// `prefix_len` values equal those of `prefix`. Used by WITHOUT ROWID
+/// tables, where the PK columns are the leading prefix of the stored
+/// record but the trailing payload columns vary per row.
+pub fn btree_index_delete_by_prefix(
+    pager: &mut Pager,
+    root_page: u32,
+    prefix: &Record,
+    prefix_len: usize,
+) -> Result<()> {
+    let mut cursor = IndexCursor::new(pager, root_page);
+    let entries = cursor.collect_all()?;
+
+    let mut deleted = false;
+    let mut remaining_cells: Vec<(i64, Vec<u8>)> = Vec::with_capacity(entries.len());
+    for rec in entries {
+        if !deleted
+            && compare_records_by_prefix(&rec, prefix, prefix_len) == std::cmp::Ordering::Equal
+        {
+            deleted = true;
+            continue;
+        }
+        let payload = rec.encode();
+        remaining_cells.push((0, build_index_leaf_cell(&payload)));
+    }
+
+    rewrite_index_leaf_page(pager, root_page, &remaining_cells)?;
     Ok(())
 }
 

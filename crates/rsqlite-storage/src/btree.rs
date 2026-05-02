@@ -2,8 +2,9 @@
 mod btree_write;
 
 pub use btree_write::{
-    btree_create_index, btree_create_table, btree_delete, btree_index_delete, btree_index_insert,
-    btree_insert, delete_schema_entries, insert_schema_entry,
+    btree_create_index, btree_create_table, btree_delete, btree_index_delete,
+    btree_index_delete_by_prefix, btree_index_insert, btree_insert, delete_schema_entries,
+    insert_schema_entry,
 };
 
 use crate::codec::{Record, Value};
@@ -542,6 +543,32 @@ pub(crate) fn compare_records(a: &Record, b: &Record) -> std::cmp::Ordering {
     a.values.len().cmp(&b.values.len())
 }
 
+/// Compare only the leading `prefix_len` values of `a` and `b`. Used by
+/// WITHOUT ROWID lookups where the PK occupies the leading columns of the
+/// stored record but the trailing payload columns differ. Length is not
+/// considered — a record with fewer than `prefix_len` values is treated as
+/// short and compares less for missing positions.
+pub fn compare_records_by_prefix(
+    a: &Record,
+    b: &Record,
+    prefix_len: usize,
+) -> std::cmp::Ordering {
+    for i in 0..prefix_len {
+        match (a.values.get(i), b.values.get(i)) {
+            (Some(av), Some(bv)) => {
+                let ord = compare_values(av, bv);
+                if ord != std::cmp::Ordering::Equal {
+                    return ord;
+                }
+            }
+            (None, Some(_)) => return std::cmp::Ordering::Less,
+            (Some(_), None) => return std::cmp::Ordering::Greater,
+            (None, None) => return std::cmp::Ordering::Equal,
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
 fn compare_values(a: &Value, b: &Value) -> std::cmp::Ordering {
     let ao = value_type_order(a);
     let bo = value_type_order(b);
@@ -668,6 +695,22 @@ impl<'a> IndexCursor<'a> {
             has_row = self.next()?;
         }
         Ok(records)
+    }
+
+    /// Position the cursor at the first record whose leading
+    /// `prefix.values.len()` values equal `prefix`. Returns true when
+    /// such a record is found, false otherwise (cursor left at end).
+    pub fn seek_first_with_prefix(&mut self, prefix: &Record) -> Result<bool> {
+        let prefix_len = prefix.values.len();
+        let mut has_row = self.first()?;
+        while has_row {
+            let rec = self.current()?;
+            if compare_records_by_prefix(&rec, prefix, prefix_len) == std::cmp::Ordering::Equal {
+                return Ok(true);
+            }
+            has_row = self.next()?;
+        }
+        Ok(false)
     }
 
     fn get_child_page(

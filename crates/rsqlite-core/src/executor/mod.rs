@@ -213,7 +213,7 @@ pub fn execute(plan: &Plan, pager: &mut Pager, catalog: &Catalog) -> Result<Quer
         Plan::Scan {
             table, root_page, columns, ..
         } => {
-            let mut result = execute_scan(*root_page, columns, pager)?;
+            let mut result = execute_scan(table, *root_page, columns, pager, catalog)?;
             rehydrate_virtual_columns(&mut result, table, columns, pager, catalog)?;
             Ok(result)
         }
