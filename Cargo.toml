@@ -24,8 +24,12 @@ categories = ["database", "wasm", "no-std"]
 # `version` is required alongside `path` for `cargo publish` to accept
 # the manifest; the path entry wins for local workspace builds, the
 # version resolves on crates.io for downstream consumers.
+#
+# `rsqlite-vfs` is published as `rsqlite-wasm-vfs` (the bare name is
+# taken on crates.io); the `package = "..."` alias lets consumers'
+# `rsqlite-vfs = { workspace = true }` keep working unchanged.
 rsqlite-parser  = { path = "crates/rsqlite-parser",  version = "0.1" }
-rsqlite-vfs     = { path = "crates/rsqlite-vfs",     version = "0.1", default-features = false }
+rsqlite-vfs     = { path = "crates/rsqlite-vfs",     version = "0.1", package = "rsqlite-wasm-vfs", default-features = false }
 rsqlite-storage = { path = "crates/rsqlite-storage", version = "0.1" }
 rsqlite-core    = { path = "crates/rsqlite-core",    version = "0.1" }
 
