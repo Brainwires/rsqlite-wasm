@@ -21,10 +21,13 @@ keywords = ["sqlite", "wasm", "database", "sql", "browser"]
 categories = ["database", "wasm", "no-std"]
 
 [workspace.dependencies]
-rsqlite-parser = { path = "crates/rsqlite-parser" }
-rsqlite-vfs = { path = "crates/rsqlite-vfs", default-features = false }
-rsqlite-storage = { path = "crates/rsqlite-storage" }
-rsqlite-core = { path = "crates/rsqlite-core" }
+# `version` is required alongside `path` for `cargo publish` to accept
+# the manifest; the path entry wins for local workspace builds, the
+# version resolves on crates.io for downstream consumers.
+rsqlite-parser  = { path = "crates/rsqlite-parser",  version = "0.1" }
+rsqlite-vfs     = { path = "crates/rsqlite-vfs",     version = "0.1", default-features = false }
+rsqlite-storage = { path = "crates/rsqlite-storage", version = "0.1" }
+rsqlite-core    = { path = "crates/rsqlite-core",    version = "0.1" }
 
 sqlparser = { version = "0.55", features = ["visitor"] }
 thiserror = "2"
