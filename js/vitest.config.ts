@@ -1,7 +1,22 @@
 import { defineConfig } from "vitest/config";
+import { fileURLToPath } from "node:url";
 
 export default defineConfig({
   test: {
+    // The browser wasm-pack output (`./wasm/rsqlite_wasm.js`, relative to the
+    // src files) does not exist under node and cannot be loaded here. The
+    // wrapper unit tests (index/worker) replace it with vi.mock, but vitest
+    // must still be able to *resolve* the specifier before the mock factory
+    // applies. Alias the file:// URL to a tiny stub module so resolution
+    // succeeds; the per-test vi.mock factory then supplies the real fakes.
+    alias: [
+      {
+        find: new URL("./src/wasm/rsqlite_wasm.js", import.meta.url).href,
+        replacement: fileURLToPath(
+          new URL("./test/fixtures/wasm-stub.ts", import.meta.url)
+        ),
+      },
+    ],
     // The Node-target wasm-pack output uses CommonJS and synchronous WASM
     // initialization, which works under Node without any browser shims.
     environment: "node",

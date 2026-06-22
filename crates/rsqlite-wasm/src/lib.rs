@@ -238,38 +238,16 @@ impl WasmDatabase {
 
     pub fn query(&mut self, sql: &str) -> Result<JsValue, JsError> {
         let result = self.db.query(sql).map_err(to_js_error)?;
-
-        let rows = js_sys::Array::new();
-        for row in &result.rows {
-            let obj = js_sys::Object::new();
-            for (i, col_name) in result.columns.iter().enumerate() {
-                let val = row.values.get(i).unwrap_or(&Value::Null);
-                let js_val = value_to_js(val);
-                js_sys::Reflect::set(&obj, &JsValue::from_str(col_name), &js_val)
-                    .map_err(|_| JsError::new("failed to set property"))?;
-            }
-            rows.push(&obj);
-        }
-        Ok(rows.into())
+        query_result_to_js(&result)
     }
 
     #[wasm_bindgen(js_name = "queryOne")]
     pub fn query_one(&mut self, sql: &str) -> Result<JsValue, JsError> {
         let result = self.db.query(sql).map_err(to_js_error)?;
-
-        if result.rows.is_empty() {
-            return Ok(JsValue::NULL);
+        match result.rows.first() {
+            None => Ok(JsValue::NULL),
+            Some(row) => row_values_to_js(&result.columns, &row.values),
         }
-
-        let row = &result.rows[0];
-        let obj = js_sys::Object::new();
-        for (i, col_name) in result.columns.iter().enumerate() {
-            let val = row.values.get(i).unwrap_or(&Value::Null);
-            let js_val = value_to_js(val);
-            js_sys::Reflect::set(&obj, &JsValue::from_str(col_name), &js_val)
-                .map_err(|_| JsError::new("failed to set property"))?;
-        }
-        Ok(obj.into())
     }
 
     #[wasm_bindgen(js_name = "execMany")]
@@ -371,17 +349,22 @@ fn value_to_js(val: &Value) -> JsValue {
     }
 }
 
+/// Convert one row's values into a `{ column: value }` JS object, keyed by the
+/// result column names. Shared by `query`, `queryParams`, and `queryOne`.
+fn row_values_to_js(columns: &[String], values: &[Value]) -> Result<JsValue, JsError> {
+    let obj = js_sys::Object::new();
+    for (i, col_name) in columns.iter().enumerate() {
+        let val = values.get(i).unwrap_or(&Value::Null);
+        js_sys::Reflect::set(&obj, &JsValue::from_str(col_name), &value_to_js(val))
+            .map_err(|_| JsError::new("failed to set property"))?;
+    }
+    Ok(obj.into())
+}
+
 fn query_result_to_js(result: &rsqlite_core::types::QueryResult) -> Result<JsValue, JsError> {
     let rows = js_sys::Array::new();
     for row in &result.rows {
-        let obj = js_sys::Object::new();
-        for (i, col_name) in result.columns.iter().enumerate() {
-            let val = row.values.get(i).unwrap_or(&Value::Null);
-            let js_val = value_to_js(val);
-            js_sys::Reflect::set(&obj, &JsValue::from_str(col_name), &js_val)
-                .map_err(|_| JsError::new("failed to set property"))?;
-        }
-        rows.push(&obj);
+        rows.push(&row_values_to_js(&result.columns, &row.values)?);
     }
     Ok(rows.into())
 }

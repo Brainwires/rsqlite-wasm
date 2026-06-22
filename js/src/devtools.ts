@@ -6,10 +6,17 @@
 // SyncAccessHandle (i.e. the database is "live"), the panel cannot write to
 // the file — OPFS sync handles are exclusive.
 //
-// `exposeForDevtools(db)` opts a Database in to a postMessage-style bridge
-// that lets the panel route reads, writes and DDL through the page's own
-// Database instance. There's no second handle, no lock conflict, and the
-// page sees writes immediately because they execute on its engine.
+// `exposeForDevtools(db, { enabled: true })` opts a Database in to a
+// `globalThis`-installed bridge that lets the panel route reads, writes and
+// DDL through the page's own Database instance. There's no second handle, no
+// lock conflict, and the page sees writes immediately because they execute on
+// its engine.
+//
+// SECURITY: the bridge is a property on `globalThis`, so *any* script running
+// in the same realm/origin (third-party scripts, injected content, other
+// bundles) can read and write the whole database through it. It is therefore
+// **off by default** and must be explicitly enabled (`enabled: true`); enable
+// it only in development builds, never in production.
 //
 // Bridge protocol (window.__BRAINWIRES_RSQLITE_DEVTOOLS__):
 //   - .v                  — protocol version (current: 1)
@@ -40,6 +47,12 @@ export interface DevtoolsDatabase {
 
 const GLOBAL_KEY = "__BRAINWIRES_RSQLITE_DEVTOOLS__" as const;
 const PROTOCOL_VERSION = 1;
+
+// Cap on the number of in-flight/unread invocation results retained on the
+// bridge. Results are normally freed when the panel polls them, but a caller
+// that invokes without ever polling would otherwise grow `state.results`
+// without bound. When the cap is exceeded the oldest results are evicted.
+const MAX_RESULTS = 256;
 
 interface PendingResult {
   pending: true;
@@ -83,10 +96,15 @@ export interface ExposeForDevtoolsOptions {
    *  Multiple databases can be exposed under different names. Defaults to
    *  `"main"`. */
   name?: string;
-  /** When true, this call is a no-op. Useful for production builds where
-   *  you want the same source code to compile out the bridge:
-   *  `exposeForDevtools(db, { disabled: import.meta.env.PROD })`. */
-  disabled?: boolean;
+  /** Must be `true` for the bridge to be installed. Defaults to `false`, so
+   *  the call is a no-op unless you explicitly opt in. Gate it on your dev
+   *  build so the bridge never ships to production:
+   *  `exposeForDevtools(db, { enabled: import.meta.env.DEV })`.
+   *
+   *  SECURITY: when enabled, any same-origin script can read and write this
+   *  database through `window.__BRAINWIRES_RSQLITE_DEVTOOLS__`. Never enable
+   *  in production. */
+  enabled?: boolean;
 }
 
 /**
@@ -100,22 +118,26 @@ export interface ExposeForDevtoolsOptions {
  * Idempotent: re-exposing under the same name swaps in the new db
  * (handy across hot module reloads).
  *
- * Returns a `release()` function that removes the registration.
+ * Off by default: does nothing unless you pass `enabled: true`. Returns a
+ * `release()` function that removes the registration.
+ *
+ * SECURITY: when enabled, the bridge lets any same-origin script read and
+ * write this database. Enable it only in development builds.
  *
  * @example
  *   import { Database, exposeForDevtools } from 'rsqlite-wasm';
  *
  *   const db = await Database.open('chat', { backend: 'opfs' });
- *   exposeForDevtools(db, { name: 'chat' });  // panel: shows "● live (chat)"
  *
- *   // Tree-shake out in production:
- *   exposeForDevtools(db, { disabled: process.env.NODE_ENV === 'production' });
+ *   // Enable in dev only — gate on your bundler's dev flag so it
+ *   // tree-shakes out of production:
+ *   exposeForDevtools(db, { name: 'chat', enabled: import.meta.env.DEV });
  */
 export function exposeForDevtools(
   db: DevtoolsDatabase,
   options?: ExposeForDevtoolsOptions
 ): () => void {
-  if (options?.disabled) return () => {};
+  if (!options?.enabled) return () => {};
   if (typeof globalThis === "undefined") return () => {};
   // Use globalThis to support workers + main thread; in workers there's no
   // DevTools panel to talk to, but exposing is a harmless no-op.
@@ -131,6 +153,7 @@ export function exposeForDevtools(
   } else {
     state = { byName: new Map(), results: new Map(), nextId: 1 };
     root = installBridge(state);
+    warnEnabled();
     Object.defineProperty(w, GLOBAL_KEY, {
       value: root,
       configurable: true,
@@ -207,6 +230,13 @@ function installBridge(state: InternalState): BridgeRoot {
     invoke(name: string, op: BridgeOp, sql: string, params?: SqlValue[]): number {
       const id = state.nextId++;
       state.results.set(id, { pending: true });
+      // Bound the results map: a caller that never polls would otherwise leak.
+      // Map iteration order is insertion order, so the first key is the oldest.
+      while (state.results.size > MAX_RESULTS) {
+        const oldest = state.results.keys().next().value;
+        if (oldest === undefined) break;
+        state.results.delete(oldest);
+      }
       const entry = state.byName.get(name);
       // Run in a microtask so the caller gets the id back synchronously
       // and can immediately start polling. Awaits the db method so both
@@ -271,4 +301,13 @@ function installBridge(state: InternalState): BridgeRoot {
 function errorMessage(e: unknown): string {
   if (e instanceof Error) return e.message;
   return String(e);
+}
+
+function warnEnabled(): void {
+  // eslint-disable-next-line no-console
+  console.warn(
+    "[rsqlite-wasm] devtools bridge enabled: any same-origin script can now " +
+      "read and write this database via window.__BRAINWIRES_RSQLITE_DEVTOOLS__. " +
+      "Do not enable this in production.",
+  );
 }

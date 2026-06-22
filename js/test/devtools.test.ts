@@ -6,10 +6,19 @@
 // rsqlite-wasm Database) is exercised by the Brainwires OPFS extension's
 // Playwright suite, which loads the wasm and exposes a real db.
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { exposeForDevtools, type ExposeForDevtoolsOptions } from "../src/devtools";
 
 const GLOBAL_KEY = "__BRAINWIRES_RSQLITE_DEVTOOLS__";
+
+// The bridge is off by default — every test opts in. Wrap once so the
+// `enabled: true` is not repeated at each call site.
+function expose(db: unknown, opts: Omit<ExposeForDevtoolsOptions, "enabled"> = {}) {
+  return exposeForDevtools(db as Parameters<typeof exposeForDevtools>[0], {
+    ...opts,
+    enabled: true,
+  });
+}
 
 interface MockDb {
   exec(sql: string, params?: unknown[]): number;
@@ -53,9 +62,12 @@ function mockDb(): MockDb {
 beforeEach(() => {
   // ensure clean global between tests
   delete (globalThis as Record<string, unknown>)[GLOBAL_KEY];
+  // silence the security warning the bridge emits on enable
+  vi.spyOn(console, "warn").mockImplementation(() => {});
 });
 afterEach(() => {
   delete (globalThis as Record<string, unknown>)[GLOBAL_KEY];
+  vi.restoreAllMocks();
 });
 
 function bridge() {
@@ -82,27 +94,38 @@ describe("exposeForDevtools", () => {
   it("installs the bridge global on first call", () => {
     expect((globalThis as Record<string, unknown>)[GLOBAL_KEY]).toBeUndefined();
     const db = mockDb();
-    exposeForDevtools(db as unknown as Parameters<typeof exposeForDevtools>[0]);
+    expose(db);
     const root = bridge();
     expect(root).toBeDefined();
     expect(root.v).toBe(1);
     expect(root.listDbs()).toEqual(["main"]);
   });
 
+  it("warns when the bridge is enabled", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expose(mockDb());
+    expect(warn).toHaveBeenCalled();
+    expect(String(warn.mock.calls[0]?.[0])).toMatch(/same-origin|production/i);
+  });
+
   it("registers under custom names and lists them all", () => {
-    exposeForDevtools(mockDb() as never, { name: "users" });
-    exposeForDevtools(mockDb() as never, { name: "logs" });
+    expose(mockDb(), { name: "users" });
+    expose(mockDb(), { name: "logs" });
     expect(bridge().listDbs().sort()).toEqual(["logs", "users"]);
   });
 
-  it("opts.disabled is a no-op", () => {
-    exposeForDevtools(mockDb() as never, { disabled: true });
+  it("is a no-op unless enabled", () => {
+    // No options at all → off by default.
+    exposeForDevtools(mockDb() as never);
+    expect((globalThis as Record<string, unknown>)[GLOBAL_KEY]).toBeUndefined();
+    // Explicit enabled: false → still off.
+    exposeForDevtools(mockDb() as never, { enabled: false });
     expect((globalThis as Record<string, unknown>)[GLOBAL_KEY]).toBeUndefined();
   });
 
   it("info() reports name + changeCounter + closed", () => {
     const db = mockDb();
-    exposeForDevtools(db as never);
+    expose(db);
     expect(bridge().info("main")).toEqual({
       name: "main",
       changeCounter: 0,
@@ -113,7 +136,7 @@ describe("exposeForDevtools", () => {
 
   it("query round-trips through invoke/poll", async () => {
     const db = mockDb();
-    exposeForDevtools(db as never);
+    expose(db);
     const r = await callOp("main", "query", "SELECT * FROM t", undefined);
     expect(r.pending).toBe(false);
     expect(r.ok).toBe(true);
@@ -123,7 +146,7 @@ describe("exposeForDevtools", () => {
 
   it("queryOne returns first row from mock", async () => {
     const db = mockDb();
-    exposeForDevtools(db as never);
+    expose(db);
     const r = await callOp("main", "queryOne", "SELECT COUNT(*) FROM t");
     expect(r.ok).toBe(true);
     expect(r.value).toEqual({ count: 42 });
@@ -131,7 +154,7 @@ describe("exposeForDevtools", () => {
 
   it("exec bumps changeCounter", async () => {
     const db = mockDb();
-    exposeForDevtools(db as never);
+    expose(db);
     expect(bridge().info("main")?.changeCounter).toBe(0);
     await callOp("main", "exec", "UPDATE t SET name = 'x'", undefined);
     expect(bridge().info("main")?.changeCounter).toBe(1);
@@ -144,7 +167,7 @@ describe("exposeForDevtools", () => {
 
   it("execMany also bumps changeCounter", async () => {
     const db = mockDb();
-    exposeForDevtools(db as never);
+    expose(db);
     await callOp("main", "execMany", "CREATE TABLE x(a); CREATE INDEX y ON x(a);");
     expect(bridge().info("main")?.changeCounter).toBe(1);
   });
@@ -153,7 +176,7 @@ describe("exposeForDevtools", () => {
     // exposeForDevtools wraps db.exec/execMany so the user's own writes
     // are observable via the bridge's changeCounter.
     const db = mockDb();
-    exposeForDevtools(db as never);
+    expose(db);
     db.exec("INSERT INTO t VALUES (10)");
     expect(bridge().info("main")?.changeCounter).toBe(1);
     db.execMany("UPDATE t SET a=1; UPDATE t SET a=2;");
@@ -161,15 +184,22 @@ describe("exposeForDevtools", () => {
   });
 
   it("invoke for unknown db returns NotRegistered error", async () => {
-    exposeForDevtools(mockDb() as never);
+    expose(mockDb());
     const r = await callOp("nope", "query", "SELECT 1");
     expect(r.ok).toBe(false);
     expect(r.error?.message).toMatch(/not registered/);
   });
 
+  it("invoke with an unknown op returns an error", async () => {
+    expose(mockDb());
+    const r = await callOp("main", "frobnicate", "SELECT 1");
+    expect(r.ok).toBe(false);
+    expect(r.error?.message).toMatch(/unknown op/);
+  });
+
   it("invoke when db.isClosed returns Closed error", async () => {
     const db = mockDb();
-    exposeForDevtools(db as never);
+    expose(db);
     db.isClosed = true;
     const r = await callOp("main", "query", "SELECT 1");
     expect(r.ok).toBe(false);
@@ -181,33 +211,61 @@ describe("exposeForDevtools", () => {
     db.query = () => {
       throw new Error("syntax error near 'XYZ'");
     };
-    exposeForDevtools(db as never);
+    expose(db);
     const r = await callOp("main", "query", "BAD SQL");
     expect(r.ok).toBe(false);
     expect(r.error?.message).toBe("syntax error near 'XYZ'");
   });
 
+  it("stringifies non-Error throws", async () => {
+    const db = mockDb();
+    db.query = () => {
+      // eslint-disable-next-line @typescript-eslint/no-throw-literal
+      throw "plain string failure";
+    };
+    expose(db);
+    const r = await callOp("main", "query", "BAD SQL");
+    expect(r.ok).toBe(false);
+    expect(r.error?.message).toBe("plain string failure");
+  });
+
   it("re-exposing the same name swaps in the new db (HMR-friendly)", async () => {
     const db1 = mockDb();
     const db2 = mockDb();
-    exposeForDevtools(db1 as never, { name: "live" });
-    exposeForDevtools(db2 as never, { name: "live" });
+    expose(db1, { name: "live" });
+    expose(db2, { name: "live" });
     await callOp("live", "query", "SELECT 1");
     expect(db1.log).toEqual([]);
     expect(db2.log).toHaveLength(1);
   });
 
-  it("release() removes the registration", () => {
-    const release = exposeForDevtools(mockDb() as never, { name: "removable" });
+  it("two exposed dbs share one bridge + invocation-id space", () => {
+    expose(mockDb(), { name: "a" });
+    expose(mockDb(), { name: "b" });
+    const id1 = bridge().invoke("a", "query", "SELECT 1");
+    const id2 = bridge().invoke("b", "query", "SELECT 1");
+    expect(id2).toBe(id1 + 1); // shared nextId counter
+  });
+
+  it("release() removes only its own db when others remain", () => {
+    expose(mockDb(), { name: "keep" });
+    const release = expose(mockDb(), { name: "removable" });
+    expect(bridge().listDbs().sort()).toEqual(["keep", "removable"]);
+    release();
+    // Other db still registered → bridge stays installed.
+    expect((globalThis as Record<string, unknown>)[GLOBAL_KEY]).toBeDefined();
+    expect(bridge().listDbs()).toEqual(["keep"]);
+  });
+
+  it("release() tears down the bridge when the last db is removed", () => {
+    const release = expose(mockDb(), { name: "removable" });
     expect(bridge().listDbs()).toContain("removable");
     release();
-    // Bridge global may or may not exist depending on whether other dbs
-    // remain — when the last db is removed we tear it down.
     expect((globalThis as Record<string, unknown>)[GLOBAL_KEY]).toBeUndefined();
   });
 
   it("poll on an unknown id returns Expired error", () => {
-    exposeForDevtools(mockDb() as never);
+    expose(mockDb());
     const r = bridge().poll(99999);
     expect(r.pending).toBe(false);
     expect((r as { ok: boolean }).ok).toBe(false);
@@ -264,7 +322,7 @@ async function callOpAsync(name: string, op: string, sql: string) {
 describe("exposeForDevtools — async (WorkerDatabase-style)", () => {
   it("awaits Promise-returning query", async () => {
     const db = asyncMockDb();
-    exposeForDevtools(db as never);
+    expose(db);
     const r = await callOpAsync("main", "query", "SELECT 1");
     expect(r.pending).toBe(false);
     expect((r as { ok: boolean }).ok).toBe(true);
@@ -273,7 +331,7 @@ describe("exposeForDevtools — async (WorkerDatabase-style)", () => {
 
   it("bumps changeCounter only AFTER the async exec resolves", async () => {
     const db = asyncMockDb();
-    exposeForDevtools(db as never);
+    expose(db);
     const promise = db.exec("UPDATE t SET a=1");
     // Counter should still be 0 — exec hasn't resolved yet
     expect(bridge().info("main")?.changeCounter).toBe(0);
@@ -286,7 +344,7 @@ describe("exposeForDevtools — async (WorkerDatabase-style)", () => {
     db.query = async () => {
       throw new Error("worker exploded");
     };
-    exposeForDevtools(db as never);
+    expose(db);
     const r = await callOpAsync("main", "query", "SELECT 1");
     expect(r.pending).toBe(false);
     expect((r as { ok: boolean }).ok).toBe(false);

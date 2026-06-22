@@ -5,11 +5,17 @@
 pub(super) use super::*;
 
 mod basic;
+mod btree_splits;
 mod constraints_integrity;
+mod database_api;
+mod datetime_coverage;
+mod fts5_match;
 mod modern;
 mod scalar_extras;
 mod schema;
 mod views_ctes_advanced;
+mod vtab_dml;
+mod without_rowid_writes;
 
 /// Shared helper: write a database file at `path` and seed it with `sql`
 /// using the local sqlite3 binary. Returns false (and logs) when sqlite3 is
