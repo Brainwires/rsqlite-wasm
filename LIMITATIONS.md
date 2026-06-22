@@ -42,6 +42,18 @@ doesn't recognize.
 [udf]: https://docs.rs/rsqlite-wasm/latest/rsqlite_wasm/struct.WasmDatabase.html#method.create_function
 [vtab]: https://docs.rs/rsqlite-core/latest/rsqlite_core/vtab/
 
+## Storage / engine
+
+- **`WITHOUT ROWID` table: PRIMARY KEY projected through a secondary-index
+  lookup.** On a `WITHOUT ROWID` table that also has a secondary index, a query
+  resolved via that index returns correct row counts and correct values for the
+  *indexed* column, but projecting the table's **primary-key column** through the
+  index-backed lookup yields `0` instead of the real key — the secondary-index
+  entry does not carry the `WITHOUT ROWID` primary key. A full table scan (or a
+  query that doesn't resolve through the secondary index) returns correct data.
+  Workaround: select the PK via a plan that scans the table, or add the PK
+  columns to the index. (Tracked for a fix in a later release.)
+
 ## JS bindings
 
 - **Async user-defined functions.** `db.createFunction(name, nArgs, fn)`

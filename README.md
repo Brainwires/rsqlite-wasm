@@ -110,31 +110,36 @@ saved queries, EXPLAIN — inside DevTools.
 By default the panel loads a *snapshot* of the shards from disk (read-only
 when the page holds the live `SyncAccessHandle` — OPFS sync handles are
 exclusive). To get **fully live editing** through the panel — UPDATEs, DDL,
-auto-refresh when your app writes — opt in with one line at startup:
+auto-refresh when your app writes — opt in with one line at startup.
+
+> ⚠️ **Security:** the bridge is off by default and you must pass
+> `enabled: true` to install it. Once enabled, **any script in the same origin
+> can read and write the entire database** through the bridge global. Gate it on
+> your dev build and never enable it in production. See
+> [Security](#security).
 
 ```typescript
 import { Database, exposeForDevtools } from "rsqlite-wasm";
 
 const db = await Database.open("chat", { backend: "opfs" });
-exposeForDevtools(db, { name: "chat" });
 
-// Tree-shake out in production:
-exposeForDevtools(db, {
-  name: "chat",
-  disabled: process.env.NODE_ENV === "production",
-});
+// Enable in development only — gate on your bundler's dev flag so the bridge
+// tree-shakes out of production builds:
+exposeForDevtools(db, { name: "chat", enabled: import.meta.env.DEV });
 ```
 
 How it works:
 
-- Installs `window.__BRAINWIRES_RSQLITE_DEVTOOLS__`, a tiny postMessage-style
-  bridge that lets the panel route SQL through *your* `Database` instance —
-  no second handle, no lock conflict.
+- When `enabled`, installs `window.__BRAINWIRES_RSQLITE_DEVTOOLS__`, a tiny
+  `globalThis` bridge that lets the panel route SQL through *your* `Database`
+  instance — no second handle, no lock conflict. A `console.warn` is emitted
+  when the bridge is installed, as a reminder it is active.
 - Wraps `db.exec` / `db.execMany` so writes from your own code bump a
   `changeCounter`. The panel polls that counter to auto-refresh when your app
   changes data behind its back.
 - Returns a `release()` function to unregister (handy for HMR / teardown).
-- `disabled: true` is a no-op — same source compiles to nothing in production.
+- Omitting `enabled` (or `enabled: false`) is a no-op — the same source
+  compiles out of production builds.
 - Multiple databases can be exposed under different names. The panel shows
   one **● live (name)** badge per registered db.
 
@@ -388,6 +393,30 @@ const rows = await db.query(
 ### Portability note
 
 Vector BLOBs are ordinary SQLite BLOB values — they will survive export/import with the `sqlite3` CLI. However, the `vec_*` functions only exist in rsqlite-wasm, so queries that use them will not work in standard SQLite.
+
+## Security
+
+rsqlite-wasm runs entirely client-side — there is no server component and no
+network I/O. A few things are worth knowing before you ship it:
+
+- **DevTools bridge (`exposeForDevtools`).** Off by default. When you enable it
+  (`enabled: true`), it installs a global on `window`/`globalThis` that lets the
+  Brainwires OPFS panel run arbitrary SQL against your database. Because it is a
+  same-realm global, **any script running in the same origin** — including
+  third-party scripts and injected content — can read and write the whole
+  database through it. Enable it only in development builds; never in production.
+  A `console.warn` fires whenever the bridge is installed.
+- **`toBuffer()` exports raw, unencrypted bytes.** The export is a plain SQLite
+  file image with no encryption or integrity tag. If you transmit or persist it
+  outside the browser's storage, securing that channel is the caller's
+  responsibility.
+- **Parameter binding.** Use `?` placeholders with bound values (`query`/`exec`
+  take a params array) rather than string-concatenating user input into SQL.
+- **SQL comes from your application.** The engine parses and executes whatever
+  SQL you hand it; treat SQL text the same way you would treat code.
+
+Found a security issue? Please report it via the
+[issue tracker](https://github.com/Brainwires/rsqlite-wasm/issues).
 
 ## License
 

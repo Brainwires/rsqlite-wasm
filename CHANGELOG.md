@@ -1,6 +1,44 @@
 # Changelog
 
-## 0.1.0 — unreleased
+## 0.1.1 — unreleased
+
+Cleanup release: test-coverage push, a security fix to the DevTools bridge, and
+release/packaging hygiene. No SQL-surface changes.
+
+### Security
+
+- **DevTools bridge is now off by default.** `exposeForDevtools(db, …)` no longer
+  installs the bridge unless you pass `enabled: true`. Previously it was on
+  whenever called and only suppressed by `disabled: true`. The bridge exposes a
+  same-origin global that can read and write the whole database, so it must be
+  opt-in and dev-only. **Breaking:** the `disabled` option is replaced by
+  `enabled` (default `false`); update calls to
+  `exposeForDevtools(db, { enabled: import.meta.env.DEV })`.
+- A `console.warn` is now emitted whenever the bridge is installed.
+- Bounded the bridge's in-memory results map so an un-polled caller can't grow
+  it without limit.
+
+### Documentation & packaging
+
+- Added a **Security** section to the README and rewrote the DevTools section
+  for the new `enabled` flag.
+- Crates now ship the README to crates.io (`readme` metadata), and internal
+  workspace dependencies carry explicit versions so `cargo publish` works.
+
+### Internal
+
+- Deduplicated the query→JS row-conversion paths in the wasm bindings.
+- Substantially expanded test coverage across the engine (WITHOUT ROWID writes,
+  virtual-table DML, datetime functions, planner/parser branches, B-tree page
+  splits) and the JS wrapper/worker layer.
+
+### Known follow-ups (deferred to a later release)
+
+- Refactors flagged in design review: splitting `planner.rs` / `eval_helpers.rs`,
+  scoping the executor's thread-local state to a query context, and adding
+  explicit input-size limits (SQL length, parameter count).
+
+## 0.1.0
 
 Initial public release.
 
