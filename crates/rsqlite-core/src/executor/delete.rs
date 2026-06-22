@@ -1,5 +1,6 @@
 use rsqlite_storage::btree::{
-    BTreeCursor, IndexCursor, btree_delete, btree_index_delete, btree_index_delete_by_prefix,
+    BTreeCursor, IndexCursor, btree_delete_many, btree_index_delete,
+    btree_index_delete_by_prefix, btree_index_delete_many,
 };
 use rsqlite_storage::codec::{Record, Value};
 use rsqlite_storage::pager::Pager;
@@ -133,6 +134,13 @@ pub(super) fn execute_delete(
     }
 
     let mut returning_values: Vec<Vec<Value>> = Vec::new();
+    // Accumulate the btree mutations and apply them in one rebuild per tree.
+    // Per-rowid `btree_delete`/`btree_index_delete` each rebuild the entire
+    // tree, which is O(deleted × surviving) — unusably slow once a table holds
+    // thousands of rows. We still fire BEFORE/AFTER triggers around each row to
+    // preserve observable ordering.
+    let mut table_rowids_to_delete: Vec<i64> = Vec::with_capacity(to_delete.len());
+    let mut index_keys_to_delete: Vec<Vec<Record>> = vec![Vec::new(); table_indexes.len()];
     for rowid in to_delete {
         let old_values = row_values_for_rowid(&btree_rows, rowid, &plan.table_columns);
         let old_named: Vec<(String, Value)> = plan
@@ -156,11 +164,12 @@ pub(super) fn execute_delete(
             returning_values.push(old_values.clone());
         }
 
-        for (idx_root, idx_col_indices) in &table_indexes {
+        for (i, (idx_root, idx_col_indices)) in table_indexes.iter().enumerate() {
+            let _ = idx_root;
             let old_key = build_index_key(&old_values, idx_col_indices, &plan.table_columns, pager, catalog, rowid)?;
-            let _ = btree_index_delete(pager, *idx_root, &old_key);
+            index_keys_to_delete[i].push(old_key);
         }
-        btree_delete(pager, plan.root_page, rowid)?;
+        table_rowids_to_delete.push(rowid);
 
         fire_triggers(
             &plan.table_name,
@@ -172,6 +181,11 @@ pub(super) fn execute_delete(
             catalog,
         )?;
     }
+
+    for ((idx_root, _), keys) in table_indexes.iter().zip(index_keys_to_delete.iter()) {
+        let _ = btree_index_delete_many(pager, *idx_root, keys);
+    }
+    btree_delete_many(pager, plan.root_page, &table_rowids_to_delete)?;
 
     if !pager.in_transaction() {
         pager.flush()?;

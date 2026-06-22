@@ -3,7 +3,7 @@ use crate::btree::{
     compare_records_by_prefix, init_interior_index_page, init_interior_page,
     init_leaf_index_page, init_leaf_page, local_payload_size, parse_btree_header,
     parse_index_interior_cell, parse_index_leaf_cell, parse_table_interior_cell,
-    read_cell_pointers, reassemble_payload, write_cell_pointers,
+    parse_table_leaf_cell, read_cell_pointers, reassemble_payload, write_cell_pointers,
 };
 use crate::codec::{Record, Value};
 use crate::error::{Result, StorageError};
@@ -1058,17 +1058,49 @@ pub fn btree_index_delete(pager: &mut Pager, root_page: u32, key: &Record) -> Re
     rebuild_index_btree(pager, root_page, &survivors)
 }
 
+/// Delete several index keys with a SINGLE rebuild. For each key in `keys`,
+/// removes one matching entry (the first encountered). See
+/// [`btree_delete_many`] for the rationale: per-key rebuilds are O(n²).
+pub fn btree_index_delete_many(pager: &mut Pager, root_page: u32, keys: &[Record]) -> Result<()> {
+    if keys.is_empty() {
+        return Ok(());
+    }
+    let mut cursor = IndexCursor::new(pager, root_page);
+    let entries = cursor.collect_all()?;
+
+    // Each key removes at most one matching survivor. Track how many of each
+    // key we still need to drop via a small multiset over indices.
+    let mut to_remove: Vec<bool> = vec![false; keys.len()];
+    let mut survivors: Vec<Record> = Vec::with_capacity(entries.len());
+    'entries: for rec in entries {
+        for (i, key) in keys.iter().enumerate() {
+            if !to_remove[i] && compare_records(&rec, key) == std::cmp::Ordering::Equal {
+                to_remove[i] = true;
+                continue 'entries;
+            }
+        }
+        survivors.push(rec);
+    }
+
+    rebuild_index_btree(pager, root_page, &survivors)
+}
+
 /// Re-initialize the index root as an empty leaf and re-insert all `keys`
 /// through the normal index-insert path, rebuilding a valid (possibly
-/// multi-page) index tree with the root in place. As with table deletes,
-/// overflow pages of removed/rebuilt entries are not reclaimed.
+/// multi-page) index tree with the root in place. The old tree's non-root
+/// pages (interior, leaf, overflow) are reclaimed onto the freelist first so
+/// the rebuild reuses them rather than orphaning them.
 fn rebuild_index_btree(pager: &mut Pager, root_page: u32, keys: &[Record]) -> Result<()> {
+    let old_pages = collect_index_tree_pages(pager, root_page)?;
     let page_size = pager.page_size() as usize;
     {
         let data = &mut pager.get_page_mut(root_page)?.data;
         let offset = btree_header_offset(root_page);
         data[offset..page_size].fill(0);
         init_leaf_index_page(data, root_page);
+    }
+    for p in old_pages {
+        pager.free_page(p);
     }
     for key in keys {
         let payload = key.encode();
@@ -1134,16 +1166,169 @@ pub fn btree_delete(pager: &mut Pager, root_page: u32, rowid: i64) -> Result<()>
     rebuild_table_btree(pager, root_page, &rows)
 }
 
+/// Delete every rowid in `rowids` from the table btree rooted at `root_page`
+/// with a SINGLE rebuild.
+///
+/// Calling [`btree_delete`] once per rowid rebuilds the entire tree for every
+/// deleted row — O(deleted × surviving) work that is unusably slow at scale.
+/// This collects all survivors once, then rebuilds once. Full payloads
+/// (including overflow tails) are materialized into owned `Vec`s before any
+/// page is re-initialized, so no page is read after being overwritten.
+pub fn btree_delete_many(pager: &mut Pager, root_page: u32, rowids: &[i64]) -> Result<()> {
+    if rowids.is_empty() {
+        return Ok(());
+    }
+    let remove: std::collections::HashSet<i64> = rowids.iter().copied().collect();
+
+    let mut cursor = BTreeCursor::new(pager, root_page);
+    let mut rows: Vec<(i64, Vec<u8>)> = Vec::new();
+    let mut has_row = cursor.first()?;
+    while has_row {
+        let current = cursor.current()?;
+        if !remove.contains(&current.rowid) {
+            rows.push((current.rowid, current.record.encode()));
+        }
+        has_row = cursor.next()?;
+    }
+
+    rebuild_table_btree(pager, root_page, &rows)
+}
+
+/// Walk the overflow chain starting at `first` and return its page numbers.
+fn collect_overflow_pages(pager: &mut Pager, first: u32, mut remaining: usize) -> Result<Vec<u32>> {
+    let usable = pager.usable_size() as usize;
+    let per_page = usable - 4;
+    let mut pages = Vec::new();
+    let mut page = first;
+    while remaining > 0 && page != 0 {
+        pages.push(page);
+        let data = pager.get_page(page)?.data.clone();
+        let next = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+        remaining = remaining.saturating_sub(per_page);
+        page = next;
+    }
+    Ok(pages)
+}
+
+/// Collect every page belonging to the table btree rooted at `root_page`,
+/// excluding the root itself: interior pages, leaf pages, and any overflow
+/// chains. Used to reclaim a tree's pages before a rebuild so they are reused
+/// rather than orphaned (which would leave `PRAGMA integrity_check`-rejecting
+/// "never used" pages).
+fn collect_table_tree_pages(pager: &mut Pager, root_page: u32) -> Result<Vec<u32>> {
+    let usable = pager.usable_size();
+    let mut out = Vec::new();
+    let mut stack = vec![root_page];
+    while let Some(page_num) = stack.pop() {
+        let data = pager.get_page(page_num)?.data.clone();
+        let offset = btree_header_offset(page_num);
+        let header = parse_btree_header(&data, offset)?;
+        let pointers = read_cell_pointers(&data, offset + header.header_size(), header.cell_count);
+        match header.page_type {
+            PageType::LeafTable => {
+                for &ptr in &pointers {
+                    let cell = parse_table_leaf_cell(&data, ptr as usize, usable)?;
+                    if let Some(first) = cell.overflow_page {
+                        let n = cell.payload_size - cell.payload.len();
+                        out.extend(collect_overflow_pages(pager, first, n)?);
+                    }
+                }
+            }
+            PageType::InteriorTable => {
+                for &ptr in &pointers {
+                    let ic = parse_table_interior_cell(&data, ptr as usize);
+                    if ic.left_child_page != root_page {
+                        stack.push(ic.left_child_page);
+                    }
+                }
+                if let Some(right) = header.right_most_pointer {
+                    if right != root_page {
+                        stack.push(right);
+                    }
+                }
+            }
+            other => {
+                return Err(StorageError::Other(format!(
+                    "collect_table_tree_pages: unexpected page type {other:?}"
+                )));
+            }
+        }
+        if page_num != root_page {
+            out.push(page_num);
+        }
+    }
+    Ok(out)
+}
+
+/// Like [`collect_table_tree_pages`] but for an index btree.
+fn collect_index_tree_pages(pager: &mut Pager, root_page: u32) -> Result<Vec<u32>> {
+    let usable = pager.usable_size();
+    let mut out = Vec::new();
+    let mut stack = vec![root_page];
+    while let Some(page_num) = stack.pop() {
+        let data = pager.get_page(page_num)?.data.clone();
+        let offset = btree_header_offset(page_num);
+        let header = parse_btree_header(&data, offset)?;
+        let pointers = read_cell_pointers(&data, offset + header.header_size(), header.cell_count);
+        match header.page_type {
+            PageType::LeafIndex => {
+                for &ptr in &pointers {
+                    let cell = parse_index_leaf_cell(&data, ptr as usize, usable)?;
+                    if let Some(first) = cell.overflow_page {
+                        let n = cell.payload_size - cell.payload.len();
+                        out.extend(collect_overflow_pages(pager, first, n)?);
+                    }
+                }
+            }
+            PageType::InteriorIndex => {
+                for &ptr in &pointers {
+                    let ic = parse_index_interior_cell(&data, ptr as usize, usable)?;
+                    if let Some(first) = ic.overflow_page {
+                        let n = ic.payload_size - ic.payload.len();
+                        out.extend(collect_overflow_pages(pager, first, n)?);
+                    }
+                    if ic.left_child_page != root_page {
+                        stack.push(ic.left_child_page);
+                    }
+                }
+                if let Some(right) = header.right_most_pointer {
+                    if right != root_page {
+                        stack.push(right);
+                    }
+                }
+            }
+            other => {
+                return Err(StorageError::Other(format!(
+                    "collect_index_tree_pages: unexpected page type {other:?}"
+                )));
+            }
+        }
+        if page_num != root_page {
+            out.push(page_num);
+        }
+    }
+    Ok(out)
+}
+
 /// Re-initialize the table root as an empty leaf and re-insert all `rows`
 /// (already ordered by rowid) through the normal insert path so the tree is
 /// rebuilt into a valid (possibly multi-page) shape with the root in place.
+///
+/// All survivor payloads are already materialized in `rows` (owned `Vec`s), so
+/// before re-initializing we reclaim every non-root page of the old tree onto
+/// the pager's freelist. The rebuild then reuses those pages instead of growing
+/// the file, keeping the database free of orphaned "never used" pages.
 fn rebuild_table_btree(pager: &mut Pager, root_page: u32, rows: &[(i64, Vec<u8>)]) -> Result<()> {
+    let old_pages = collect_table_tree_pages(pager, root_page)?;
     let page_size = pager.page_size() as usize;
     {
         let data = &mut pager.get_page_mut(root_page)?.data;
         let offset = btree_header_offset(root_page);
         data[offset..page_size].fill(0);
         init_leaf_page(data, root_page);
+    }
+    for p in old_pages {
+        pager.free_page(p);
     }
     for (rowid, payload) in rows {
         let cell = build_table_leaf_cell_with_overflow(pager, *rowid, payload)?;
