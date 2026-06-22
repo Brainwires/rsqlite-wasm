@@ -107,8 +107,11 @@ pub(super) fn execute_delete(
         });
         to_delete = sort_keys.iter().map(|(r, _)| *r).collect();
     }
-    if let Some(limit) = plan.limit {
-        to_delete.truncate(limit as usize);
+    if let Some(count) = &plan.limit {
+        // A NULL/negative LIMIT (incl. a bound `?` param) means "no cap".
+        if let Some(n) = super::resolve_limit_count(count)? {
+            to_delete.truncate(n);
+        }
     }
 
     let rows_affected = to_delete.len() as u64;
@@ -260,8 +263,11 @@ fn execute_delete_without_rowid(
         });
         to_delete = sort_keys.into_iter().map(|(values, _)| values).collect();
     }
-    if let Some(limit) = plan.limit {
-        to_delete.truncate(limit as usize);
+    if let Some(count) = &plan.limit {
+        // A NULL/negative LIMIT (incl. a bound `?` param) means "no cap".
+        if let Some(n) = super::resolve_limit_count(count)? {
+            to_delete.truncate(n);
+        }
     }
 
     let rows_affected = to_delete.len() as u64;

@@ -1772,6 +1772,29 @@ fn delete_with_order_by_and_limit() {
 }
 
 #[test]
+fn delete_with_param_limit() {
+    // Regression: a bound `?` in DELETE's LIMIT used to hit the stale
+    // `plan_limit_expr` and fail with "LIMIT/OFFSET must be a number, got: ?".
+    // It must now bind like any other parameter (same path as SELECT LIMIT ?).
+    let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+    let mut db = Database::create(&vfs, "test.db").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)")
+        .unwrap();
+    db.execute("INSERT INTO t VALUES (1, 10), (2, 30), (3, 20), (4, 50), (5, 40)")
+        .unwrap();
+    db.execute_with_params(
+        "DELETE FROM t ORDER BY n DESC LIMIT ?",
+        vec![crate::types::Value::Integer(2)],
+    )
+    .unwrap();
+    let r = db.query("SELECT id FROM t ORDER BY id").unwrap();
+    assert_eq!(r.rows.len(), 3);
+    assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(1));
+    assert_eq!(r.rows[1].values[0], crate::types::Value::Integer(2));
+    assert_eq!(r.rows[2].values[0], crate::types::Value::Integer(3));
+}
+
+#[test]
 fn update_from_basic() {
     let vfs = rsqlite_vfs::memory::MemoryVfs::new();
     let mut db = Database::create(&vfs, "test.db").unwrap();

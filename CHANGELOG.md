@@ -25,7 +25,7 @@ Initial public release.
 - ATTACH / DETACH DATABASE
 - Window functions: ROW_NUMBER, RANK, DENSE_RANK, NTILE, LAG, LEAD, FIRST_VALUE, LAST_VALUE, SUM/COUNT/AVG/MIN/MAX OVER
 - JSON: `json`, `json_extract`, `json_type`, `json_valid`, `json_array`, `json_object`, `json_array_length`, `json_insert`, `json_replace`, `json_set`, `json_remove`, `json_patch`, `json_quote`
-- Vector search: `vec_distance_cosine`, `vec_distance_l2`, `vec_distance_dot`, `vec_from_json`, `vec_to_json`, `vec_normalize`, `vec_length`
+- Vector search: scalar functions `vec_distance_cosine`, `vec_distance_l2`, `vec_distance_dot`, `vec_from_json`, `vec_to_json`, `vec_normalize`, `vec_length` (little-endian f32 BLOBs) — usable as a brute-force KNN over a plain BLOB column; plus a `vec_index` virtual table backed by an HNSW approximate-nearest-neighbor graph (`dim`/`metric`/`m`/`ef`/`ef_construction` tunables) with planner pushdown of `ORDER BY vec_distance_<metric>(col, ?) LIMIT k`. The HNSW graph is currently in-memory only (rebuilt by re-inserting after open); on-disk persistence is planned.
 - Collation: `COLLATE NOCASE`
 - 50+ scalar functions (LENGTH, SUBSTR, UPPER, LOWER, TRIM, REPLACE, COALESCE, IFNULL, TYPEOF, HEX, ROUND, ABS, RANDOM, DATE, TIME, DATETIME, STRFTIME, JULIANDAY, UNIXEPOCH, IIF, PRINTF, …)
 - Parameter binding via `?` placeholders

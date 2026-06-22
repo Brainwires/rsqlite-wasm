@@ -23,8 +23,8 @@ use rsqlite_storage::pager::Pager;
 use crate::catalog::Catalog;
 use crate::error::{Error, Result};
 use crate::eval_helpers::is_truthy;
-use crate::planner::Plan;
-use crate::types::{QueryResult, Row};
+use crate::planner::{CountExpr, Plan};
+use crate::types::{QueryResult, Row, Value};
 
 pub use pragma::execute_pragma;
 pub use state::{
@@ -64,6 +64,44 @@ impl ExecResult {
             returning: None,
         }
     }
+}
+
+/// Resolve a `LIMIT` count to an optional row cap. `None` means "no cap":
+/// SQLite treats a NULL or negative LIMIT as unlimited.
+pub(super) fn resolve_limit_count(count: &CountExpr) -> Result<Option<usize>> {
+    let n = match count {
+        CountExpr::Const(n) => *n as i64,
+        CountExpr::Param(idx) => match state::get_param(*idx) {
+            Value::Null => return Ok(None),
+            Value::Integer(n) => n,
+            Value::Real(r) => r as i64,
+            other => {
+                return Err(Error::Other(format!(
+                    "LIMIT must be an integer, got: {other:?}"
+                )));
+            }
+        },
+    };
+    Ok(if n < 0 { None } else { Some(n as usize) })
+}
+
+/// Resolve an `OFFSET` count to a row skip. A NULL or negative OFFSET is
+/// treated as 0, matching SQLite.
+fn resolve_offset_count(count: &CountExpr) -> Result<usize> {
+    let n = match count {
+        CountExpr::Const(n) => *n as i64,
+        CountExpr::Param(idx) => match state::get_param(*idx) {
+            Value::Null => return Ok(0),
+            Value::Integer(n) => n,
+            Value::Real(r) => r as i64,
+            other => {
+                return Err(Error::Other(format!(
+                    "OFFSET must be an integer, got: {other:?}"
+                )));
+            }
+        },
+    };
+    Ok(if n < 0 { 0 } else { n as usize })
 }
 
 pub fn execute(plan: &Plan, pager: &mut Pager, catalog: &Catalog) -> Result<QueryResult> {
@@ -275,14 +313,18 @@ pub fn execute(plan: &Plan, pager: &mut Pager, catalog: &Catalog) -> Result<Quer
             offset,
         } => {
             let inner = execute(input, pager, catalog)?;
-            let offset = *offset as usize;
+            let offset = match offset {
+                Some(c) => resolve_offset_count(c)?,
+                None => 0,
+            };
+            // `None` here means "no row cap" — either no LIMIT clause or a
+            // LIMIT that resolved to NULL/negative (SQLite semantics).
+            let limit = match limit {
+                Some(c) => resolve_limit_count(c)?,
+                None => None,
+            };
             let rows: Vec<Row> = match limit {
-                Some(n) => inner
-                    .rows
-                    .into_iter()
-                    .skip(offset)
-                    .take(*n as usize)
-                    .collect(),
+                Some(n) => inner.rows.into_iter().skip(offset).take(n).collect(),
                 None => inner.rows.into_iter().skip(offset).collect(),
             };
             Ok(QueryResult {

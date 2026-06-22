@@ -282,9 +282,13 @@ CREATE TABLE embeddings (
 | `vec_from_json(text)` | `(TEXT) -> BLOB` | Parses a JSON array like `[0.1, 0.2, ...]` into a vector BLOB. |
 | `vec_to_json(blob)` | `(BLOB) -> TEXT` | Serializes a vector BLOB back to a JSON array. |
 
-### KNN query pattern
+### Brute-force KNN
 
-Search is brute-force (no approximate nearest neighbor index). This is suitable for PWA-scale workloads — thousands to low tens-of-thousands of rows.
+The simplest setup stores vectors in an ordinary column and scans them with the
+distance functions above. This is exact (no recall loss) and suitable for
+PWA-scale workloads — thousands to low tens-of-thousands of rows search in tens
+of milliseconds, and any `WHERE` filter is applied before the distance is
+evaluated.
 
 ```sql
 -- Insert via JSON (or bind a BLOB parameter directly)
@@ -295,6 +299,90 @@ SELECT id, text, vec_distance_cosine(vector, vec_from_json(?)) AS distance
 FROM embeddings
 ORDER BY distance
 LIMIT 10;
+```
+
+### Approximate search (`vec_index`)
+
+For larger collections rsqlite-wasm ships an HNSW (Hierarchical Navigable Small
+World) approximate-nearest-neighbor index as a virtual table. It gives
+`O(log N)` expected query time instead of a full scan:
+
+```sql
+CREATE VIRTUAL TABLE embeds USING vec_index(dim=384, metric=cosine);
+INSERT INTO embeds VALUES (vec_from_json('[0.1, 0.2, ...]'));   -- one BLOB column
+
+-- The planner pushes `ORDER BY vec_distance_<metric>(col, ?) LIMIT k`
+-- straight into the graph traversal, skipping the outer sort.
+SELECT rowid FROM embeds
+ORDER BY vec_distance_cosine(vector, ?)
+LIMIT 10;
+```
+
+Arguments (passed at `CREATE` time):
+
+| Arg | Default | Meaning |
+|-----|---------|---------|
+| `dim=N` | *(required)* | Vector dimension; inserts must decode to exactly `N` floats. |
+| `metric=cosine\|l2\|dot` | `cosine` | Distance metric; must match the `vec_distance_*` used in `ORDER BY` for pushdown. |
+| `m=N` | `16` | Max graph degree per layer above 0 (layer 0 caps at `2 * m`). |
+| `ef_construction=N` | `200` | Candidate-pool size during inserts. Higher → better recall, slower build. |
+| `ef=N` | `50` | Candidate-pool size at query time. Higher → better recall, slower query. |
+
+### Persistence
+
+- **Plain BLOB column → persistent.** Vectors stored in an ordinary table (the
+  brute-force pattern above) are regular row data: they are written atomically
+  with the rest of the database and survive reopen, export, and import like any
+  other BLOB.
+- **`vec_index` HNSW graph → in-memory (today).** The HNSW graph is currently
+  held in memory and is not yet written to the backing file, so it must be
+  repopulated by re-inserting rows after each open. On-disk persistence for the
+  graph (mirroring the FTS5 shadow-table approach) is planned — see the
+  [CHANGELOG](./CHANGELOG.md). Until it lands, **prefer the plain-BLOB-column +
+  brute-force pattern when your vectors must survive reload** (e.g. an
+  OPFS-backed store), and reserve `vec_index` for in-session acceleration.
+
+### Embeddings / RAG example
+
+A typical retrieval-augmented-generation store keeps chunks in a plain table so
+the vectors persist, scoped to a conversation (or shared globally when
+`conversation_id IS NULL`):
+
+```sql
+CREATE TABLE documents (
+  id              INTEGER PRIMARY KEY,
+  name            TEXT NOT NULL,
+  conversation_id TEXT NULL              -- NULL = global, visible to every search
+);
+CREATE TABLE chunks (
+  id          INTEGER PRIMARY KEY,
+  document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,
+  text        TEXT,
+  vector      BLOB,                       -- f32 little-endian, 4 * dim bytes
+  vector_dim  INTEGER
+);
+
+-- Top-K search scoped to one conversation plus any global docs:
+SELECT chunks.id, chunks.text, documents.name,
+       vec_distance_cosine(chunks.vector, vec_from_json(?)) AS distance
+FROM chunks JOIN documents ON documents.id = chunks.document_id
+WHERE chunks.vector_dim = ?
+  AND ( ? IS NULL OR documents.conversation_id = ? OR documents.conversation_id IS NULL )
+ORDER BY distance ASC
+LIMIT ?;
+```
+
+From JavaScript, bind the query vector as a `Uint8Array` BLOB (it survives the
+Web Worker boundary via structured clone) instead of round-tripping JSON:
+
+```typescript
+// f32 query vector → little-endian bytes
+const queryBlob = new Uint8Array(new Float32Array(queryVec).buffer);
+const rows = await db.query(
+  "SELECT id, text, vec_distance_cosine(vector, ?) AS distance " +
+  "FROM chunks ORDER BY distance LIMIT ?",
+  [queryBlob, 5],
+);
 ```
 
 ### Portability note
