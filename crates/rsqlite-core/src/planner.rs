@@ -1439,6 +1439,15 @@ fn plan_select_body_inner(
         }
     }
 
+    // Plan the projection BEFORE the WHERE clause so positional `?` placeholders
+    // are auto-indexed in SQL TEXT order (the SELECT list precedes WHERE).
+    // Planning WHERE first gave its `?` a LOWER index than the projection's,
+    // crossing their bound values — e.g. `SELECT ?+n, n FROM t WHERE n=?` matched
+    // nothing. The Project node is still constructed further below; only the
+    // placeholder-indexing order changes here.
+    let mut outputs = plan_select_items(&select.projection, &all_columns, catalog)?;
+    let output_names: Vec<String> = outputs.iter().map(|o| o.alias.clone()).collect();
+
     // WHERE clause -> Filter (with index optimization)
     if let Some(selection) = &select.selection {
         let predicate = plan_expr(selection, &all_columns, catalog)?;
@@ -1454,9 +1463,6 @@ fn plan_select_body_inner(
             };
         }
     }
-
-    let mut outputs = plan_select_items(&select.projection, &all_columns, catalog)?;
-    let output_names: Vec<String> = outputs.iter().map(|o| o.alias.clone()).collect();
 
     let group_by_exprs = match &select.group_by {
         ast::GroupByExpr::Expressions(exprs, _) if !exprs.is_empty() => {

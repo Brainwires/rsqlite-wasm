@@ -2135,3 +2135,35 @@ fn expression_index_creates_without_error() {
     assert_eq!(r.rows.len(), 1);
     assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(1));
 }
+
+#[test]
+fn positional_params_indexed_in_text_order_across_clauses() {
+    // Regression: a positional `?` in the SELECT list must claim a LOWER param
+    // index than a `?` in WHERE (SQL text order), even though WHERE is planned
+    // first internally. Previously `SELECT ?+n, n FROM t WHERE n=?` crossed the
+    // bound values, so WHERE compared against the projection's value and matched
+    // nothing — which is what broke the RAG KNN query (cosine `?` in the SELECT
+    // list + scope `?`s in WHERE returned []).
+    let vfs = rsqlite_vfs::memory::MemoryVfs::new();
+    let mut db = Database::create(&vfs, "t.db").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER, n INTEGER)").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 10), (2, 20)").unwrap();
+    let r = db
+        .query_with_params(
+            "SELECT ? + n AS s, n FROM t WHERE n = ? ORDER BY id",
+            vec![
+                crate::types::Value::Integer(100), // projection param (text-first)
+                crate::types::Value::Integer(20),  // WHERE param
+            ],
+        )
+        .unwrap();
+    let got: Vec<i64> = r
+        .rows
+        .iter()
+        .map(|row| match &row.values[0] {
+            crate::types::Value::Integer(i) => *i,
+            _ => -1,
+        })
+        .collect();
+    assert_eq!(got, vec![120]); // n=20 matched; projection s = 100 + 20
+}
