@@ -3,7 +3,6 @@
 //! through the full parse → plan → execute path so a regression in any
 //! layer is caught.
 
-use super::*;
 use crate::database::Database;
 use crate::types::Value;
 use rsqlite_vfs::memory::MemoryVfs;

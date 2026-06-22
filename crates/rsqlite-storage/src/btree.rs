@@ -2,9 +2,9 @@
 mod btree_write;
 
 pub use btree_write::{
-    btree_create_index, btree_create_table, btree_delete, btree_index_delete,
-    btree_index_delete_by_prefix, btree_index_insert, btree_insert, delete_schema_entries,
-    insert_schema_entry,
+    btree_create_index, btree_create_table, btree_delete, btree_delete_many, btree_index_delete,
+    btree_index_delete_by_prefix, btree_index_delete_many, btree_index_insert, btree_insert,
+    delete_schema_entries, insert_schema_entry,
 };
 
 use crate::codec::{Record, Value};
