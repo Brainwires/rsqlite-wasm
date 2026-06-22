@@ -11,6 +11,7 @@ mod database_api;
 mod datetime_coverage;
 mod fts5_match;
 mod modern;
+mod param_binding;
 mod scalar_extras;
 mod schema;
 mod views_ctes_advanced;
