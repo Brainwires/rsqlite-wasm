@@ -9,6 +9,7 @@ homepage.workspace = true
 authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
+readme.workspace = true
 description = "B-tree storage engine and SQLite file format codec for rsqlite-wasm"
 
 [dependencies]

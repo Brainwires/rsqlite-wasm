@@ -13,6 +13,7 @@ homepage.workspace = true
 authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
+readme.workspace = true
 description = "Virtual file system trait and backends for rsqlite-wasm"
 
 [lib]

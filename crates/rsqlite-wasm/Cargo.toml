@@ -9,6 +9,7 @@ homepage.workspace = true
 authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
+readme.workspace = true
 description = "WebAssembly bindings for rsqlite — SQLite in the browser"
 
 [package.metadata.wasm-pack.profile.release]

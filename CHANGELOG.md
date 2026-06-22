@@ -2,8 +2,26 @@
 
 ## 0.1.1 — unreleased
 
-Cleanup release: test-coverage push, a security fix to the DevTools bridge, and
-release/packaging hygiene. No SQL-surface changes.
+Correctness, security, and cleanup release: fixes data-loss/corruption bugs in
+the storage engine and a parameter-binding bug, hardens the DevTools bridge, and
+tidies packaging. Includes the LIMIT/OFFSET `?` placeholder feature.
+
+### Bug fixes (correctness)
+
+- **B-tree page splits no longer lose rows.** Table/index roots are now immutable
+  (the tree deepens in place), so a split's new pages are reachable. Previously,
+  inserting enough rows to split a page silently orphaned half the tree (e.g.
+  400 rows of 300-byte text returned 8 rows).
+- **Large values now use overflow pages.** Cell payloads larger than fit inline
+  spill to a chained overflow-page list (SQLite format); reads reassemble them.
+  Previously, big TEXT/BLOB values corrupted on read or panicked. Overflow pages
+  are reclaimed via a new page freelist.
+- **DELETE/UPDATE on large multi-level trees no longer corrupt** the database.
+- **Anonymous `?` parameters are bound by SQL text order**, not planner
+  traversal order. Previously a query with `?` spanning the SELECT list, WHERE,
+  and LIMIT could bind parameters to the wrong positions.
+- Round-trip integrity verified against the `sqlite3` CLI (`PRAGMA
+  integrity_check`) after bulk insert/delete and overflow writes.
 
 ### Security
 

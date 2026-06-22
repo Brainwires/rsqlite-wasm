@@ -9,6 +9,7 @@ homepage.workspace = true
 authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
+readme.workspace = true
 description = "SQL parser for rsqlite-wasm — wraps sqlparser-rs with SQLite semantic validation"
 
 [dependencies]

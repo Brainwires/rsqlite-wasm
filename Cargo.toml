@@ -10,15 +10,16 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 rust-version = "1.85"
 repository = "https://github.com/Brainwires/rsqlite-wasm"
 homepage = "https://github.com/Brainwires/rsqlite-wasm"
+readme = "README.md"
 authors = ["The rsqlite-wasm contributors"]
 keywords = ["sqlite", "wasm", "database", "sql", "browser"]
-categories = ["database", "wasm", "no-std"]
+categories = ["database", "wasm"]
 
 [workspace.dependencies]
 # `version` is required alongside `path` for `cargo publish` to accept

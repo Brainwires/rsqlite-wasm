@@ -9,6 +9,7 @@ homepage.workspace = true
 authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
+readme.workspace = true
 description = "Pure Rust SQLite-compatible database engine"
 
 [dependencies]

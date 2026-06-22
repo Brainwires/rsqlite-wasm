@@ -32,7 +32,7 @@ run_rust() {
   local IGNORE='(_tests\.rs|/tests/|target/|crates/rsqlite-wasm/)'
   cargo llvm-cov --workspace --summary-only \
     --ignore-filename-regex "$IGNORE" \
-    --fail-under-lines 75
+    --fail-under-lines 85
   cargo llvm-cov report --lcov --output-path lcov.info \
     --ignore-filename-regex "$IGNORE"
 }
