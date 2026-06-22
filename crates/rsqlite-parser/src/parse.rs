@@ -5,9 +5,16 @@ use crate::error::ParseError;
 
 pub fn parse_sql(sql: &str) -> Result<Vec<sqlparser::ast::Statement>, ParseError> {
     let dialect = SQLiteDialect {};
+    // Number anonymous `?` placeholders by their position in the SQL *text*
+    // FIRST, before any other rewrite can move them around. Downstream the
+    // planner numbers anonymous `?` in the order it *plans* clauses (WHERE
+    // before the SELECT list, etc.), which scrambles bindings when `?` spans
+    // projection + WHERE + LIMIT. Rewriting `?` → `?N` here pins each to its
+    // textual position, matching SQLite's positional-parameter semantics.
+    let numbered = number_placeholders(sql);
     let preprocessed = preprocess_update_limit(&preprocess_bitwise_shifts(
         &preprocess_bitwise_not(&preprocess_is_truth_family(&preprocess_fts5_match(
-            &preprocess_pragma(sql),
+            &preprocess_pragma(&numbered),
         ))),
     ));
     if is_vacuum(&preprocessed) {
@@ -30,6 +37,95 @@ pub fn parse_sql(sql: &str) -> Result<Vec<sqlparser::ast::Statement>, ParseError
     }
     let statements = Parser::parse_sql(&dialect, &preprocessed)?;
     Ok(statements)
+}
+
+/// Rewrite each anonymous `?` placeholder to an explicit `?N` numbered by its
+/// left-to-right position in the SQL text (1-based, matching SQLite). `?` inside
+/// string literals, quoted identifiers (`"..."`, `` `...` ``, `[...]`), and
+/// comments is left untouched, and already-numbered `?N` is copied verbatim.
+fn number_placeholders(sql: &str) -> String {
+    let chars: Vec<char> = sql.chars().collect();
+    let mut out = String::with_capacity(sql.len() + 8);
+    let mut i = 0;
+    let mut n: u32 = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            // string literal / quoted identifier — copy verbatim, honoring
+            // doubled-quote escapes for ' and "
+            '\'' | '"' | '`' => {
+                let quote = c;
+                out.push(c);
+                i += 1;
+                while i < chars.len() {
+                    let d = chars[i];
+                    out.push(d);
+                    i += 1;
+                    if d == quote {
+                        if (quote == '\'' || quote == '"')
+                            && i < chars.len()
+                            && chars[i] == quote
+                        {
+                            out.push(quote);
+                            i += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+            '[' => {
+                out.push(c);
+                i += 1;
+                while i < chars.len() {
+                    let d = chars[i];
+                    out.push(d);
+                    i += 1;
+                    if d == ']' {
+                        break;
+                    }
+                }
+            }
+            '-' if i + 1 < chars.len() && chars[i + 1] == '-' => {
+                while i < chars.len() && chars[i] != '\n' {
+                    out.push(chars[i]);
+                    i += 1;
+                }
+            }
+            '/' if i + 1 < chars.len() && chars[i + 1] == '*' => {
+                out.push('/');
+                out.push('*');
+                i += 2;
+                while i < chars.len() {
+                    if chars[i] == '*' && i + 1 < chars.len() && chars[i + 1] == '/' {
+                        out.push('*');
+                        out.push('/');
+                        i += 2;
+                        break;
+                    }
+                    out.push(chars[i]);
+                    i += 1;
+                }
+            }
+            '?' => {
+                // already-numbered `?N` (or `?` followed by a digit): copy as-is
+                if i + 1 < chars.len() && chars[i + 1].is_ascii_digit() {
+                    out.push('?');
+                    i += 1;
+                } else {
+                    n += 1;
+                    out.push('?');
+                    out.push_str(&n.to_string());
+                    i += 1;
+                }
+            }
+            _ => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
 }
 
 /// Detect `CREATE VIRTUAL TABLE [IF NOT EXISTS] <name> USING <module>(args…)`
