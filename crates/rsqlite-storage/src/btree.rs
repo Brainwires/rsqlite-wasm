@@ -105,7 +105,15 @@ pub(crate) fn read_cell_pointers(data: &[u8], offset: usize, count: u16) -> Vec<
 #[derive(Debug)]
 pub struct TableLeafCell {
     pub rowid: i64,
+    /// The inline (local) portion of the payload. When the full payload
+    /// spilled onto overflow pages this is only the first `local_size`
+    /// bytes; use [`reassemble_payload`] (or `BTreeCursor`/`IndexCursor`
+    /// which do it for you) to obtain the complete payload.
     pub payload: Vec<u8>,
+    /// Total payload length as recorded in the cell header.
+    pub payload_size: usize,
+    /// First overflow page, when `payload.len() < payload_size`.
+    pub overflow_page: Option<u32>,
 }
 
 #[derive(Debug)]
@@ -124,30 +132,87 @@ pub(crate) fn parse_table_leaf_cell(
     let payload_start = offset + n1 + n2;
     let payload_size = payload_size as usize;
 
-    let max_local = max_local_payload_leaf(usable_size) as usize;
-    let local_size = if payload_size <= max_local {
-        payload_size
-    } else {
-        let min_local = min_local_payload(usable_size) as usize;
-        let mut local = min_local + (payload_size - min_local) % (usable_size as usize - 4);
-        if local > max_local {
-            local = min_local;
-        }
-        local
-    };
+    let local_size = local_payload_size(payload_size, usable_size);
 
-    if local_size == payload_size {
-        let payload = data[payload_start..payload_start + payload_size].to_vec();
-        Ok(TableLeafCell {
-            rowid: rowid as i64,
-            payload,
-        })
+    let payload = data[payload_start..payload_start + local_size].to_vec();
+    let overflow_page = if local_size < payload_size {
+        let p = payload_start + local_size;
+        Some(u32::from_be_bytes([data[p], data[p + 1], data[p + 2], data[p + 3]]))
     } else {
-        let payload = data[payload_start..payload_start + local_size].to_vec();
-        Ok(TableLeafCell {
-            rowid: rowid as i64,
-            payload,
-        })
+        None
+    };
+    Ok(TableLeafCell {
+        rowid: rowid as i64,
+        payload,
+        payload_size,
+        overflow_page,
+    })
+}
+
+/// Compute the number of payload bytes stored locally (inline) in a cell,
+/// per the SQLite overflow-threshold formula. Identical for table-leaf and
+/// index cells (both use the leaf max-local bound).
+pub(crate) fn local_payload_size(payload_size: usize, usable_size: u32) -> usize {
+    let max_local = max_local_payload_leaf(usable_size) as usize;
+    if payload_size <= max_local {
+        return payload_size;
+    }
+    let min_local = min_local_payload(usable_size) as usize;
+    let mut local = min_local + (payload_size - min_local) % (usable_size as usize - 4);
+    if local > max_local {
+        local = min_local;
+    }
+    local
+}
+
+/// Walk an overflow-page chain starting at `first_page`, collecting
+/// `remaining` bytes. Each overflow page begins with a 4-byte big-endian
+/// pointer to the next overflow page (0 on the last page), followed by up
+/// to `usable_size - 4` payload bytes.
+pub(crate) fn read_overflow_chain(
+    pager: &mut Pager,
+    first_page: u32,
+    remaining: usize,
+) -> Result<Vec<u8>> {
+    let usable = pager.usable_size() as usize;
+    let per_page = usable - 4;
+    let mut out = Vec::with_capacity(remaining);
+    let mut left = remaining;
+    let mut page = first_page;
+    while left > 0 {
+        if page == 0 {
+            return Err(StorageError::Corrupt(
+                "overflow chain ended before payload complete".to_string(),
+            ));
+        }
+        let data = pager.get_page(page)?.data.clone();
+        let next = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+        let take = left.min(per_page);
+        out.extend_from_slice(&data[4..4 + take]);
+        left -= take;
+        page = next;
+    }
+    Ok(out)
+}
+
+/// Reassemble a full payload from a cell's inline portion plus its overflow
+/// chain (if any). When the cell has no overflow this just clones the local
+/// payload.
+pub(crate) fn reassemble_payload(
+    pager: &mut Pager,
+    local: &[u8],
+    payload_size: usize,
+    overflow_page: Option<u32>,
+) -> Result<Vec<u8>> {
+    match overflow_page {
+        None => Ok(local.to_vec()),
+        Some(first) => {
+            let mut full = Vec::with_capacity(payload_size);
+            full.extend_from_slice(local);
+            let tail = read_overflow_chain(pager, first, payload_size - local.len())?;
+            full.extend_from_slice(&tail);
+            Ok(full)
+        }
     }
 }
 
@@ -272,7 +337,9 @@ impl<'a> BTreeCursor<'a> {
         let cell_offset = pointers[cell_idx] as usize;
         let cell = parse_table_leaf_cell(&page, cell_offset, usable)?;
 
-        let record = Record::decode(&cell.payload)?;
+        let full =
+            reassemble_payload(self.pager, &cell.payload, cell.payload_size, cell.overflow_page)?;
+        let record = Record::decode(&full)?;
         Ok(CursorRow {
             rowid: cell.rowid,
             record,
@@ -465,12 +532,16 @@ pub fn btree_row_exists(pager: &mut Pager, root_page: u32, target_rowid: i64) ->
 #[derive(Debug)]
 pub(crate) struct IndexLeafCell {
     pub payload: Vec<u8>,
+    pub payload_size: usize,
+    pub overflow_page: Option<u32>,
 }
 
 #[derive(Debug)]
 pub(crate) struct IndexInteriorCell {
     pub left_child_page: u32,
     pub payload: Vec<u8>,
+    pub payload_size: usize,
+    pub overflow_page: Option<u32>,
 }
 
 pub(crate) fn parse_index_leaf_cell(
@@ -482,20 +553,20 @@ pub(crate) fn parse_index_leaf_cell(
     let payload_start = offset + n1;
     let payload_size = payload_size as usize;
 
-    let max_local = max_local_payload_leaf(usable_size) as usize;
-    let local_size = if payload_size <= max_local {
-        payload_size
-    } else {
-        let min_local = min_local_payload(usable_size) as usize;
-        let mut local = min_local + (payload_size - min_local) % (usable_size as usize - 4);
-        if local > max_local {
-            local = min_local;
-        }
-        local
-    };
+    let local_size = local_payload_size(payload_size, usable_size);
 
     let payload = data[payload_start..payload_start + local_size].to_vec();
-    Ok(IndexLeafCell { payload })
+    let overflow_page = if local_size < payload_size {
+        let p = payload_start + local_size;
+        Some(u32::from_be_bytes([data[p], data[p + 1], data[p + 2], data[p + 3]]))
+    } else {
+        None
+    };
+    Ok(IndexLeafCell {
+        payload,
+        payload_size,
+        overflow_page,
+    })
 }
 
 pub(crate) fn parse_index_interior_cell(
@@ -513,22 +584,20 @@ pub(crate) fn parse_index_interior_cell(
     let payload_start = offset + 4 + n1;
     let payload_size = payload_size as usize;
 
-    let max_local = max_local_payload_leaf(usable_size) as usize;
-    let local_size = if payload_size <= max_local {
-        payload_size
-    } else {
-        let min_local = min_local_payload(usable_size) as usize;
-        let mut local = min_local + (payload_size - min_local) % (usable_size as usize - 4);
-        if local > max_local {
-            local = min_local;
-        }
-        local
-    };
+    let local_size = local_payload_size(payload_size, usable_size);
 
     let payload = data[payload_start..payload_start + local_size].to_vec();
+    let overflow_page = if local_size < payload_size {
+        let p = payload_start + local_size;
+        Some(u32::from_be_bytes([data[p], data[p + 1], data[p + 2], data[p + 3]]))
+    } else {
+        None
+    };
     Ok(IndexInteriorCell {
         left_child_page: left_child,
         payload,
+        payload_size,
+        overflow_page,
     })
 }
 
@@ -684,7 +753,9 @@ impl<'a> IndexCursor<'a> {
         let pointers = read_cell_pointers(&page, offset + header.header_size(), header.cell_count);
         let cell_offset = pointers[cell_idx] as usize;
         let cell = parse_index_leaf_cell(&page, cell_offset, usable)?;
-        Record::decode(&cell.payload)
+        let full =
+            reassemble_payload(self.pager, &cell.payload, cell.payload_size, cell.overflow_page)?;
+        Record::decode(&full)
     }
 
     pub fn collect_all(&mut self) -> Result<Vec<Record>> {
@@ -833,15 +904,6 @@ pub(crate) fn init_interior_index_page(data: &mut [u8], page_num: u32, right_chi
     data[offset + 6] = content_offset as u8;
     data[offset + 7] = 0;
     data[offset + 8..offset + 12].copy_from_slice(&right_child.to_be_bytes());
-}
-
-pub(crate) fn build_index_leaf_cell(payload: &[u8]) -> Vec<u8> {
-    let mut cell = Vec::with_capacity(payload.len() + 9);
-    let mut tmp = [0u8; 9];
-    let n = varint::write_varint(payload.len() as u64, &mut tmp);
-    cell.extend_from_slice(&tmp[..n]);
-    cell.extend_from_slice(payload);
-    cell
 }
 
 #[cfg(test)]
