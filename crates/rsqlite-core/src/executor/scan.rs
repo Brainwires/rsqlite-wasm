@@ -41,14 +41,14 @@ pub(super) fn execute_scan(
 
         let mut rows = Vec::with_capacity(records.len());
         for rec in &records {
-            let declared = super::helpers::storage_to_declared_order(
-                &rec.values,
-                &pk_indices,
-                n_columns,
-            );
+            let declared =
+                super::helpers::storage_to_declared_order(&rec.values, &pk_indices, n_columns);
             let mut row_values = Vec::with_capacity(columns.len());
             for col in columns {
-                let val = declared.get(col.column_index).cloned().unwrap_or(Value::Null);
+                let val = declared
+                    .get(col.column_index)
+                    .cloned()
+                    .unwrap_or(Value::Null);
                 row_values.push(val);
             }
             rows.push(Row::new(row_values));
@@ -158,10 +158,13 @@ pub(super) fn execute_index_scan(
                     .iter()
                     .map(|&pos| entry.values.get(pos).cloned().unwrap_or(Value::Null))
                     .collect();
-                let rid = entry
-                    .values
-                    .last()
-                    .and_then(|v| if let Value::Integer(r) = v { Some(*r) } else { None });
+                let rid = entry.values.last().and_then(|v| {
+                    if let Value::Integer(r) = v {
+                        Some(*r)
+                    } else {
+                        None
+                    }
+                });
                 let row = match rid {
                     Some(r) => Row::with_rowid(row_values, r),
                     None => Row::new(row_values),

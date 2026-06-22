@@ -129,7 +129,7 @@ pub(super) fn execute_update(
             }
         }
 
-        if let Some(_) = &plan.from {
+        if plan.from.is_some() {
             // For each FROM row, extend the target row and check the predicate.
             // Use the LAST matching FROM row's values for assignments (matches
             // SQLite's "implementation-defined" behavior on multi-match).
@@ -137,7 +137,10 @@ pub(super) fn execute_update(
             for from_row in &from_rows {
                 let mut combined = row_values.clone();
                 combined.extend_from_slice(from_row);
-                let combined_row = Row { values: combined.clone(), rowid: None };
+                let combined_row = Row {
+                    values: combined.clone(),
+                    rowid: None,
+                };
 
                 let matches = match &plan.predicate {
                     Some(pred) => {
@@ -315,13 +318,25 @@ pub(super) fn execute_update(
             )?;
 
             if old_in {
-                let old_key =
-                    build_index_key(&old_values, idx_col_indices, &plan.table_columns, pager, catalog, rowid)?;
+                let old_key = build_index_key(
+                    &old_values,
+                    idx_col_indices,
+                    &plan.table_columns,
+                    pager,
+                    catalog,
+                    rowid,
+                )?;
                 let _ = btree_index_delete(pager, *idx_root, &old_key);
             }
             if new_in {
-                let new_key =
-                    build_index_key(&new_values, idx_col_indices, &plan.table_columns, pager, catalog, rowid)?;
+                let new_key = build_index_key(
+                    &new_values,
+                    idx_col_indices,
+                    &plan.table_columns,
+                    pager,
+                    catalog,
+                    rowid,
+                )?;
                 let _ = btree_index_insert(pager, *idx_root, &new_key);
             }
         }

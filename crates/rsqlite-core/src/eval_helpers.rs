@@ -711,7 +711,7 @@ pub(crate) fn like_match_inner(pattern: &[char], value: &[char], escape: Option<
         // pattern char to be matched literally (no %/_ interpretation).
         if let Some(esc) = escape {
             if pi < pattern.len() && pattern[pi] == esc && pi + 1 < pattern.len() {
-                if pattern[pi + 1].to_ascii_lowercase() == value[vi].to_ascii_lowercase() {
+                if pattern[pi + 1].eq_ignore_ascii_case(&value[vi]) {
                     pi += 2;
                     vi += 1;
                     continue;
@@ -730,8 +730,7 @@ pub(crate) fn like_match_inner(pattern: &[char], value: &[char], escape: Option<
             star_vi = vi;
             pi += 1;
         } else if pi < pattern.len()
-            && (pattern[pi] == '_'
-                || pattern[pi].to_ascii_lowercase() == value[vi].to_ascii_lowercase())
+            && (pattern[pi] == '_' || pattern[pi].eq_ignore_ascii_case(&value[vi]))
         {
             pi += 1;
             vi += 1;

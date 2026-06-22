@@ -95,7 +95,10 @@ fn partition_rows(
     let mut partition_map: Vec<(Vec<Value>, Vec<usize>)> = Vec::new();
 
     for (i, row) in rows.iter().enumerate() {
-        let tmp_row = Row { values: row.clone(), rowid: None };
+        let tmp_row = Row {
+            values: row.clone(),
+            rowid: None,
+        };
         let cols = if input_columns.len() >= row.len() {
             input_columns
         } else {
@@ -128,7 +131,7 @@ fn sort_partition(
     pager: &mut Pager,
     catalog: &Catalog,
 ) -> Result<()> {
-    let cols = if input_columns.len() >= rows.get(0).map_or(0, |r| r.len()) {
+    let cols = if input_columns.len() >= rows.first().map_or(0, |r| r.len()) {
         input_columns
     } else {
         all_columns
@@ -136,7 +139,10 @@ fn sort_partition(
     let mut sort_keys: Vec<(usize, Vec<Value>)> = indices
         .iter()
         .map(|&idx| {
-            let tmp_row = Row { values: rows[idx].clone(), rowid: None };
+            let tmp_row = Row {
+                values: rows[idx].clone(),
+                rowid: None,
+            };
             let keys: Vec<Value> = order_by
                 .iter()
                 .map(|(e, _)| {
@@ -191,7 +197,7 @@ fn compute_window_for_partition(
     pager: &mut Pager,
     catalog: &Catalog,
 ) -> Result<()> {
-    let cols = if input_columns.len() >= rows.get(0).map_or(0, |r| r.len()) {
+    let cols = if input_columns.len() >= rows.first().map_or(0, |r| r.len()) {
         input_columns
     } else {
         all_columns
@@ -213,8 +219,14 @@ fn compute_window_for_partition(
                     result_values[row_idx] = Value::Integer(1);
                 } else {
                     let prev_idx = partition_indices[i - 1];
-                    let prev_row = Row { values: rows[prev_idx].clone(), rowid: None };
-                    let curr_row = Row { values: rows[row_idx].clone(), rowid: None };
+                    let prev_row = Row {
+                        values: rows[prev_idx].clone(),
+                        rowid: None,
+                    };
+                    let curr_row = Row {
+                        values: rows[row_idx].clone(),
+                        rowid: None,
+                    };
                     let same = order_exprs.is_empty() || {
                         let prev_vals: Vec<Value> = order_exprs
                             .iter()
@@ -248,8 +260,14 @@ fn compute_window_for_partition(
                     result_values[row_idx] = Value::Integer(1);
                 } else {
                     let prev_idx = partition_indices[i - 1];
-                    let prev_row = Row { values: rows[prev_idx].clone(), rowid: None };
-                    let curr_row = Row { values: rows[row_idx].clone(), rowid: None };
+                    let prev_row = Row {
+                        values: rows[prev_idx].clone(),
+                        rowid: None,
+                    };
+                    let curr_row = Row {
+                        values: rows[row_idx].clone(),
+                        rowid: None,
+                    };
                     let same = order_exprs.is_empty() || {
                         let prev_vals: Vec<Value> = order_exprs
                             .iter()
@@ -276,7 +294,10 @@ fn compute_window_for_partition(
         }
         "NTILE" => {
             let n = if let Some(arg) = args.first() {
-                let tmp_row = Row { values: rows[partition_indices[0]].clone(), rowid: None };
+                let tmp_row = Row {
+                    values: rows[partition_indices[0]].clone(),
+                    rowid: None,
+                };
                 match super::eval::eval_expr(arg, &tmp_row, cols, pager, catalog)? {
                     Value::Integer(n) => n.max(1) as usize,
                     _ => 1,
@@ -291,7 +312,10 @@ fn compute_window_for_partition(
         }
         "LAG" | "LEAD" => {
             let offset = if args.len() > 1 {
-                let tmp_row = Row { values: rows[partition_indices[0]].clone(), rowid: None };
+                let tmp_row = Row {
+                    values: rows[partition_indices[0]].clone(),
+                    rowid: None,
+                };
                 match super::eval::eval_expr(&args[1], &tmp_row, cols, pager, catalog)? {
                     Value::Integer(n) => n as usize,
                     _ => 1,
@@ -300,7 +324,10 @@ fn compute_window_for_partition(
                 1
             };
             let default_val = if args.len() > 2 {
-                let tmp_row = Row { values: rows[partition_indices[0]].clone(), rowid: None };
+                let tmp_row = Row {
+                    values: rows[partition_indices[0]].clone(),
+                    rowid: None,
+                };
                 super::eval::eval_expr(&args[2], &tmp_row, cols, pager, catalog)?
             } else {
                 Value::Null
@@ -320,7 +347,10 @@ fn compute_window_for_partition(
 
                 let val = if let Some(pos) = target_pos {
                     if let Some(arg_expr) = args.first() {
-                        let target_row = Row { values: rows[partition_indices[pos]].clone(), rowid: None };
+                        let target_row = Row {
+                            values: rows[partition_indices[pos]].clone(),
+                            rowid: None,
+                        };
                         super::eval::eval_expr(arg_expr, &target_row, cols, pager, catalog)?
                     } else {
                         Value::Null
@@ -333,7 +363,10 @@ fn compute_window_for_partition(
         }
         "FIRST_VALUE" => {
             if let Some(arg) = args.first() {
-                let first_row = Row { values: rows[partition_indices[0]].clone(), rowid: None };
+                let first_row = Row {
+                    values: rows[partition_indices[0]].clone(),
+                    rowid: None,
+                };
                 let val = super::eval::eval_expr(arg, &first_row, cols, pager, catalog)?;
                 for &row_idx in partition_indices {
                     result_values[row_idx] = val.clone();
@@ -342,7 +375,10 @@ fn compute_window_for_partition(
         }
         "LAST_VALUE" => {
             if let Some(arg) = args.first() {
-                let last_row = Row { values: rows[*partition_indices.last().unwrap()].clone(), rowid: None };
+                let last_row = Row {
+                    values: rows[*partition_indices.last().unwrap()].clone(),
+                    rowid: None,
+                };
                 let val = super::eval::eval_expr(arg, &last_row, cols, pager, catalog)?;
                 for &row_idx in partition_indices {
                     result_values[row_idx] = val.clone();
@@ -355,13 +391,19 @@ fn compute_window_for_partition(
             if args.len() < 2 {
                 return Err(Error::Other("NTH_VALUE requires 2 arguments".into()));
             }
-            let n_row = Row { values: rows[partition_indices[0]].clone(), rowid: None };
+            let n_row = Row {
+                values: rows[partition_indices[0]].clone(),
+                rowid: None,
+            };
             let n = match super::eval::eval_expr(&args[1], &n_row, cols, pager, catalog)? {
                 Value::Integer(n) if n >= 1 => n as usize,
                 _ => 0,
             };
             let val = if n >= 1 && n <= partition_len {
-                let target_row = Row { values: rows[partition_indices[n - 1]].clone(), rowid: None };
+                let target_row = Row {
+                    values: rows[partition_indices[n - 1]].clone(),
+                    rowid: None,
+                };
                 super::eval::eval_expr(&args[0], &target_row, cols, pager, catalog)?
             } else {
                 Value::Null
@@ -383,8 +425,14 @@ fn compute_window_for_partition(
                 let row_idx = partition_indices[i];
                 if i > 0 {
                     let prev_idx = partition_indices[i - 1];
-                    let prev_row = Row { values: rows[prev_idx].clone(), rowid: None };
-                    let curr_row = Row { values: rows[row_idx].clone(), rowid: None };
+                    let prev_row = Row {
+                        values: rows[prev_idx].clone(),
+                        rowid: None,
+                    };
+                    let curr_row = Row {
+                        values: rows[row_idx].clone(),
+                        rowid: None,
+                    };
                     let same = order_exprs.is_empty() || {
                         let prev_vals: Vec<Value> = order_exprs
                             .iter()
@@ -419,7 +467,10 @@ fn compute_window_for_partition(
             let order_exprs: Vec<&PlanExpr> = order_by.iter().map(|(e, _)| e).collect();
             let order_keys: Vec<Vec<Value>> = (0..partition_len)
                 .map(|i| -> Vec<Value> {
-                    let r = Row { values: rows[partition_indices[i]].clone(), rowid: None };
+                    let r = Row {
+                        values: rows[partition_indices[i]].clone(),
+                        rowid: None,
+                    };
                     order_exprs
                         .iter()
                         .map(|e| {
@@ -453,7 +504,10 @@ fn compute_window_for_partition(
             let row_values: Vec<Option<Value>> = partition_indices
                 .iter()
                 .map(|&row_idx| -> Result<Option<Value>> {
-                    let tmp_row = Row { values: rows[row_idx].clone(), rowid: None };
+                    let tmp_row = Row {
+                        values: rows[row_idx].clone(),
+                        rowid: None,
+                    };
                     if let Some(pred) = filter {
                         let v = super::eval::eval_expr(pred, &tmp_row, cols, pager, catalog)?;
                         if !crate::eval_helpers::is_truthy(&v) {
@@ -483,7 +537,10 @@ fn compute_window_for_partition(
                 partition_indices
                     .iter()
                     .map(|&row_idx| -> Result<Vec<Value>> {
-                        let tmp_row = Row { values: rows[row_idx].clone(), rowid: None };
+                        let tmp_row = Row {
+                            values: rows[row_idx].clone(),
+                            rowid: None,
+                        };
                         order_by
                             .iter()
                             .map(|(expr, _)| {

@@ -232,8 +232,7 @@ impl Catalog {
                     if let Some(sql) = &entry.sql {
                         if is_create_virtual(sql) {
                             if let Some(vt_def) = parse_virtual_table_def(&entry.name, sql) {
-                                virtual_tables
-                                    .insert(entry.name.to_lowercase(), vt_def);
+                                virtual_tables.insert(entry.name.to_lowercase(), vt_def);
                                 continue;
                             }
                         }
@@ -784,10 +783,11 @@ fn parse_trigger_def(name: &str, tbl_name: &str, sql: &str) -> Option<TriggerDef
     pos += 1;
     pos += 1; // skip table name
 
-    if tokens.get(pos) == Some(&"FOR") {
-        if tokens.get(pos + 1) == Some(&"EACH") && tokens.get(pos + 2) == Some(&"ROW") {
-            pos += 3;
-        }
+    if tokens.get(pos) == Some(&"FOR")
+        && tokens.get(pos + 1) == Some(&"EACH")
+        && tokens.get(pos + 2) == Some(&"ROW")
+    {
+        pos += 3;
     }
 
     let begin_idx = upper.find("BEGIN")?;

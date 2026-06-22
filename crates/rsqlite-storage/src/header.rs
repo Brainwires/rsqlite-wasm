@@ -71,7 +71,7 @@ impl DatabaseHeader {
             raw_page_size
         };
 
-        if !page_size.is_power_of_two() || page_size < 512 || page_size > 65536 {
+        if !page_size.is_power_of_two() || !(512..=65536).contains(&page_size) {
             return Err(StorageError::InvalidHeader(format!(
                 "invalid page size: {page_size}"
             )));

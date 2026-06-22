@@ -130,9 +130,7 @@ mod tests {
         register(
             "first_arg",
             None,
-            Rc::new(|args: &[Value]| {
-                Ok(args.first().cloned().unwrap_or(Value::Null))
-            }),
+            Rc::new(|args: &[Value]| Ok(args.first().cloned().unwrap_or(Value::Null))),
         );
         assert_eq!(invoke("first_arg", &[]).unwrap().unwrap(), Value::Null);
         assert_eq!(invoke("first_arg", &[i(7)]).unwrap().unwrap(), i(7));

@@ -1,9 +1,9 @@
 use crate::btree::{
     BTreeCursor, IndexCursor, PageType, btree_header_offset, compare_records,
-    compare_records_by_prefix, init_interior_index_page, init_interior_page,
-    init_leaf_index_page, init_leaf_page, local_payload_size, parse_btree_header,
-    parse_index_interior_cell, parse_index_leaf_cell, parse_table_interior_cell,
-    parse_table_leaf_cell, read_cell_pointers, reassemble_payload, write_cell_pointers,
+    compare_records_by_prefix, init_interior_index_page, init_interior_page, init_leaf_index_page,
+    init_leaf_page, local_payload_size, parse_btree_header, parse_index_interior_cell,
+    parse_index_leaf_cell, parse_table_interior_cell, parse_table_leaf_cell, read_cell_pointers,
+    reassemble_payload, write_cell_pointers,
 };
 use crate::codec::{Record, Value};
 use crate::error::{Result, StorageError};
@@ -285,8 +285,11 @@ fn copy_table_page_content(pager: &mut Pager, src: u32, dst: u32) -> Result<()> 
     let src_data = pager.get_page(src)?.data.clone();
     let src_offset = btree_header_offset(src);
     let header = parse_btree_header(&src_data, src_offset)?;
-    let pointers =
-        read_cell_pointers(&src_data, src_offset + header.header_size(), header.cell_count);
+    let pointers = read_cell_pointers(
+        &src_data,
+        src_offset + header.header_size(),
+        header.cell_count,
+    );
 
     match header.page_type {
         PageType::LeafTable => {
@@ -839,8 +842,11 @@ fn copy_index_page_content(pager: &mut Pager, src: u32, dst: u32) -> Result<()> 
     let src_data = pager.get_page(src)?.data.clone();
     let src_offset = btree_header_offset(src);
     let header = parse_btree_header(&src_data, src_offset)?;
-    let pointers =
-        read_cell_pointers(&src_data, src_offset + header.header_size(), header.cell_count);
+    let pointers = read_cell_pointers(
+        &src_data,
+        src_offset + header.header_size(),
+        header.cell_count,
+    );
 
     match header.page_type {
         PageType::LeafIndex => {

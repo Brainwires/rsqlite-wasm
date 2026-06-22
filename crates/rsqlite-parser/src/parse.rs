@@ -12,11 +12,10 @@ pub fn parse_sql(sql: &str) -> Result<Vec<sqlparser::ast::Statement>, ParseError
     // projection + WHERE + LIMIT. Rewriting `?` → `?N` here pins each to its
     // textual position, matching SQLite's positional-parameter semantics.
     let numbered = number_placeholders(sql);
-    let preprocessed = preprocess_update_limit(&preprocess_bitwise_shifts(
-        &preprocess_bitwise_not(&preprocess_is_truth_family(&preprocess_fts5_match(
-            &preprocess_pragma(&numbered),
-        ))),
-    ));
+    let preprocessed =
+        preprocess_update_limit(&preprocess_bitwise_shifts(&preprocess_bitwise_not(
+            &preprocess_is_truth_family(&preprocess_fts5_match(&preprocess_pragma(&numbered))),
+        )));
     if is_vacuum(&preprocessed) {
         return Ok(vec![make_pragma_statement("__vacuum", None)]);
     }
@@ -62,10 +61,7 @@ fn number_placeholders(sql: &str) -> String {
                     out.push(d);
                     i += 1;
                     if d == quote {
-                        if (quote == '\'' || quote == '"')
-                            && i < chars.len()
-                            && chars[i] == quote
-                        {
+                        if (quote == '\'' || quote == '"') && i < chars.len() && chars[i] == quote {
                             out.push(quote);
                             i += 1;
                         } else {
@@ -150,10 +146,9 @@ fn parse_create_virtual_table(sql: &str) -> Option<sqlparser::ast::Statement> {
     };
 
     // Parse the table name (until whitespace).
-    let name_end = rest
-        .find(char::is_whitespace)
-        .unwrap_or(rest.len());
-    let name = rest[..name_end].trim_matches(|c: char| c == '"' || c == '`' || c == '[' || c == ']');
+    let name_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    let name =
+        rest[..name_end].trim_matches(|c: char| c == '"' || c == '`' || c == '[' || c == ']');
     if name.is_empty() {
         return None;
     }
@@ -164,7 +159,10 @@ fn parse_create_virtual_table(sql: &str) -> Option<sqlparser::ast::Statement> {
     if !upper_after.starts_with("USING") {
         return None;
     }
-    let after_using = after_name["USING".len()..].trim_start().trim_end_matches(';').trim();
+    let after_using = after_name["USING".len()..]
+        .trim_start()
+        .trim_end_matches(';')
+        .trim();
     // Module-arg parens are optional — modules with no args (e.g.
     // `kvstore`) write `USING kvstore` and we treat that as args="".
     let (module, raw_args) = match after_using.find('(') {
@@ -269,10 +267,11 @@ fn parse_create_trigger(sql: &str) -> Option<sqlparser::ast::Statement> {
     let table_name = tokens.get(pos)?.to_string();
     pos += 1;
 
-    if tokens.get(pos) == Some(&"FOR") {
-        if tokens.get(pos + 1) == Some(&"EACH") && tokens.get(pos + 2) == Some(&"ROW") {
-            pos += 3;
-        }
+    if tokens.get(pos) == Some(&"FOR")
+        && tokens.get(pos + 1) == Some(&"EACH")
+        && tokens.get(pos + 2) == Some(&"ROW")
+    {
+        pos += 3;
     }
 
     // Find BEGIN in the original (case-preserving) text
@@ -784,9 +783,13 @@ fn trailing_atom(out: &str) -> Option<(usize, String)> {
         if k > 0 {
             let prev = bytes[k - 1] as char;
             // Watch for `||` (concat) — both bytes are `|`.
-            let prev2 = if k >= 2 { Some(bytes[k - 2] as char) } else { None };
-            let prev_op_higher_prec = matches!(prev, '+' | '-' | '*' | '/' | '%')
-                || (prev == '|' && prev2 == Some('|'));
+            let prev2 = if k >= 2 {
+                Some(bytes[k - 2] as char)
+            } else {
+                None
+            };
+            let prev_op_higher_prec =
+                matches!(prev, '+' | '-' | '*' | '/' | '%') || (prev == '|' && prev2 == Some('|'));
             if prev_op_higher_prec {
                 return None;
             }
@@ -1093,10 +1096,7 @@ fn preprocess_update_limit(sql: &str) -> String {
         .next()
         .unwrap_or(table_section);
 
-    let assignments_end = where_pos
-        .or(order_pos)
-        .or(limit_pos)
-        .unwrap_or(sql.len());
+    let assignments_end = where_pos.or(order_pos).or(limit_pos).unwrap_or(sql.len());
     let assignments = sql[set_pos + "SET".len()..assignments_end].trim();
     if assignments.is_empty() {
         return sql.to_string();
@@ -1346,9 +1346,7 @@ fn preprocess_fts5_match(sql: &str) -> String {
                     let lit = &sql[lit_start..j];
                     let lhs_quoted = id.replace('\'', "''");
                     out.truncate(id_start);
-                    out.push_str(&format!(
-                        "__fts5_match_token('{lhs_quoted}', {lit})"
-                    ));
+                    out.push_str(&format!("__fts5_match_token('{lhs_quoted}', {lit})"));
                     i = j;
                     continue;
                 }
@@ -1639,9 +1637,8 @@ mod update_limit_tests {
 
     #[test]
     fn rewrite_where_and_limit() {
-        let out = preprocess_update_limit(
-            "UPDATE t SET status = 'updated' WHERE status = 'a' LIMIT 2",
-        );
+        let out =
+            preprocess_update_limit("UPDATE t SET status = 'updated' WHERE status = 'a' LIMIT 2");
         assert!(out.contains("WHERE status = 'a'"), "out={out}");
         assert!(out.contains("LIMIT 2"));
         assert!(out.contains("rowid IN ("));

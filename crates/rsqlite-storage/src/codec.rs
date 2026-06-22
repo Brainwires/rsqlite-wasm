@@ -122,15 +122,15 @@ fn serial_type_for(value: &Value) -> u64 {
                 8
             } else if n == 1 {
                 9
-            } else if n >= -128 && n <= 127 {
+            } else if (-128..=127).contains(&n) {
                 1
-            } else if n >= -32768 && n <= 32767 {
+            } else if (-32768..=32767).contains(&n) {
                 2
-            } else if n >= -8388608 && n <= 8388607 {
+            } else if (-8388608..=8388607).contains(&n) {
                 3
-            } else if n >= -2147483648 && n <= 2147483647 {
+            } else if (-2147483648..=2147483647).contains(&n) {
                 4
-            } else if n >= -140737488355328 && n <= 140737488355327 {
+            } else if (-140737488355328..=140737488355327).contains(&n) {
                 5
             } else {
                 6

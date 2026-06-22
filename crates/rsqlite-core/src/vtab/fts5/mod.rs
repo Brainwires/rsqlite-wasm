@@ -119,18 +119,15 @@ fn parse_args(args: &[String]) -> Result<(Vec<String>, Vec<f32>)> {
                 .strip_prefix('(')
                 .and_then(|s| s.strip_suffix(')'))
                 .ok_or_else(|| {
-                    Error::Other(
-                        "fts5: weights expects `weights=(w1, w2, ...)` syntax".into(),
-                    )
+                    Error::Other("fts5: weights expects `weights=(w1, w2, ...)` syntax".into())
                 })?;
             let parsed = inside
                 .split(',')
                 .map(|s| s.trim())
                 .filter(|s| !s.is_empty())
                 .map(|s| {
-                    s.parse::<f32>().map_err(|e| {
-                        Error::Other(format!("fts5: bad weight {s:?}: {e}"))
-                    })
+                    s.parse::<f32>()
+                        .map_err(|e| Error::Other(format!("fts5: bad weight {s:?}: {e}")))
                 })
                 .collect::<Result<Vec<f32>>>()?;
             weights = Some(parsed);
@@ -212,9 +209,7 @@ impl Fts5Table {
             Err(_) => return false,
         };
         match column_name {
-            Some(col) if !s.columns.iter().any(|c| c.name.eq_ignore_ascii_case(col)) => {
-                false
-            }
+            Some(col) if !s.columns.iter().any(|c| c.name.eq_ignore_ascii_case(col)) => false,
             Some(col) => {
                 let i = s
                     .columns
@@ -224,10 +219,11 @@ impl Fts5Table {
                 let hits = query::eval(&parsed, &s.columns[i].index);
                 hits.iter().any(|(r, _)| *r == rowid)
             }
-            None => s
-                .columns
-                .iter()
-                .any(|c| query::eval(&parsed, &c.index).iter().any(|(r, _)| *r == rowid)),
+            None => s.columns.iter().any(|c| {
+                query::eval(&parsed, &c.index)
+                    .iter()
+                    .any(|(r, _)| *r == rowid)
+            }),
         }
     }
 
@@ -347,10 +343,7 @@ impl VirtualTable for Fts5Table {
         // Record the row + indices.
         self.ensure_rows_capacity(rowid);
         let mut s = self.inner.borrow_mut();
-        let stored: Vec<Value> = text_values
-            .iter()
-            .map(|t| Value::Text(t.clone()))
-            .collect();
+        let stored: Vec<Value> = text_values.iter().map(|t| Value::Text(t.clone())).collect();
         let slot_idx = (rowid as usize).saturating_sub(1);
         if slot_idx >= s.rows.len() {
             s.rows.resize(slot_idx + 1, None);
@@ -453,7 +446,10 @@ impl VirtualTable for Fts5Table {
     }
 
     fn restore(&self, snapshot: &[u8]) -> Result<()> {
-        let mut r = SnapReader { buf: snapshot, pos: 0 };
+        let mut r = SnapReader {
+            buf: snapshot,
+            pos: 0,
+        };
         let magic = r.take(8)?;
         if magic != *b"FTS5SNAP" {
             return Err(Error::Other("fts5: snapshot magic mismatch".into()));
@@ -611,27 +607,20 @@ mod tests {
     #[test]
     fn create_accepts_multi_column() {
         let m = Fts5Module;
-        let t = m
-            .create("docs", &["title".into(), "body".into()])
-            .unwrap();
+        let t = m.create("docs", &["title".into(), "body".into()]).unwrap();
         assert_eq!(t.columns(), vec!["title", "body"]);
     }
 
     #[test]
     fn parse_args_weights() {
-        let (cols, w) =
-            parse_args(&["a".into(), "b".into(), "weights=(2.0, 1.5)".into()]).unwrap();
+        let (cols, w) = parse_args(&["a".into(), "b".into(), "weights=(2.0, 1.5)".into()]).unwrap();
         assert_eq!(cols, vec!["a".to_string(), "b".to_string()]);
         assert_eq!(w, vec![2.0_f32, 1.5]);
     }
 
     #[test]
     fn weights_count_must_match_columns() {
-        let r = parse_args(&[
-            "a".into(),
-            "b".into(),
-            "weights=(1.0)".into(),
-        ]);
+        let r = parse_args(&["a".into(), "b".into(), "weights=(1.0)".into()]);
         assert!(r.is_err());
     }
 

@@ -286,12 +286,7 @@ impl RtreeState {
 
     /// Recursive insert. Returns `Some(new_sibling)` if `node_id` split
     /// into itself + a fresh sibling (whose id is returned).
-    fn insert_at(
-        &mut self,
-        node_id: NodeId,
-        rowid: i64,
-        bbox: &BoundingBox,
-    ) -> Option<NodeId> {
+    fn insert_at(&mut self, node_id: NodeId, rowid: i64, bbox: &BoundingBox) -> Option<NodeId> {
         let is_leaf = self.nodes[node_id].is_leaf();
         if is_leaf {
             // Append the entry; split if we exceed MAX_CHILDREN.
@@ -366,9 +361,7 @@ impl RtreeState {
                 Some(prev) => {
                     if leaf_parent {
                         // Order: overlap_delta, enlargement, area.
-                        if (candidate.2, candidate.1, candidate.3)
-                            < (prev.2, prev.1, prev.3)
-                        {
+                        if (candidate.2, candidate.1, candidate.3) < (prev.2, prev.1, prev.3) {
                             Some(candidate)
                         } else {
                             Some(prev)
@@ -817,11 +810,14 @@ impl VirtualTable for RtreeTable {
         let rowids = self.state.borrow().query_overlap(&query);
 
         // Re-AND any leftover conjuncts as the residual predicate.
-        let residual_expr = residual.into_iter().cloned().reduce(|a, b| PlanExpr::BinaryOp {
-            left: Box::new(a),
-            op: BinOp::And,
-            right: Box::new(b),
-        });
+        let residual_expr = residual
+            .into_iter()
+            .cloned()
+            .reduce(|a, b| PlanExpr::BinaryOp {
+                left: Box::new(a),
+                op: BinOp::And,
+                right: Box::new(b),
+            });
 
         Ok(Some(VtabFilterPlan {
             rowids,
@@ -959,14 +955,16 @@ mod tests {
             ])
             .unwrap();
         // min > max — rejected.
-        assert!(table
-            .insert(&[
-                Value::Real(2.0),
-                Value::Real(1.0),
-                Value::Real(0.0),
-                Value::Real(1.0),
-            ])
-            .is_err());
+        assert!(
+            table
+                .insert(&[
+                    Value::Real(2.0),
+                    Value::Real(1.0),
+                    Value::Real(0.0),
+                    Value::Real(1.0),
+                ])
+                .is_err()
+        );
     }
 
     #[test]
@@ -1000,7 +998,9 @@ mod tests {
     fn overlapping_1d_works_too() {
         let table = fresh_table(1);
         table.insert(&[Value::Real(0.0), Value::Real(5.0)]).unwrap();
-        table.insert(&[Value::Real(10.0), Value::Real(20.0)]).unwrap();
+        table
+            .insert(&[Value::Real(10.0), Value::Real(20.0)])
+            .unwrap();
         let hits = table.overlapping(&[3.0, 4.0]).unwrap();
         assert_eq!(hits, vec![1]);
     }
@@ -1045,7 +1045,9 @@ mod tests {
     fn lcg(seed: u64) -> impl FnMut() -> u64 {
         let mut state = seed;
         move || {
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             state
         }
     }

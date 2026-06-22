@@ -1,3 +1,12 @@
+// Pre-existing stylistic lints in long-lived engine code; kept readable as-is.
+#![allow(
+    clippy::if_same_then_else,
+    clippy::collapsible_if,
+    clippy::too_many_arguments,
+    clippy::manual_strip,
+    clippy::needless_range_loop
+)]
+
 //! # rsqlite-core
 //!
 //! Core engine: catalog, query planner, executor, and the public
