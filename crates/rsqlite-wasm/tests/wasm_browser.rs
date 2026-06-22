@@ -40,7 +40,8 @@ async fn open_with_idb_creates_then_reopens() {
 
     {
         let mut db = WasmDatabase::open_with_idb(&name, None).await.unwrap();
-        db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)").unwrap();
+        db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+            .unwrap();
         db.exec("INSERT INTO t VALUES (1, 'persisted')").unwrap();
         db.flush().unwrap();
     }
@@ -90,7 +91,8 @@ async fn idb_data_survives_flush_and_reopen() {
     let name = unique_db_name("idb_flush");
     {
         let mut db = WasmDatabase::open_with_idb(&name, None).await.unwrap();
-        db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)").unwrap();
+        db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+            .unwrap();
         for i in 0..50 {
             let sql = format!("INSERT INTO t VALUES ({i}, 'row{i}')");
             db.exec(&sql).unwrap();

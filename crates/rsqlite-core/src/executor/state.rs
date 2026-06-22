@@ -6,13 +6,13 @@ use rsqlite_storage::codec::Value;
 use crate::types::QueryResult;
 
 thread_local! {
-    static BOUND_PARAMS: RefCell<Vec<Value>> = RefCell::new(Vec::new());
-    static LAST_INSERT_ROWID: RefCell<i64> = RefCell::new(0);
-    static LAST_CHANGES: RefCell<i64> = RefCell::new(0);
-    static TOTAL_CHANGES_COUNT: RefCell<i64> = RefCell::new(0);
-    static FOREIGN_KEYS_ENABLED: RefCell<bool> = RefCell::new(false);
+    static BOUND_PARAMS: RefCell<Vec<Value>> = const { RefCell::new(Vec::new()) };
+    static LAST_INSERT_ROWID: RefCell<i64> = const { RefCell::new(0) };
+    static LAST_CHANGES: RefCell<i64> = const { RefCell::new(0) };
+    static TOTAL_CHANGES_COUNT: RefCell<i64> = const { RefCell::new(0) };
+    static FOREIGN_KEYS_ENABLED: RefCell<bool> = const { RefCell::new(false) };
     static RECURSIVE_CTE_WORKING: RefCell<HashMap<String, QueryResult>> = RefCell::new(HashMap::new());
-    static TRIGGER_DEPTH: RefCell<u32> = RefCell::new(0);
+    static TRIGGER_DEPTH: RefCell<u32> = const { RefCell::new(0) };
 }
 
 pub fn set_params(params: Vec<Value>) {

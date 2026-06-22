@@ -1,8 +1,8 @@
-/// SQLite variable-length integer encoding.
-///
-/// Bytes 0..7: high bit is continuation flag, low 7 bits are data.
-/// Byte 8 (if reached): all 8 bits are data.
-/// Encodes values 0..2^64-1 in 1..9 bytes.
+//! SQLite variable-length integer encoding.
+//!
+//! Bytes 0..7: high bit is continuation flag, low 7 bits are data.
+//! Byte 8 (if reached): all 8 bits are data.
+//! Encodes values 0..2^64-1 in 1..9 bytes.
 
 /// Decode a varint from `data`. Returns `(value, bytes_consumed)`.
 /// Panics if `data` is empty.
@@ -45,10 +45,9 @@ pub fn write_varint(value: u64, buf: &mut [u8]) -> usize {
     if len == 9 {
         // 9-byte encoding: first 8 bytes carry 7 bits each (56 bits), 9th byte carries 8 bits.
         let hi = value >> 8;
-        for i in 0..8 {
+        for (i, slot) in buf.iter_mut().take(8).enumerate() {
             let shift = 7 * (7 - i);
-            let byte = ((hi >> shift) & 0x7F) as u8;
-            buf[i] = byte | 0x80;
+            *slot = (((hi >> shift) & 0x7F) as u8) | 0x80;
         }
         buf[8] = value as u8;
     } else {
@@ -69,13 +68,13 @@ pub fn write_varint(value: u64, buf: &mut [u8]) -> usize {
 pub fn varint_len(value: u64) -> usize {
     match value {
         0..=0x7F => 1,
-        0..=0x3FFF => 2,
-        0..=0x1F_FFFF => 3,
-        0..=0x0FFF_FFFF => 4,
-        0..=0x07_FFFF_FFFF => 5,
-        0..=0x03FF_FFFF_FFFF => 6,
-        0..=0x01_FFFF_FFFF_FFFF => 7,
-        0..=0x00FF_FFFF_FFFF_FFFF => 8,
+        0x80..=0x3FFF => 2,
+        0x4000..=0x1F_FFFF => 3,
+        0x20_0000..=0x0FFF_FFFF => 4,
+        0x1000_0000..=0x07_FFFF_FFFF => 5,
+        0x08_0000_0000..=0x03FF_FFFF_FFFF => 6,
+        0x0400_0000_0000..=0x01_FFFF_FFFF_FFFF => 7,
+        0x0002_0000_0000_0000..=0x00FF_FFFF_FFFF_FFFF => 8,
         _ => 9,
     }
 }

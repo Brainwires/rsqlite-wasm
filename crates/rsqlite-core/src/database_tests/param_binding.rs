@@ -23,7 +23,11 @@ fn params_span_projection_where_and_limit() {
     let r = db
         .query_with_params(
             "SELECT ? AS tag, id, v FROM t WHERE v = ? ORDER BY id LIMIT ?",
-            vec![Value::Text("X".into()), Value::Integer(20), Value::Integer(5)],
+            vec![
+                Value::Text("X".into()),
+                Value::Integer(20),
+                Value::Integer(5),
+            ],
         )
         .unwrap();
     assert_eq!(r.rows.len(), 1);
@@ -72,10 +76,7 @@ fn question_mark_inside_string_literal_is_not_a_param() {
 fn explicit_numbered_placeholder_still_works() {
     let mut db = db_with_rows();
     let r = db
-        .query_with_params(
-            "SELECT v FROM t WHERE id = ?1",
-            vec![Value::Integer(2)],
-        )
+        .query_with_params("SELECT v FROM t WHERE id = ?1", vec![Value::Integer(2)])
         .unwrap();
     assert_eq!(r.rows.len(), 1);
     assert_eq!(r.rows[0].values[0], Value::Integer(20));

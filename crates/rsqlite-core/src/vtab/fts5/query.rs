@@ -266,18 +266,12 @@ impl<'a> Parser<'a> {
             self.pos += 1;
         }
         if self.pos == start {
-            return Err(format!(
-                "fts5 query: expected word at offset {}",
-                start
-            ));
+            return Err(format!("fts5 query: expected word at offset {}", start));
         }
         let raw = &self.src[start..self.pos];
         let cleaned = clean_token(raw);
         if cleaned.is_empty() {
-            return Err(format!(
-                "fts5 query: empty word at offset {}",
-                start
-            ));
+            return Err(format!("fts5 query: empty word at offset {}", start));
         }
         Ok(cleaned)
     }
@@ -289,10 +283,7 @@ impl<'a> Parser<'a> {
             self.pos += 1;
         }
         if self.pos == start {
-            return Err(format!(
-                "fts5 query: expected number at offset {}",
-                start
-            ));
+            return Err(format!("fts5 query: expected number at offset {}", start));
         }
         self.src[start..self.pos]
             .parse::<u32>()
@@ -384,8 +375,11 @@ fn eval_inner(expr: &QueryExpr, idx: &InvertedIndex) -> BTreeMap<RowId, Vec<u32>
             let first = eval_inner(iter.next().unwrap(), idx);
             iter.fold(first, |acc, p| {
                 let next = eval_inner(p, idx);
-                let common: BTreeSet<RowId> =
-                    acc.keys().filter(|k| next.contains_key(*k)).copied().collect();
+                let common: BTreeSet<RowId> = acc
+                    .keys()
+                    .filter(|k| next.contains_key(*k))
+                    .copied()
+                    .collect();
                 let mut merged = BTreeMap::new();
                 for r in common {
                     let mut positions = acc.get(&r).cloned().unwrap_or_default();
@@ -415,16 +409,13 @@ fn phrase_match(words: &[String], idx: &InvertedIndex) -> BTreeMap<RowId, Vec<u3
         return out;
     }
     // Per-doc per-word positions.
-    let lists: Vec<Vec<(RowId, &PostingList)>> =
-        words.iter().map(|w| idx.postings(w)).collect();
+    let lists: Vec<Vec<(RowId, &PostingList)>> = words.iter().map(|w| idx.postings(w)).collect();
     if lists.iter().any(|l| l.is_empty()) {
         return out;
     }
     // Index each word's postings by rowid for quick lookup.
-    let by_doc: Vec<BTreeMap<RowId, &PostingList>> = lists
-        .into_iter()
-        .map(|v| v.into_iter().collect())
-        .collect();
+    let by_doc: Vec<BTreeMap<RowId, &PostingList>> =
+        lists.into_iter().map(|v| v.into_iter().collect()).collect();
     let candidate_rowids: Vec<RowId> = by_doc[0].keys().copied().collect();
     for rid in candidate_rowids {
         let mut all_have = true;
@@ -445,7 +436,7 @@ fn phrase_match(words: &[String], idx: &InvertedIndex) -> BTreeMap<RowId, Vec<u3
             for (i, m) in by_doc.iter().enumerate().skip(1) {
                 let target = p + i as u32;
                 let pl = &m[&rid];
-                if !pl.positions.binary_search(&target).is_ok() {
+                if pl.positions.binary_search(&target).is_err() {
                     ok = false;
                     break;
                 }
@@ -463,24 +454,17 @@ fn phrase_match(words: &[String], idx: &InvertedIndex) -> BTreeMap<RowId, Vec<u3
     out
 }
 
-fn near_match(
-    words: &[String],
-    distance: u32,
-    idx: &InvertedIndex,
-) -> BTreeMap<RowId, Vec<u32>> {
+fn near_match(words: &[String], distance: u32, idx: &InvertedIndex) -> BTreeMap<RowId, Vec<u32>> {
     let mut out = BTreeMap::new();
     if words.len() < 2 {
         return out;
     }
-    let lists: Vec<Vec<(RowId, &PostingList)>> =
-        words.iter().map(|w| idx.postings(w)).collect();
+    let lists: Vec<Vec<(RowId, &PostingList)>> = words.iter().map(|w| idx.postings(w)).collect();
     if lists.iter().any(|l| l.is_empty()) {
         return out;
     }
-    let by_doc: Vec<BTreeMap<RowId, &PostingList>> = lists
-        .into_iter()
-        .map(|v| v.into_iter().collect())
-        .collect();
+    let by_doc: Vec<BTreeMap<RowId, &PostingList>> =
+        lists.into_iter().map(|v| v.into_iter().collect()).collect();
     // Iterate rowids that appear in *every* word's postings.
     let candidates: Vec<RowId> = by_doc[0].keys().copied().collect();
     for rid in candidates {
@@ -601,10 +585,7 @@ mod tests {
     #[test]
     fn parse_near() {
         let q = parse("NEAR(quick fox, 3)").unwrap().unwrap();
-        assert_eq!(
-            q,
-            QueryExpr::Near(vec!["quick".into(), "fox".into()], 3)
-        );
+        assert_eq!(q, QueryExpr::Near(vec!["quick".into(), "fox".into()], 3));
     }
 
     #[test]

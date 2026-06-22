@@ -137,7 +137,12 @@ pub(crate) fn parse_table_leaf_cell(
     let payload = data[payload_start..payload_start + local_size].to_vec();
     let overflow_page = if local_size < payload_size {
         let p = payload_start + local_size;
-        Some(u32::from_be_bytes([data[p], data[p + 1], data[p + 2], data[p + 3]]))
+        Some(u32::from_be_bytes([
+            data[p],
+            data[p + 1],
+            data[p + 2],
+            data[p + 3],
+        ]))
     } else {
         None
     };
@@ -337,8 +342,12 @@ impl<'a> BTreeCursor<'a> {
         let cell_offset = pointers[cell_idx] as usize;
         let cell = parse_table_leaf_cell(&page, cell_offset, usable)?;
 
-        let full =
-            reassemble_payload(self.pager, &cell.payload, cell.payload_size, cell.overflow_page)?;
+        let full = reassemble_payload(
+            self.pager,
+            &cell.payload,
+            cell.payload_size,
+            cell.overflow_page,
+        )?;
         let record = Record::decode(&full)?;
         Ok(CursorRow {
             rowid: cell.rowid,
@@ -558,7 +567,12 @@ pub(crate) fn parse_index_leaf_cell(
     let payload = data[payload_start..payload_start + local_size].to_vec();
     let overflow_page = if local_size < payload_size {
         let p = payload_start + local_size;
-        Some(u32::from_be_bytes([data[p], data[p + 1], data[p + 2], data[p + 3]]))
+        Some(u32::from_be_bytes([
+            data[p],
+            data[p + 1],
+            data[p + 2],
+            data[p + 3],
+        ]))
     } else {
         None
     };
@@ -589,7 +603,12 @@ pub(crate) fn parse_index_interior_cell(
     let payload = data[payload_start..payload_start + local_size].to_vec();
     let overflow_page = if local_size < payload_size {
         let p = payload_start + local_size;
-        Some(u32::from_be_bytes([data[p], data[p + 1], data[p + 2], data[p + 3]]))
+        Some(u32::from_be_bytes([
+            data[p],
+            data[p + 1],
+            data[p + 2],
+            data[p + 3],
+        ]))
     } else {
         None
     };
@@ -617,11 +636,7 @@ pub(crate) fn compare_records(a: &Record, b: &Record) -> std::cmp::Ordering {
 /// stored record but the trailing payload columns differ. Length is not
 /// considered — a record with fewer than `prefix_len` values is treated as
 /// short and compares less for missing positions.
-pub fn compare_records_by_prefix(
-    a: &Record,
-    b: &Record,
-    prefix_len: usize,
-) -> std::cmp::Ordering {
+pub fn compare_records_by_prefix(a: &Record, b: &Record, prefix_len: usize) -> std::cmp::Ordering {
     for i in 0..prefix_len {
         match (a.values.get(i), b.values.get(i)) {
             (Some(av), Some(bv)) => {
@@ -753,8 +768,12 @@ impl<'a> IndexCursor<'a> {
         let pointers = read_cell_pointers(&page, offset + header.header_size(), header.cell_count);
         let cell_offset = pointers[cell_idx] as usize;
         let cell = parse_index_leaf_cell(&page, cell_offset, usable)?;
-        let full =
-            reassemble_payload(self.pager, &cell.payload, cell.payload_size, cell.overflow_page)?;
+        let full = reassemble_payload(
+            self.pager,
+            &cell.payload,
+            cell.payload_size,
+            cell.overflow_page,
+        )?;
         Record::decode(&full)
     }
 

@@ -62,7 +62,7 @@ impl DateTime {
         let yoe = (y - era * 400) as u64;
         let doy = (153 * m as u64 + 2) / 5 + self.day as u64 - 1;
         let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-        let days = era as i64 * 146097 + doe as i64 - 719468;
+        let days = era * 146097 + doe as i64 - 719468;
         (days * 86400 + self.hour as i64 * 3600 + self.minute as i64 * 60 + self.second as i64)
             as f64
     }
@@ -197,7 +197,7 @@ fn parse_iso_datetime(s: &str) -> Option<DateTime> {
         let year = s[0..4].parse::<i32>().ok()?;
         let month = s[5..7].parse::<u32>().ok()?;
         let day = s[8..10].parse::<u32>().ok()?;
-        if month >= 1 && month <= 12 && day >= 1 && day <= 31 {
+        if (1..=12).contains(&month) && (1..=31).contains(&day) {
             return Some(DateTime {
                 year,
                 month,
@@ -218,10 +218,8 @@ fn parse_iso_datetime(s: &str) -> Option<DateTime> {
             let hour = s[11..13].parse::<u32>().ok()?;
             let minute = s[14..16].parse::<u32>().ok()?;
             let second = s[17..19].parse::<u32>().ok()?;
-            if month >= 1
-                && month <= 12
-                && day >= 1
-                && day <= 31
+            if (1..=12).contains(&month)
+                && (1..=31).contains(&day)
                 && hour <= 23
                 && minute <= 59
                 && second <= 59

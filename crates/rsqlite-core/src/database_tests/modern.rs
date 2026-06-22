@@ -1925,7 +1925,8 @@ fn generated_column_virtual_filterable_in_where() {
         "CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, c INTEGER GENERATED ALWAYS AS (a * 2) VIRTUAL)",
     )
     .unwrap();
-    db.execute("INSERT INTO t (a) VALUES (1), (2), (3), (4)").unwrap();
+    db.execute("INSERT INTO t (a) VALUES (1), (2), (3), (4)")
+        .unwrap();
     let r = db.query("SELECT id FROM t WHERE c = 6").unwrap();
     assert_eq!(r.rows.len(), 1);
     assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(3));
@@ -2072,7 +2073,8 @@ fn schema_root_page_splits_when_many_tables_created() {
             // The CREATE TABLE statement's stored SQL takes ~30-40 bytes
             // per row in sqlite_schema; 1500 rows * ~35 bytes = 52 KB,
             // well past page 1's leaf capacity.
-            db.execute(&format!("CREATE TABLE t_{i} (id INTEGER)")).unwrap();
+            db.execute(&format!("CREATE TABLE t_{i} (id INTEGER)"))
+                .unwrap();
         }
     }
     {
@@ -2081,9 +2083,14 @@ fn schema_root_page_splits_when_many_tables_created() {
         // multi-page sqlite_schema btree. Spot-check tables at the
         // beginning, middle, and end of the inserted range.
         for i in [0usize, n / 2, n - 1] {
-            db.execute(&format!("INSERT INTO t_{i} VALUES ({i})")).unwrap();
+            db.execute(&format!("INSERT INTO t_{i} VALUES ({i})"))
+                .unwrap();
             let r = db.query(&format!("SELECT id FROM t_{i}")).unwrap();
-            assert_eq!(r.rows.len(), 1, "table t_{i} should be reachable after reopen");
+            assert_eq!(
+                r.rows.len(),
+                1,
+                "table t_{i} should be reachable after reopen"
+            );
             assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(i as i64));
         }
     }

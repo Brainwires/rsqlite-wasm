@@ -79,9 +79,7 @@ pub fn bm25_score(
 /// each rowid's max-weighted score across columns rather than a sum,
 /// matching SQLite's `bm25(weight1, weight2, ...)` accumulator.
 #[allow(dead_code)]
-pub fn bm25_combine(
-    per_col: Vec<(f32, Vec<(RowId, f64)>)>,
-) -> Vec<(RowId, f64)> {
+pub fn bm25_combine(per_col: Vec<(f32, Vec<(RowId, f64)>)>) -> Vec<(RowId, f64)> {
     let mut acc: HashMap<RowId, f64> = HashMap::new();
     for (weight, scores) in per_col {
         let w = weight as f64;

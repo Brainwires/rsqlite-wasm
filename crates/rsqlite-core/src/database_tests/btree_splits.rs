@@ -311,7 +311,10 @@ fn without_rowid_composite_bulk_insert_and_delete() {
 
     let del = db.execute("DELETE FROM wr WHERE a = 7").unwrap();
     assert_eq!(del.rows_affected, ROWS as u64);
-    assert_eq!(count(&mut db, "SELECT COUNT(*) FROM wr"), ROWS * ROWS - ROWS);
+    assert_eq!(
+        count(&mut db, "SELECT COUNT(*) FROM wr"),
+        ROWS * ROWS - ROWS
+    );
     assert_eq!(count(&mut db, "SELECT COUNT(*) FROM wr WHERE a = 7"), 0);
 }
 
@@ -338,7 +341,10 @@ fn overflow_text_blob_round_trip_widths() {
     for (i, &w) in widths.iter().enumerate() {
         let id = (i + 1) as i64;
         let r = db
-            .query_with_params("SELECT txt, blb FROM t WHERE id = ?", vec![Value::Integer(id)])
+            .query_with_params(
+                "SELECT txt, blb FROM t WHERE id = ?",
+                vec![Value::Integer(id)],
+            )
             .unwrap();
         assert_eq!(r.rows.len(), 1, "missing overflow row id {id}");
         match &r.rows[0].values[0] {
@@ -596,9 +602,13 @@ fn sqlite3_cross_check_rsqlite_reads_sqlite3_db() {
     let _ = std::fs::remove_file(path);
 
     // Build the DB with the sqlite3 CLI, then read it back through rsqlite.
-    let mut script = String::from("CREATE TABLE t (id INTEGER PRIMARY KEY, payload TEXT);\nBEGIN;\n");
+    let mut script =
+        String::from("CREATE TABLE t (id INTEGER PRIMARY KEY, payload TEXT);\nBEGIN;\n");
     for i in 1..=1200i64 {
-        script.push_str(&format!("INSERT INTO t VALUES ({i}, '{}');\n", "s".repeat(180)));
+        script.push_str(&format!(
+            "INSERT INTO t VALUES ({i}, '{}');\n",
+            "s".repeat(180)
+        ));
     }
     script.push_str("COMMIT;\n");
     // Feed the (large) script via stdin — passing it as a single CLI argument

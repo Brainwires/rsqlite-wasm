@@ -24,12 +24,7 @@ use crate::types::Row;
 
 use super::Fts5Table;
 
-pub fn eval_fts5_scalar(
-    name: &str,
-    args: &[Value],
-    row: &Row,
-    catalog: &Catalog,
-) -> Result<Value> {
+pub fn eval_fts5_scalar(name: &str, args: &[Value], row: &Row, catalog: &Catalog) -> Result<Value> {
     let upper = name.to_ascii_uppercase();
     match upper.as_str() {
         "__FTS5_MATCH_TOKEN" => match_token(args, row, catalog),
@@ -55,12 +50,12 @@ fn match_token(args: &[Value], row: &Row, catalog: &Catalog) -> Result<Value> {
         .rowid
         .ok_or_else(|| Error::Other("MATCH: row has no rowid".into()))?;
     let inst = vt.instance.as_ref();
-    let any = inst.as_any().ok_or_else(|| {
-        Error::Other("MATCH: virtual table doesn't expose Any".into())
-    })?;
-    let table = any.downcast_ref::<Fts5Table>().ok_or_else(|| {
-        Error::Other("MATCH: virtual table is not FTS5".into())
-    })?;
+    let any = inst
+        .as_any()
+        .ok_or_else(|| Error::Other("MATCH: virtual table doesn't expose Any".into()))?;
+    let table = any
+        .downcast_ref::<Fts5Table>()
+        .ok_or_else(|| Error::Other("MATCH: virtual table is not FTS5".into()))?;
     Ok(Value::Integer(
         if table.matches(col.as_deref(), &query, rowid) {
             1
@@ -87,11 +82,11 @@ fn rank_token(args: &[Value], row: &Row, catalog: &Catalog) -> Result<Value> {
         .rowid
         .ok_or_else(|| Error::Other("rank: row has no rowid".into()))?;
     let inst = vt.instance.as_ref();
-    let any = inst.as_any().ok_or_else(|| {
-        Error::Other("rank: virtual table doesn't expose Any".into())
-    })?;
-    let table = any.downcast_ref::<Fts5Table>().ok_or_else(|| {
-        Error::Other("rank: virtual table is not FTS5".into())
-    })?;
+    let any = inst
+        .as_any()
+        .ok_or_else(|| Error::Other("rank: virtual table doesn't expose Any".into()))?;
+    let table = any
+        .downcast_ref::<Fts5Table>()
+        .ok_or_else(|| Error::Other("rank: virtual table is not FTS5".into()))?;
     Ok(Value::Real(table.rank(col.as_deref(), &query, rowid)))
 }

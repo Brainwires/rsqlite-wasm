@@ -218,7 +218,10 @@ pub(super) fn execute_create_index(
                 }
             })
             .collect();
-        let row_obj = crate::types::Row { values: row_values.clone(), rowid: None };
+        let row_obj = crate::types::Row {
+            values: row_values.clone(),
+            rowid: None,
+        };
 
         // Partial index: only include rows where the predicate is truthy.
         if let Some(pred) = &predicate_plan {

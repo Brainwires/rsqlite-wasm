@@ -1,6 +1,6 @@
 use rsqlite_storage::btree::{
-    BTreeCursor, IndexCursor, btree_delete_many, btree_index_delete,
-    btree_index_delete_by_prefix, btree_index_delete_many,
+    BTreeCursor, IndexCursor, btree_delete_many, btree_index_delete, btree_index_delete_by_prefix,
+    btree_index_delete_many,
 };
 use rsqlite_storage::codec::{Record, Value};
 use rsqlite_storage::pager::Pager;
@@ -166,7 +166,14 @@ pub(super) fn execute_delete(
 
         for (i, (idx_root, idx_col_indices)) in table_indexes.iter().enumerate() {
             let _ = idx_root;
-            let old_key = build_index_key(&old_values, idx_col_indices, &plan.table_columns, pager, catalog, rowid)?;
+            let old_key = build_index_key(
+                &old_values,
+                idx_col_indices,
+                &plan.table_columns,
+                pager,
+                catalog,
+                rowid,
+            )?;
             index_keys_to_delete[i].push(old_key);
         }
         table_rowids_to_delete.push(rowid);

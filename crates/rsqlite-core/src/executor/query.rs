@@ -67,7 +67,10 @@ pub(super) fn execute_join(
         for (right_idx, right_row) in right_result.rows.iter().enumerate() {
             let mut combined_values = left_row.values.clone();
             combined_values.extend_from_slice(&right_row.values);
-            let combined_row = Row { values: combined_values, rowid: None };
+            let combined_row = Row {
+                values: combined_values,
+                rowid: None,
+            };
 
             let passes = match condition {
                 Some(cond) => {
@@ -93,7 +96,10 @@ pub(super) fn execute_join(
         if !left_matched && (join_type == JoinType::Left || join_type == JoinType::Full) {
             let mut combined_values = left_row.values.clone();
             combined_values.extend_from_slice(&null_right);
-            rows.push(Row { values: combined_values, rowid: None });
+            rows.push(Row {
+                values: combined_values,
+                rowid: None,
+            });
         }
     }
 
@@ -104,7 +110,10 @@ pub(super) fn execute_join(
             }
             let mut combined_values = null_left.clone();
             combined_values.extend_from_slice(&right_row.values);
-            rows.push(Row { values: combined_values, rowid: None });
+            rows.push(Row {
+                values: combined_values,
+                rowid: None,
+            });
         }
     }
 

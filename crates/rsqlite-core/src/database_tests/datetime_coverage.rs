@@ -27,7 +27,10 @@ const D: &str = "2024-03-15 10:30:45";
 fn strftime_day_of_year_j() {
     let mut db = db();
     // March 15: 31(Jan)+29(Feb leap)+15 = 75, zero-padded to 3 digits.
-    assert_eq!(text(&mut db, &format!("SELECT strftime('%j', '{D}')")), "075");
+    assert_eq!(
+        text(&mut db, &format!("SELECT strftime('%j', '{D}')")),
+        "075"
+    );
 }
 
 #[test]
@@ -41,7 +44,10 @@ fn strftime_weekday_w() {
 fn strftime_week_number_capital_w() {
     let mut db = db();
     // week = (doy + 6 - dow) / 7 = (75 + 6 - 5) / 7 = 10.
-    assert_eq!(text(&mut db, &format!("SELECT strftime('%W', '{D}')")), "10");
+    assert_eq!(
+        text(&mut db, &format!("SELECT strftime('%W', '{D}')")),
+        "10"
+    );
 }
 
 #[test]
@@ -91,12 +97,7 @@ fn julianday_with_value() {
 fn julianday_with_date_modifier() {
     let mut db = db();
     // Adding one day increases the Julian Day by exactly 1.0.
-    let base = match db
-        .query(&format!("SELECT julianday('{D}')"))
-        .unwrap()
-        .rows[0]
-        .values[0]
-    {
+    let base = match db.query(&format!("SELECT julianday('{D}')")).unwrap().rows[0].values[0] {
         Value::Real(f) => f,
         ref other => panic!("{other:?}"),
     };

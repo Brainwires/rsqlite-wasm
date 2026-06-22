@@ -249,7 +249,10 @@ pub fn execute(plan: &Plan, pager: &mut Pager, catalog: &Catalog) -> Result<Quer
             })
         }
         Plan::Scan {
-            table, root_page, columns, ..
+            table,
+            root_page,
+            columns,
+            ..
         } => {
             let mut result = execute_scan(table, *root_page, columns, pager, catalog)?;
             rehydrate_virtual_columns(&mut result, table, columns, pager, catalog)?;
@@ -516,12 +519,7 @@ fn execute_vec_index_nearest(
     let neighbors = table.nearest(&query, k)?;
     let rows: Vec<Row> = neighbors
         .into_iter()
-        .map(|(rid, _)| {
-            Row::with_rowid(
-                vec![crate::types::Value::Integer(rid)],
-                rid,
-            )
-        })
+        .map(|(rid, _)| Row::with_rowid(vec![crate::types::Value::Integer(rid)], rid))
         .collect();
     Ok(QueryResult {
         columns: vec!["rowid".to_string()],
@@ -637,9 +635,7 @@ fn execute_virtual_update(
             let idx = columns
                 .iter()
                 .position(|c| c.name.eq_ignore_ascii_case(col_name))
-                .ok_or_else(|| {
-                    Error::Other(format!("unknown column in UPDATE: {col_name}"))
-                })?;
+                .ok_or_else(|| Error::Other(format!("unknown column in UPDATE: {col_name}")))?;
             let new = eval::eval_expr(expr, &row, &column_names, pager, catalog)?;
             if idx < new_values.len() {
                 new_values[idx] = new;
@@ -719,9 +715,8 @@ fn execute_create_virtual_table(
         }
         return Err(Error::Other(format!("virtual table {name} already exists")));
     }
-    let module_def = crate::vtab::lookup_module(module).ok_or_else(|| {
-        Error::Other(format!("virtual-table module not registered: {module}"))
-    })?;
+    let module_def = crate::vtab::lookup_module(module)
+        .ok_or_else(|| Error::Other(format!("virtual-table module not registered: {module}")))?;
     let instance = module_def.create(name, args)?;
     catalog.virtual_tables.insert(
         key.clone(),
@@ -740,12 +735,8 @@ fn execute_create_virtual_table(
         if let Some(any) = instance.as_any() {
             if let Some(table) = any.downcast_ref::<crate::vtab::fts5::Fts5Table>() {
                 let create_sql = render_fts5_create_sql(name, args);
-                crate::vtab::fts5::persist::ensure_persistence(
-                    name, &create_sql, pager, catalog,
-                )?;
-                crate::vtab::fts5::persist::restore_if_present(
-                    table, name, pager, catalog,
-                )?;
+                crate::vtab::fts5::persist::ensure_persistence(name, &create_sql, pager, catalog)?;
+                crate::vtab::fts5::persist::restore_if_present(table, name, pager, catalog)?;
             }
         }
     }

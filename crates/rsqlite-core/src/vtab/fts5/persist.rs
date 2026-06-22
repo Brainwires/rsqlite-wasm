@@ -82,8 +82,7 @@ pub fn write_snapshot(
     let record = Record {
         values: vec![Value::Blob(blob)],
     };
-    btree_insert(pager, shadow.root_page, 1, &record)
-        .map_err(|e| Error::Other(e.to_string()))?;
+    btree_insert(pager, shadow.root_page, 1, &record).map_err(|e| Error::Other(e.to_string()))?;
     if !pager.in_transaction() {
         pager.flush().map_err(|e| Error::Other(e.to_string()))?;
     }

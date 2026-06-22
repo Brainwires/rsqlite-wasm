@@ -38,7 +38,9 @@ fn single_pk_duplicate_is_error() {
     let dup = db.execute("INSERT INTO t VALUES (1, 'b')");
     assert!(dup.is_err(), "duplicate PK should fail, got {dup:?}");
     assert!(
-        dup.unwrap_err().to_string().contains("UNIQUE constraint failed"),
+        dup.unwrap_err()
+            .to_string()
+            .contains("UNIQUE constraint failed"),
         "expected a UNIQUE constraint error"
     );
 }
@@ -48,8 +50,11 @@ fn single_pk_update_non_pk_column() {
     let mut db = db();
     db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT) WITHOUT ROWID")
         .unwrap();
-    db.execute("INSERT INTO t VALUES (1, 'a'), (2, 'b')").unwrap();
-    let upd = db.execute("UPDATE t SET v = 'updated' WHERE id = 1").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'a'), (2, 'b')")
+        .unwrap();
+    let upd = db
+        .execute("UPDATE t SET v = 'updated' WHERE id = 1")
+        .unwrap();
     assert_eq!(upd.rows_affected, 1);
     let r = db.query("SELECT v FROM t WHERE id = 1").unwrap();
     assert_eq!(r.rows[0].values[0], Value::Text("updated".to_string()));
@@ -63,7 +68,8 @@ fn single_pk_update_changing_pk_value() {
     let mut db = db();
     db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT) WITHOUT ROWID")
         .unwrap();
-    db.execute("INSERT INTO t VALUES (1, 'a'), (2, 'b')").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'a'), (2, 'b')")
+        .unwrap();
     // Move row id=1 to id=10.
     let upd = db.execute("UPDATE t SET id = 10 WHERE id = 1").unwrap();
     assert_eq!(upd.rows_affected, 1);
@@ -79,12 +85,18 @@ fn single_pk_update_to_existing_pk_conflicts() {
     let mut db = db();
     db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT) WITHOUT ROWID")
         .unwrap();
-    db.execute("INSERT INTO t VALUES (1, 'a'), (2, 'b')").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'a'), (2, 'b')")
+        .unwrap();
     // Changing id=1 -> 2 collides with the existing row 2.
     let res = db.execute("UPDATE t SET id = 2 WHERE id = 1");
-    assert!(res.is_err(), "PK collision on UPDATE should fail, got {res:?}");
     assert!(
-        res.unwrap_err().to_string().contains("UNIQUE constraint failed")
+        res.is_err(),
+        "PK collision on UPDATE should fail, got {res:?}"
+    );
+    assert!(
+        res.unwrap_err()
+            .to_string()
+            .contains("UNIQUE constraint failed")
     );
 }
 
@@ -147,7 +159,8 @@ fn composite_pk_duplicate_is_error() {
     let mut db = db();
     db.execute("CREATE TABLE t (a TEXT, b INT, v TEXT, PRIMARY KEY(a, b)) WITHOUT ROWID")
         .unwrap();
-    db.execute("INSERT INTO t VALUES ('x', 1, 'first')").unwrap();
+    db.execute("INSERT INTO t VALUES ('x', 1, 'first')")
+        .unwrap();
     // Same (a,b) but different v -> conflict.
     let dup = db.execute("INSERT INTO t VALUES ('x', 1, 'other')");
     assert!(dup.is_err(), "composite PK dup should fail, got {dup:?}");
@@ -168,9 +181,7 @@ fn composite_pk_update_non_pk_column() {
         .execute("UPDATE t SET v = 'new' WHERE a = 'x' AND b = 1")
         .unwrap();
     assert_eq!(upd.rows_affected, 1);
-    let r = db
-        .query("SELECT v FROM t WHERE a = 'x' AND b = 1")
-        .unwrap();
+    let r = db.query("SELECT v FROM t WHERE a = 'x' AND b = 1").unwrap();
     assert_eq!(r.rows[0].values[0], Value::Text("new".to_string()));
     let r = db.query("SELECT v FROM t WHERE a = 'y'").unwrap();
     assert_eq!(r.rows[0].values[0], Value::Text("keep".to_string()));
@@ -224,13 +235,17 @@ fn without_rowid_secondary_index_lookups() {
         .unwrap();
 
     // Index-backed lookup finds the matching row.
-    let r = db.query("SELECT count(*) FROM t WHERE name = 'Bob'").unwrap();
+    let r = db
+        .query("SELECT count(*) FROM t WHERE name = 'Bob'")
+        .unwrap();
     assert_eq!(r.rows[0].values[0], Value::Integer(1));
 
     // After UPDATE the index reflects the new value.
     db.execute("UPDATE t SET name = 'Bobby' WHERE id = 2")
         .unwrap();
-    let r = db.query("SELECT count(*) FROM t WHERE name = 'Bob'").unwrap();
+    let r = db
+        .query("SELECT count(*) FROM t WHERE name = 'Bob'")
+        .unwrap();
     assert_eq!(r.rows[0].values[0], Value::Integer(0));
     let r = db.query("SELECT name FROM t WHERE name = 'Bobby'").unwrap();
     assert_eq!(r.rows.len(), 1);
@@ -238,10 +253,14 @@ fn without_rowid_secondary_index_lookups() {
 
     // After DELETE the index no longer returns the row.
     db.execute("DELETE FROM t WHERE id = 1").unwrap();
-    let r = db.query("SELECT count(*) FROM t WHERE name = 'Alice'").unwrap();
+    let r = db
+        .query("SELECT count(*) FROM t WHERE name = 'Alice'")
+        .unwrap();
     assert_eq!(r.rows[0].values[0], Value::Integer(0));
     // Surviving rows still queryable by index.
-    let r = db.query("SELECT count(*) FROM t WHERE name = 'Carol'").unwrap();
+    let r = db
+        .query("SELECT count(*) FROM t WHERE name = 'Carol'")
+        .unwrap();
     assert_eq!(r.rows[0].values[0], Value::Integer(1));
 }
 
@@ -295,7 +314,8 @@ fn without_rowid_after_delete_trigger_fires() {
          BEGIN INSERT INTO log VALUES (OLD.id); END;",
     )
     .unwrap();
-    db.execute("INSERT INTO t VALUES (1, 'a'), (2, 'b')").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'a'), (2, 'b')")
+        .unwrap();
     db.execute("DELETE FROM t WHERE id = 1").unwrap();
     let r = db.query("SELECT deleted_id FROM log").unwrap();
     assert_eq!(r.rows.len(), 1);

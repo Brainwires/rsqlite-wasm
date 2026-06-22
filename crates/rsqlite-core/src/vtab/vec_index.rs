@@ -61,18 +61,6 @@ impl VecMetric {
             _ => None,
         }
     }
-
-    /// Lowercase suffix used by the matching `vec_distance_<metric>` SQL
-    /// scalar (`cosine`, `l2`, `dot`). The pushdown matcher uses this
-    /// to confirm the ORDER BY function pairs with the table's
-    /// declared metric.
-    fn fn_suffix(self) -> &'static str {
-        match self {
-            VecMetric::Cosine => "cosine",
-            VecMetric::L2 => "l2",
-            VecMetric::Dot => "dot",
-        }
-    }
 }
 
 pub(super) struct VecIndexModule;
@@ -131,8 +119,8 @@ impl Module for VecIndexModule {
                 }
             }
         }
-        let dim = dim
-            .ok_or_else(|| Error::Other("vec_index: missing required argument `dim=N`".into()))?;
+        let dim =
+            dim.ok_or_else(|| Error::Other("vec_index: missing required argument `dim=N`".into()))?;
         let m_max0 = m.saturating_mul(2);
         // Stable seed so test runs are deterministic; the graph
         // topology depends only on insert order, not wall-clock RNG
@@ -590,7 +578,6 @@ impl VirtualTable for VecIndexTable {
         index.insert(new_rowid, parsed, metric);
         Ok(new_rowid)
     }
-
 }
 
 fn f32_slice_to_blob(slice: &[f32]) -> Vec<u8> {
@@ -616,11 +603,8 @@ mod tests {
             VecMetric::L2 => "l2",
             VecMetric::Dot => "dot",
         };
-        m.create(
-            "e",
-            &[format!("dim={dim}"), format!("metric={metric_arg}")],
-        )
-        .unwrap()
+        m.create("e", &[format!("dim={dim}"), format!("metric={metric_arg}")])
+            .unwrap()
     }
 
     /// Pull a `&VecIndexTable` out of an `Rc<dyn VirtualTable>` we
@@ -655,8 +639,8 @@ mod tests {
     #[test]
     fn create_accepts_hnsw_tunables() {
         let m = VecIndexModule;
-        assert!(m
-            .create(
+        assert!(
+            m.create(
                 "e",
                 &[
                     "dim=4".into(),
@@ -665,7 +649,8 @@ mod tests {
                     "ef_construction=64".into(),
                 ],
             )
-            .is_ok());
+            .is_ok()
+        );
     }
 
     #[test]
@@ -673,7 +658,8 @@ mod tests {
         let m = VecIndexModule;
         let t = m.create("e", &["dim=3".into()]).unwrap();
         // Right shape — accepted.
-        t.insert(&[Value::Blob(vec_blob(&[1.0, 0.0, 0.0]))]).unwrap();
+        t.insert(&[Value::Blob(vec_blob(&[1.0, 0.0, 0.0]))])
+            .unwrap();
         // Wrong shape — rejected at write time.
         assert!(t.insert(&[Value::Blob(vec_blob(&[1.0, 0.0]))]).is_err());
     }
@@ -690,9 +676,15 @@ mod tests {
     fn nearest_hnsw_cosine_small() {
         let table = fresh_table(3, VecMetric::Cosine);
         // 3 unit vectors along axes.
-        table.insert(&[Value::Blob(vec_blob(&[1.0, 0.0, 0.0]))]).unwrap();
-        table.insert(&[Value::Blob(vec_blob(&[0.0, 1.0, 0.0]))]).unwrap();
-        table.insert(&[Value::Blob(vec_blob(&[0.0, 0.0, 1.0]))]).unwrap();
+        table
+            .insert(&[Value::Blob(vec_blob(&[1.0, 0.0, 0.0]))])
+            .unwrap();
+        table
+            .insert(&[Value::Blob(vec_blob(&[0.0, 1.0, 0.0]))])
+            .unwrap();
+        table
+            .insert(&[Value::Blob(vec_blob(&[0.0, 0.0, 1.0]))])
+            .unwrap();
 
         let res = as_vec_index(&table).nearest(&[0.9, 0.1, 0.0], 2).unwrap();
         assert_eq!(res.len(), 2);
@@ -750,9 +742,10 @@ mod tests {
     fn unknown_arg_is_an_error() {
         let m = VecIndexModule;
         assert!(m.create("e", &["dim=3".into(), "bogus=1".into()]).is_err());
-        assert!(m
-            .create("e", &["dim=3".into(), "metric=manhattan".into()])
-            .is_err());
+        assert!(
+            m.create("e", &["dim=3".into(), "metric=manhattan".into()])
+                .is_err()
+        );
     }
 
     #[test]
@@ -808,8 +801,7 @@ mod tests {
                 .collect();
             gt.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
             gt.truncate(K);
-            let gt_set: std::collections::HashSet<i64> =
-                gt.into_iter().map(|(r, _)| r).collect();
+            let gt_set: std::collections::HashSet<i64> = gt.into_iter().map(|(r, _)| r).collect();
 
             let approx = as_vec_index(&t).nearest(&q, K).unwrap();
             for (rid, _) in approx {
@@ -820,10 +812,7 @@ mod tests {
         }
 
         let recall = total_hits as f64 / (QN * K) as f64;
-        assert!(
-            recall >= 0.95,
-            "expected recall@10 ≥ 0.95, got {recall}"
-        );
+        assert!(recall >= 0.95, "expected recall@10 ≥ 0.95, got {recall}");
         eprintln!("hnsw recall@10 = {recall}");
     }
 }

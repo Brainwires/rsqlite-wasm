@@ -260,10 +260,8 @@ fn compute_aggregate(
                     continue;
                 }
                 let text = value_to_text(&val);
-                if distinct {
-                    if !seen.insert(text.clone()) {
-                        continue;
-                    }
+                if distinct && !seen.insert(text.clone()) {
+                    continue;
                 }
                 parts.push(text);
             }

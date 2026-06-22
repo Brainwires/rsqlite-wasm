@@ -26,10 +26,12 @@ fn fts5_delete_removes_from_match() {
     let mut db = db();
     db.execute("CREATE VIRTUAL TABLE docs USING fts5(content)")
         .unwrap();
-    db.execute("INSERT INTO docs VALUES ('alpha bravo')").unwrap();
+    db.execute("INSERT INTO docs VALUES ('alpha bravo')")
+        .unwrap();
     db.execute("INSERT INTO docs VALUES ('alpha charlie')")
         .unwrap();
-    db.execute("INSERT INTO docs VALUES ('delta echo')").unwrap();
+    db.execute("INSERT INTO docs VALUES ('delta echo')")
+        .unwrap();
 
     // Before delete: two docs contain "alpha".
     let before = db

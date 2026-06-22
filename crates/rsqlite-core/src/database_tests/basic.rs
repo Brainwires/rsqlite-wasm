@@ -1453,9 +1453,7 @@ fn count_from_double_quoted_identifier() {
         .unwrap();
     db.execute("INSERT INTO conversations VALUES (1), (2), (3)")
         .unwrap();
-    let r = db
-        .query(r#"SELECT COUNT(*) FROM "conversations""#)
-        .unwrap();
+    let r = db.query(r#"SELECT COUNT(*) FROM "conversations""#).unwrap();
     assert_eq!(r.rows[0].values[0], crate::types::Value::Integer(3));
 }
 
@@ -1499,5 +1497,9 @@ fn double_quoted_in_pragma_table_info() {
     db.execute("CREATE TABLE settings (key TEXT, value TEXT)")
         .unwrap();
     let r = db.query(r#"PRAGMA table_info("settings")"#).unwrap();
-    assert!(r.rows.len() >= 2, "expected ≥2 columns, got {}", r.rows.len());
+    assert!(
+        r.rows.len() >= 2,
+        "expected ≥2 columns, got {}",
+        r.rows.len()
+    );
 }

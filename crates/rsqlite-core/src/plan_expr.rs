@@ -6,7 +6,7 @@ use crate::catalog::Catalog;
 use crate::error::{Error, Result};
 
 thread_local! {
-    pub(super) static PARAM_AUTO_INDEX: RefCell<usize> = RefCell::new(0);
+    pub(super) static PARAM_AUTO_INDEX: RefCell<usize> = const { RefCell::new(0) };
     /// Named windows visible to the current SELECT being planned.
     /// Populated by plan_select_body via with_named_windows; consulted by
     /// plan_window_function when an OVER clause references a name.
@@ -570,15 +570,12 @@ fn plan_function_expr(
                     }
                 };
                 let sep = if list.args.len() > 1 {
-                    if let Some(ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(e))) =
-                        list.args.get(1)
+                    if let Some(ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(
+                        Expr::Value(v),
+                    ))) = list.args.get(1)
                     {
-                        if let Expr::Value(v) = e {
-                            if let ast::Value::SingleQuotedString(s) = &v.value {
-                                Some(s.clone())
-                            } else {
-                                None
-                            }
+                        if let ast::Value::SingleQuotedString(s) = &v.value {
+                            Some(s.clone())
                         } else {
                             None
                         }

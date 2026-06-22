@@ -115,7 +115,11 @@ fn fts5_data_survives_reopen() {
     let r = db
         .query("SELECT rowid FROM docs WHERE content MATCH 'quick' ORDER BY rowid")
         .unwrap();
-    assert_eq!(r.rows.len(), 1, "FTS5 index should be queryable after reopen");
+    assert_eq!(
+        r.rows.len(),
+        1,
+        "FTS5 index should be queryable after reopen"
+    );
     assert_eq!(r.rows[0].values[0], Value::Integer(1));
 
     let r2 = db
@@ -229,8 +233,10 @@ fn explain_window_function() {
 #[test]
 fn explain_intersect() {
     let mut db = mem_db();
-    db.execute("CREATE TABLE a (id INTEGER PRIMARY KEY)").unwrap();
-    db.execute("CREATE TABLE b (id INTEGER PRIMARY KEY)").unwrap();
+    db.execute("CREATE TABLE a (id INTEGER PRIMARY KEY)")
+        .unwrap();
+    db.execute("CREATE TABLE b (id INTEGER PRIMARY KEY)")
+        .unwrap();
 
     let r = db
         .query("EXPLAIN QUERY PLAN SELECT id FROM a INTERSECT SELECT id FROM b")
@@ -245,8 +251,10 @@ fn explain_intersect() {
 #[test]
 fn explain_except() {
     let mut db = mem_db();
-    db.execute("CREATE TABLE a (id INTEGER PRIMARY KEY)").unwrap();
-    db.execute("CREATE TABLE b (id INTEGER PRIMARY KEY)").unwrap();
+    db.execute("CREATE TABLE a (id INTEGER PRIMARY KEY)")
+        .unwrap();
+    db.execute("CREATE TABLE b (id INTEGER PRIMARY KEY)")
+        .unwrap();
 
     let r = db
         .query("EXPLAIN QUERY PLAN SELECT id FROM a EXCEPT SELECT id FROM b")
@@ -263,11 +271,10 @@ fn explain_virtual_table_scan() {
     let mut db = mem_db();
     db.execute("CREATE VIRTUAL TABLE docs USING fts5(content)")
         .unwrap();
-    db.execute("INSERT INTO docs VALUES ('alpha beta')").unwrap();
-
-    let r = db
-        .query("EXPLAIN QUERY PLAN SELECT * FROM docs")
+    db.execute("INSERT INTO docs VALUES ('alpha beta')")
         .unwrap();
+
+    let r = db.query("EXPLAIN QUERY PLAN SELECT * FROM docs").unwrap();
     let details = plan_details(&r);
     assert!(
         details.iter().any(|d| d.contains("VIRTUAL TABLE")),
@@ -278,8 +285,10 @@ fn explain_virtual_table_scan() {
 #[test]
 fn explain_union_compound() {
     let mut db = mem_db();
-    db.execute("CREATE TABLE a (id INTEGER PRIMARY KEY)").unwrap();
-    db.execute("CREATE TABLE b (id INTEGER PRIMARY KEY)").unwrap();
+    db.execute("CREATE TABLE a (id INTEGER PRIMARY KEY)")
+        .unwrap();
+    db.execute("CREATE TABLE b (id INTEGER PRIMARY KEY)")
+        .unwrap();
 
     let r = db
         .query("EXPLAIN QUERY PLAN SELECT id FROM a UNION SELECT id FROM b")

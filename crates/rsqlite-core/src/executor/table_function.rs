@@ -115,7 +115,8 @@ impl Emitter {
         let (sql_value, atom) = json_value_for_row(val);
         let path_str = parent_path(&self.base_path);
         let key_str = leaf_key(&self.base_path);
-        self.rows.push(Row { values: vec![
+        self.rows.push(Row {
+            values: vec![
                 key_str,
                 sql_value,
                 Value::Text(val.type_name().to_string()),
@@ -124,7 +125,9 @@ impl Emitter {
                 Value::Null,
                 Value::Text(self.base_path.clone()),
                 Value::Text(path_str),
-            ], rowid: None });
+            ],
+            rowid: None,
+        });
     }
 
     /// Walk the value, emitting one row per child encountered.
@@ -137,7 +140,8 @@ impl Emitter {
                     let id = self.fresh_id();
                     let (sql_value, atom) = json_value_for_row(v);
                     let fullkey = format!("{}.{}", self.base_path, k);
-                    self.rows.push(Row { values: vec![
+                    self.rows.push(Row {
+                        values: vec![
                             Value::Text(k.clone()),
                             sql_value,
                             Value::Text(v.type_name().to_string()),
@@ -146,7 +150,9 @@ impl Emitter {
                             parent_id.map(Value::Integer).unwrap_or(Value::Null),
                             Value::Text(fullkey.clone()),
                             Value::Text(self.base_path.clone()),
-                        ], rowid: None });
+                        ],
+                        rowid: None,
+                    });
                     // Recurse only into containers — scalars were already
                     // emitted as the child row above.
                     if !shallow && matches!(v, JsonValue::Object(_) | JsonValue::Array(_)) {
@@ -161,7 +167,8 @@ impl Emitter {
                     let id = self.fresh_id();
                     let (sql_value, atom) = json_value_for_row(v);
                     let fullkey = format!("{}[{}]", self.base_path, i);
-                    self.rows.push(Row { values: vec![
+                    self.rows.push(Row {
+                        values: vec![
                             Value::Integer(i as i64),
                             sql_value,
                             Value::Text(v.type_name().to_string()),
@@ -170,7 +177,9 @@ impl Emitter {
                             parent_id.map(Value::Integer).unwrap_or(Value::Null),
                             Value::Text(fullkey.clone()),
                             Value::Text(self.base_path.clone()),
-                        ], rowid: None });
+                        ],
+                        rowid: None,
+                    });
                     if !shallow && matches!(v, JsonValue::Object(_) | JsonValue::Array(_)) {
                         let saved = std::mem::replace(&mut self.base_path, fullkey);
                         self.walk(v, Some(id), false);
@@ -182,7 +191,8 @@ impl Emitter {
             _ => {
                 let id = self.fresh_id();
                 let (sql_value, atom) = json_value_for_row(val);
-                self.rows.push(Row { values: vec![
+                self.rows.push(Row {
+                    values: vec![
                         Value::Null,
                         sql_value,
                         Value::Text(val.type_name().to_string()),
@@ -191,7 +201,9 @@ impl Emitter {
                         parent_id.map(Value::Integer).unwrap_or(Value::Null),
                         Value::Text(self.base_path.clone()),
                         Value::Text(parent_path(&self.base_path)),
-                    ], rowid: None });
+                    ],
+                    rowid: None,
+                });
             }
         }
     }

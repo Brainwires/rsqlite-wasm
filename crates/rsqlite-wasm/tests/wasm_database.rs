@@ -10,6 +10,8 @@
 //! separately via `wasm-pack test --headless --chrome`.
 
 #![cfg(target_arch = "wasm32")]
+// Test fixtures use ~3.14159 as ordinary sample data, not the math constant.
+#![allow(clippy::approx_constant)]
 
 use js_sys::{Array, Reflect, Uint8Array};
 use rsqlite_wasm::WasmDatabase;
@@ -43,16 +45,21 @@ fn open_in_memory_constructs_a_db() {
 #[wasm_bindgen_test]
 fn exec_returns_affected_row_count() {
     let mut db = fresh();
-    db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)").unwrap();
-    let n = db.exec("INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')").unwrap();
+    db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+        .unwrap();
+    let n = db
+        .exec("INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')")
+        .unwrap();
     assert_eq!(n, 3);
 }
 
 #[wasm_bindgen_test]
 fn query_returns_array_of_objects() {
     let mut db = fresh();
-    db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
-    db.exec("INSERT INTO t VALUES (1, 'alpha'), (2, 'beta')").unwrap();
+    db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+        .unwrap();
+    db.exec("INSERT INTO t VALUES (1, 'alpha'), (2, 'beta')")
+        .unwrap();
 
     let rows = db.query("SELECT id, name FROM t ORDER BY id").unwrap();
     let arr: Array = rows.dyn_into().unwrap();
@@ -80,7 +87,8 @@ fn query_one_returns_object_or_null() {
 #[wasm_bindgen_test]
 fn exec_params_roundtrips_integer_text_real_blob_null() {
     let mut db = fresh();
-    db.exec("CREATE TABLE t (i INTEGER, r REAL, s TEXT, b BLOB, n INTEGER)").unwrap();
+    db.exec("CREATE TABLE t (i INTEGER, r REAL, s TEXT, b BLOB, n INTEGER)")
+        .unwrap();
 
     let params = Array::new();
     params.push(&JsValue::from_f64(7.0));
@@ -108,12 +116,16 @@ fn exec_params_roundtrips_integer_text_real_blob_null() {
 #[wasm_bindgen_test]
 fn query_params_filters_by_bound_value() {
     let mut db = fresh();
-    db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER)").unwrap();
-    db.exec("INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)").unwrap();
+    db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER)")
+        .unwrap();
+    db.exec("INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)")
+        .unwrap();
 
     let params = Array::new();
     params.push(&JsValue::from_f64(20.0));
-    let rows = db.query_params("SELECT id FROM t WHERE v >= ?", params.into()).unwrap();
+    let rows = db
+        .query_params("SELECT id FROM t WHERE v >= ?", params.into())
+        .unwrap();
     let arr: Array = rows.dyn_into().unwrap();
     assert_eq!(arr.length(), 2);
 }
@@ -161,11 +173,15 @@ fn exec_many_keeps_trigger_begin_end_intact() {
 #[wasm_bindgen_test]
 fn to_buffer_then_from_buffer_roundtrips_data() {
     let mut db = fresh();
-    db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)").unwrap();
+    db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+        .unwrap();
     db.exec("INSERT INTO t VALUES (1, 'persisted')").unwrap();
 
     let buf = db.to_buffer().unwrap();
-    assert!(buf.len() >= 4096, "expected at least one page in the buffer");
+    assert!(
+        buf.len() >= 4096,
+        "expected at least one page in the buffer"
+    );
 
     let mut reopened = WasmDatabase::from_buffer(&buf).unwrap();
     let row = reopened.query_one("SELECT v FROM t WHERE id = 1").unwrap();
@@ -229,9 +245,12 @@ fn integer_passes_through_when_fractional_is_zero() {
     db.exec("CREATE TABLE t (x INTEGER)").unwrap();
     let params = Array::new();
     params.push(&JsValue::from_f64(7.0));
-    db.exec_params("INSERT INTO t VALUES (?)", params.into()).unwrap();
+    db.exec_params("INSERT INTO t VALUES (?)", params.into())
+        .unwrap();
 
-    let row = db.query_one("SELECT typeof(x) AS t, x AS v FROM t").unwrap();
+    let row = db
+        .query_one("SELECT typeof(x) AS t, x AS v FROM t")
+        .unwrap();
     assert_eq!(col(&row, "t").as_string().unwrap(), "integer");
     assert_eq!(col(&row, "v").as_f64().unwrap() as i64, 7);
 }

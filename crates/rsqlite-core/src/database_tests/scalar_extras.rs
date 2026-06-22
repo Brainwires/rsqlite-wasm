@@ -144,7 +144,9 @@ fn likely_unlikely_pass_value_through() {
 #[test]
 fn sign_real_values() {
     let mut db = fresh();
-    let r = db.query("SELECT SIGN(3.14), SIGN(-2.5), SIGN(0.0)").unwrap();
+    let r = db
+        .query("SELECT SIGN(3.14), SIGN(-2.5), SIGN(0.0)")
+        .unwrap();
     assert_eq!(r.rows[0].values[0], Value::Integer(1));
     assert_eq!(r.rows[0].values[1], Value::Integer(-1));
     assert_eq!(r.rows[0].values[2], Value::Integer(0));
@@ -328,12 +330,15 @@ fn expression_index_builds_evaluated_values() {
     // Verify CREATE INDEX with an expression evaluates the expression
     // against existing rows (rather than emitting NULL placeholders).
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
-    db.execute("INSERT INTO t VALUES (1, 'Alice'), (2, 'BOB')").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+        .unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'Alice'), (2, 'BOB')")
+        .unwrap();
     // No assertion on EXPLAIN — just ensure CREATE INDEX succeeds without
     // silently producing junk. The query side still doesn't optimize for
     // expression indexes, so we do a regular SELECT to confirm row counts.
-    db.execute("CREATE INDEX idx_lower_name ON t(lower(name))").unwrap();
+    db.execute("CREATE INDEX idx_lower_name ON t(lower(name))")
+        .unwrap();
     let r = db.query("SELECT COUNT(*) FROM t").unwrap();
     assert_eq!(r.rows[0].values[0], Value::Integer(2));
 }
@@ -344,8 +349,10 @@ fn expression_index_maintained_on_insert() {
     // We can't observe the index entry directly, but we exercise the path
     // — any panic from an index-build helper would surface here.
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
-    db.execute("CREATE INDEX idx_lower_name ON t(lower(name))").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+        .unwrap();
+    db.execute("CREATE INDEX idx_lower_name ON t(lower(name))")
+        .unwrap();
     db.execute("INSERT INTO t VALUES (1, 'Carol')").unwrap();
     db.execute("INSERT INTO t VALUES (2, 'dave')").unwrap();
     let r = db.query("SELECT COUNT(*) FROM t").unwrap();
@@ -358,10 +365,14 @@ fn expression_index_maintained_on_update_and_delete() {
     // expression-evaluated new key. As above, we verify the path runs
     // without error.
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
-    db.execute("INSERT INTO t VALUES (1, 'Eve'), (2, 'Frank')").unwrap();
-    db.execute("CREATE INDEX idx_lower_name ON t(lower(name))").unwrap();
-    db.execute("UPDATE t SET name = 'EVELYN' WHERE id = 1").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+        .unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'Eve'), (2, 'Frank')")
+        .unwrap();
+    db.execute("CREATE INDEX idx_lower_name ON t(lower(name))")
+        .unwrap();
+    db.execute("UPDATE t SET name = 'EVELYN' WHERE id = 1")
+        .unwrap();
     db.execute("DELETE FROM t WHERE id = 2").unwrap();
     let r = db.query("SELECT name FROM t WHERE id = 1").unwrap();
     assert_eq!(r.rows[0].values[0], Value::Text("EVELYN".to_string()));
@@ -374,12 +385,12 @@ fn expression_index_maintained_on_update_and_delete() {
 #[test]
 fn expression_index_picked_for_matching_query() {
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
-    db.execute("CREATE INDEX idx_lower_name ON t(lower(name))").unwrap();
-    db.execute(
-        "INSERT INTO t VALUES (1, 'Alice'), (2, 'BOB'), (3, 'carol'), (4, 'DAVE')",
-    )
-    .unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+        .unwrap();
+    db.execute("CREATE INDEX idx_lower_name ON t(lower(name))")
+        .unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'Alice'), (2, 'BOB'), (3, 'carol'), (4, 'DAVE')")
+        .unwrap();
 
     let plan = db
         .query("EXPLAIN QUERY PLAN SELECT id FROM t WHERE lower(name) = 'bob'")
@@ -412,8 +423,10 @@ fn expression_index_returns_correct_rows_for_multiple_matches() {
     // The index is over `lower(name)`. Two rows share the same indexed
     // value. The Filter wrap must still let both come through.
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
-    db.execute("CREATE INDEX idx_lower_name ON t(lower(name))").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+        .unwrap();
+    db.execute("CREATE INDEX idx_lower_name ON t(lower(name))")
+        .unwrap();
     db.execute("INSERT INTO t VALUES (1, 'EVE'), (2, 'eve'), (3, 'frank')")
         .unwrap();
 
@@ -441,9 +454,7 @@ fn partial_index_used_when_query_implies_predicate() {
     .unwrap();
     // Query WHERE has the index's predicate as a top-level conjunct.
     let plan = db
-        .query(
-            "EXPLAIN QUERY PLAN SELECT id FROM t WHERE status = 'active' AND name = 'a'",
-        )
+        .query("EXPLAIN QUERY PLAN SELECT id FROM t WHERE status = 'active' AND name = 'a'")
         .unwrap();
     let plan_text = plan
         .rows
@@ -499,13 +510,12 @@ fn partial_index_skipped_when_query_does_not_imply() {
 #[test]
 fn update_with_limit_only() {
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT)")
+        .unwrap();
     db.execute("INSERT INTO t VALUES (1, 'old'), (2, 'old'), (3, 'old')")
         .unwrap();
     db.execute("UPDATE t SET status = 'new' LIMIT 2").unwrap();
-    let r = db
-        .query("SELECT id, status FROM t ORDER BY id")
-        .unwrap();
+    let r = db.query("SELECT id, status FROM t ORDER BY id").unwrap();
     let new_count = r
         .rows
         .iter()
@@ -517,14 +527,13 @@ fn update_with_limit_only() {
 #[test]
 fn update_with_where_and_limit() {
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT, n INTEGER)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, status TEXT, n INTEGER)")
+        .unwrap();
     db.execute("INSERT INTO t VALUES (1, 'a', 10), (2, 'a', 20), (3, 'a', 30), (4, 'b', 40)")
         .unwrap();
     db.execute("UPDATE t SET status = 'updated' WHERE status = 'a' LIMIT 2")
         .unwrap();
-    let r = db
-        .query("SELECT id, status FROM t ORDER BY id")
-        .unwrap();
+    let r = db.query("SELECT id, status FROM t ORDER BY id").unwrap();
     let updated_count = r
         .rows
         .iter()
@@ -538,7 +547,8 @@ fn update_with_where_and_limit() {
 #[test]
 fn update_with_order_by_and_limit_picks_correct_rows() {
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER, label TEXT)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER, label TEXT)")
+        .unwrap();
     db.execute(
         "INSERT INTO t VALUES (1, 30, 'orig'), (2, 10, 'orig'), (3, 20, 'orig'), (4, 40, 'orig')",
     )
@@ -546,12 +556,10 @@ fn update_with_order_by_and_limit_picks_correct_rows() {
     // Updates the 2 rows with LOWEST n: ids 2 (n=10) and 3 (n=20).
     db.execute("UPDATE t SET label = 'low' ORDER BY n ASC LIMIT 2")
         .unwrap();
-    let r = db
-        .query("SELECT id, label FROM t ORDER BY id")
-        .unwrap();
+    let r = db.query("SELECT id, label FROM t ORDER BY id").unwrap();
     assert_eq!(r.rows[0].values[1], Value::Text("orig".to_string())); // id=1
-    assert_eq!(r.rows[1].values[1], Value::Text("low".to_string()));  // id=2
-    assert_eq!(r.rows[2].values[1], Value::Text("low".to_string()));  // id=3
+    assert_eq!(r.rows[1].values[1], Value::Text("low".to_string())); // id=2
+    assert_eq!(r.rows[2].values[1], Value::Text("low".to_string())); // id=3
     assert_eq!(r.rows[3].values[1], Value::Text("orig".to_string())); // id=4
 }
 
@@ -560,11 +568,11 @@ fn select_rowid_with_order_by_non_projected_column() {
     // The Sort-before-Project planner change makes this work — `n` is
     // not in the SELECT list but the Sort can still reach it.
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)").unwrap();
-    db.execute("INSERT INTO t VALUES (1, 30), (2, 10), (3, 20)").unwrap();
-    let r = db
-        .query("SELECT id FROM t ORDER BY n ASC")
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)")
         .unwrap();
+    db.execute("INSERT INTO t VALUES (1, 30), (2, 10), (3, 20)")
+        .unwrap();
+    let r = db.query("SELECT id FROM t ORDER BY n ASC").unwrap();
     assert_eq!(r.rows.len(), 3);
     assert_eq!(r.rows[0].values[0], Value::Integer(2)); // n=10
     assert_eq!(r.rows[1].values[0], Value::Integer(3)); // n=20
@@ -576,12 +584,16 @@ fn update_with_limit_does_not_corrupt_string_literal() {
     // The literal `' LIMIT '` should NOT trigger the LIMIT preprocess
     // — the keyword finder has to respect string boundaries.
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT)")
+        .unwrap();
     db.execute("INSERT INTO t VALUES (1, 'foo')").unwrap();
     db.execute("UPDATE t SET label = 'has LIMIT in it' WHERE id = 1")
         .unwrap();
     let r = db.query("SELECT label FROM t WHERE id = 1").unwrap();
-    assert_eq!(r.rows[0].values[0], Value::Text("has LIMIT in it".to_string()));
+    assert_eq!(
+        r.rows[0].values[0],
+        Value::Text("has LIMIT in it".to_string())
+    );
 }
 
 // ── Bitwise shift syntax (`<<` / `>>`) via preprocess ────────────────
@@ -589,9 +601,13 @@ fn update_with_limit_does_not_corrupt_string_literal() {
 #[test]
 fn shift_left_with_identifier_and_literal() {
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)").unwrap();
-    db.execute("INSERT INTO t VALUES (1, 1), (2, 4), (3, 16)").unwrap();
-    let r = db.query("SELECT id, n << 2 AS shifted FROM t ORDER BY id").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)")
+        .unwrap();
+    db.execute("INSERT INTO t VALUES (1, 1), (2, 4), (3, 16)")
+        .unwrap();
+    let r = db
+        .query("SELECT id, n << 2 AS shifted FROM t ORDER BY id")
+        .unwrap();
     assert_eq!(r.rows[0].values[1], Value::Integer(4));
     assert_eq!(r.rows[1].values[1], Value::Integer(16));
     assert_eq!(r.rows[2].values[1], Value::Integer(64));
@@ -600,9 +616,12 @@ fn shift_left_with_identifier_and_literal() {
 #[test]
 fn shift_right_with_identifier_and_literal() {
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)")
+        .unwrap();
     db.execute("INSERT INTO t VALUES (1, 16), (2, 64)").unwrap();
-    let r = db.query("SELECT n >> 2 AS shifted FROM t ORDER BY id").unwrap();
+    let r = db
+        .query("SELECT n >> 2 AS shifted FROM t ORDER BY id")
+        .unwrap();
     assert_eq!(r.rows[0].values[0], Value::Integer(4));
     assert_eq!(r.rows[1].values[0], Value::Integer(16));
 }
@@ -626,7 +645,8 @@ fn shift_chain_left_to_right() {
 #[test]
 fn shift_does_not_corrupt_string_literal() {
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT)")
+        .unwrap();
     db.execute("INSERT INTO t VALUES (1, 'a << b')").unwrap();
     let r = db.query("SELECT label FROM t WHERE id = 1").unwrap();
     assert_eq!(r.rows[0].values[0], Value::Text("a << b".to_string()));
@@ -637,7 +657,8 @@ fn shift_does_not_corrupt_string_literal() {
 #[test]
 fn tilde_prefix_complements_identifier() {
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)")
+        .unwrap();
     db.execute("INSERT INTO t VALUES (1, 0), (2, 255)").unwrap();
     let r = db.query("SELECT id, ~n AS inv FROM t ORDER BY id").unwrap();
     assert_eq!(r.rows.len(), 2);
@@ -665,7 +686,8 @@ fn tilde_prefix_complements_numeric_literal() {
 #[test]
 fn tilde_prefix_in_where() {
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER)")
+        .unwrap();
     db.execute("INSERT INTO t VALUES (1, 0), (2, -1)").unwrap();
     // ~n = 0 means n = -1 (since ~-1 = 0).
     let r = db.query("SELECT id FROM t WHERE ~n = 0").unwrap();
@@ -676,10 +698,13 @@ fn tilde_prefix_in_where() {
 #[test]
 fn tilde_does_not_corrupt_string_literal() {
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT)")
+        .unwrap();
     db.execute("INSERT INTO t VALUES (1, '~tilde~'), (2, 'other')")
         .unwrap();
-    let r = db.query("SELECT id FROM t WHERE label = '~tilde~'").unwrap();
+    let r = db
+        .query("SELECT id FROM t WHERE label = '~tilde~'")
+        .unwrap();
     assert_eq!(r.rows.len(), 1);
     assert_eq!(r.rows[0].values[0], Value::Integer(1));
 }
@@ -689,10 +714,13 @@ fn tilde_does_not_corrupt_string_literal() {
 #[test]
 fn is_true_syntax_with_column_lhs() {
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, flag INTEGER)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, flag INTEGER)")
+        .unwrap();
     db.execute("INSERT INTO t VALUES (1, 1), (2, 0), (3, NULL)")
         .unwrap();
-    let r = db.query("SELECT id FROM t WHERE flag IS TRUE ORDER BY id").unwrap();
+    let r = db
+        .query("SELECT id FROM t WHERE flag IS TRUE ORDER BY id")
+        .unwrap();
     assert_eq!(r.rows.len(), 1);
     assert_eq!(r.rows[0].values[0], Value::Integer(1));
 }
@@ -700,10 +728,13 @@ fn is_true_syntax_with_column_lhs() {
 #[test]
 fn is_false_syntax_with_column_lhs() {
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, flag INTEGER)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, flag INTEGER)")
+        .unwrap();
     db.execute("INSERT INTO t VALUES (1, 1), (2, 0), (3, NULL)")
         .unwrap();
-    let r = db.query("SELECT id FROM t WHERE flag IS FALSE ORDER BY id").unwrap();
+    let r = db
+        .query("SELECT id FROM t WHERE flag IS FALSE ORDER BY id")
+        .unwrap();
     assert_eq!(r.rows.len(), 1);
     assert_eq!(r.rows[0].values[0], Value::Integer(2));
 }
@@ -711,7 +742,8 @@ fn is_false_syntax_with_column_lhs() {
 #[test]
 fn is_not_true_syntax_includes_null() {
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, flag INTEGER)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, flag INTEGER)")
+        .unwrap();
     db.execute("INSERT INTO t VALUES (1, 1), (2, 0), (3, NULL)")
         .unwrap();
     // IS NOT TRUE matches both falsy and NULL — i.e. ids 2 and 3.
@@ -726,7 +758,8 @@ fn is_not_true_syntax_includes_null() {
 #[test]
 fn is_not_false_syntax_includes_null() {
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, flag INTEGER)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, flag INTEGER)")
+        .unwrap();
     db.execute("INSERT INTO t VALUES (1, 1), (2, 0), (3, NULL)")
         .unwrap();
     let r = db
@@ -740,7 +773,8 @@ fn is_not_false_syntax_includes_null() {
 #[test]
 fn is_true_syntax_with_parenthesized_lhs() {
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER)")
+        .unwrap();
     db.execute("INSERT INTO t VALUES (1, 2, 3), (2, 0, 0), (3, NULL, 5)")
         .unwrap();
     // `(a + b) IS TRUE` matches rows where a+b is non-null and != 0.
@@ -754,11 +788,11 @@ fn is_true_syntax_with_parenthesized_lhs() {
 #[test]
 fn is_false_syntax_with_parenthesized_lhs() {
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER)").unwrap();
-    db.execute("INSERT INTO t VALUES (1, 2, 3), (2, 0, 0)").unwrap();
-    let r = db
-        .query("SELECT id FROM t WHERE (a + b) IS FALSE")
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, a INTEGER, b INTEGER)")
         .unwrap();
+    db.execute("INSERT INTO t VALUES (1, 2, 3), (2, 0, 0)")
+        .unwrap();
+    let r = db.query("SELECT id FROM t WHERE (a + b) IS FALSE").unwrap();
     assert_eq!(r.rows.len(), 1);
     assert_eq!(r.rows[0].values[0], Value::Integer(2));
 }
@@ -768,10 +802,13 @@ fn is_true_syntax_does_not_corrupt_string_literals() {
     // The literal `'IS TRUE'` should NOT be rewritten — preprocessing
     // must respect string boundaries.
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT)")
+        .unwrap();
     db.execute("INSERT INTO t VALUES (1, 'IS TRUE'), (2, 'other')")
         .unwrap();
-    let r = db.query("SELECT id FROM t WHERE label = 'IS TRUE'").unwrap();
+    let r = db
+        .query("SELECT id FROM t WHERE label = 'IS TRUE'")
+        .unwrap();
     assert_eq!(r.rows.len(), 1);
     assert_eq!(r.rows[0].values[0], Value::Integer(1));
 }
@@ -928,10 +965,8 @@ fn fk_db_with_pragma() -> Database {
 #[test]
 fn on_update_cascade_propagates_parent_change() {
     let mut db = fk_db_with_pragma();
-    db.execute(
-        "CREATE TABLE parent (id INTEGER PRIMARY KEY, code TEXT UNIQUE NOT NULL)",
-    )
-    .unwrap();
+    db.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY, code TEXT UNIQUE NOT NULL)")
+        .unwrap();
     db.execute(
         "CREATE TABLE child ( \
            id INTEGER PRIMARY KEY, \
@@ -940,11 +975,13 @@ fn on_update_cascade_propagates_parent_change() {
          )",
     )
     .unwrap();
-    db.execute("INSERT INTO parent VALUES (1, 'A'), (2, 'B')").unwrap();
+    db.execute("INSERT INTO parent VALUES (1, 'A'), (2, 'B')")
+        .unwrap();
     db.execute("INSERT INTO child VALUES (10, 'A'), (11, 'A'), (12, 'B')")
         .unwrap();
 
-    db.execute("UPDATE parent SET code = 'A2' WHERE id = 1").unwrap();
+    db.execute("UPDATE parent SET code = 'A2' WHERE id = 1")
+        .unwrap();
     let r = db
         .query("SELECT id, parent_code FROM child ORDER BY id")
         .unwrap();
@@ -956,10 +993,8 @@ fn on_update_cascade_propagates_parent_change() {
 #[test]
 fn on_update_set_null_clears_child_fk() {
     let mut db = fk_db_with_pragma();
-    db.execute(
-        "CREATE TABLE parent (id INTEGER PRIMARY KEY, code TEXT UNIQUE NOT NULL)",
-    )
-    .unwrap();
+    db.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY, code TEXT UNIQUE NOT NULL)")
+        .unwrap();
     db.execute(
         "CREATE TABLE child ( \
            id INTEGER PRIMARY KEY, \
@@ -971,7 +1006,8 @@ fn on_update_set_null_clears_child_fk() {
     db.execute("INSERT INTO parent VALUES (1, 'X')").unwrap();
     db.execute("INSERT INTO child VALUES (5, 'X')").unwrap();
 
-    db.execute("UPDATE parent SET code = 'Y' WHERE id = 1").unwrap();
+    db.execute("UPDATE parent SET code = 'Y' WHERE id = 1")
+        .unwrap();
     let r = db.query("SELECT parent_code FROM child").unwrap();
     assert_eq!(r.rows[0].values[0], Value::Null);
 }
@@ -979,10 +1015,8 @@ fn on_update_set_null_clears_child_fk() {
 #[test]
 fn on_update_restrict_blocks_change_when_referenced() {
     let mut db = fk_db_with_pragma();
-    db.execute(
-        "CREATE TABLE parent (id INTEGER PRIMARY KEY, code TEXT UNIQUE NOT NULL)",
-    )
-    .unwrap();
+    db.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY, code TEXT UNIQUE NOT NULL)")
+        .unwrap();
     db.execute(
         "CREATE TABLE child ( \
            id INTEGER PRIMARY KEY, \
@@ -1017,7 +1051,8 @@ fn on_update_no_op_when_referenced_column_unchanged() {
          )",
     )
     .unwrap();
-    db.execute("INSERT INTO parent VALUES (1, 'A', 'old')").unwrap();
+    db.execute("INSERT INTO parent VALUES (1, 'A', 'old')")
+        .unwrap();
     db.execute("INSERT INTO child VALUES (5, 'A')").unwrap();
 
     // Updating only `extra` (not the referenced `code`) must not fire FK
@@ -1042,7 +1077,9 @@ fn covering_scan_returns_correct_rows_without_table_fetch() {
         .unwrap();
 
     // SELECT only the indexed column + rowid alias — fully covered by idx_age.
-    let r = db.query("SELECT age, id FROM t WHERE age = 30 ORDER BY id").unwrap();
+    let r = db
+        .query("SELECT age, id FROM t WHERE age = 30 ORDER BY id")
+        .unwrap();
     assert_eq!(r.rows.len(), 2);
     assert_eq!(r.rows[0].values[0], Value::Integer(30));
     assert_eq!(r.rows[0].values[1], Value::Integer(1));
@@ -1050,7 +1087,9 @@ fn covering_scan_returns_correct_rows_without_table_fetch() {
     assert_eq!(r.rows[1].values[1], Value::Integer(3));
 
     // SELECT a non-indexed column — must fall through to table fetch.
-    let r = db.query("SELECT name FROM t WHERE age = 30 ORDER BY id").unwrap();
+    let r = db
+        .query("SELECT name FROM t WHERE age = 30 ORDER BY id")
+        .unwrap();
     assert_eq!(r.rows.len(), 2);
     assert_eq!(r.rows[0].values[0], Value::Text("a".to_string()));
     assert_eq!(r.rows[1].values[0], Value::Text("c".to_string()));
@@ -1063,8 +1102,11 @@ fn bare_rowid_works_without_integer_primary_key_alias() {
     let mut db = fresh();
     // Table with NO INTEGER PRIMARY KEY — rowid has no alias column.
     db.execute("CREATE TABLE t (name TEXT)").unwrap();
-    db.execute("INSERT INTO t VALUES ('a'), ('b'), ('c')").unwrap();
-    let r = db.query("SELECT rowid, name FROM t ORDER BY rowid").unwrap();
+    db.execute("INSERT INTO t VALUES ('a'), ('b'), ('c')")
+        .unwrap();
+    let r = db
+        .query("SELECT rowid, name FROM t ORDER BY rowid")
+        .unwrap();
     assert_eq!(r.rows.len(), 3);
     assert_eq!(r.rows[0].values[0], Value::Integer(1));
     assert_eq!(r.rows[0].values[1], Value::Text("a".to_string()));
@@ -1087,7 +1129,8 @@ fn bare_rowid_filter_without_alias() {
 #[test]
 fn create_virtual_table_with_series_module() {
     let mut db = fresh();
-    db.execute("CREATE VIRTUAL TABLE s USING series(1, 5)").unwrap();
+    db.execute("CREATE VIRTUAL TABLE s USING series(1, 5)")
+        .unwrap();
     let r = db.query("SELECT value FROM s ORDER BY value").unwrap();
     assert_eq!(r.rows.len(), 5);
     let vals: Vec<i64> = r
@@ -1107,7 +1150,8 @@ fn create_virtual_table_with_series_module() {
 #[test]
 fn virtual_table_supports_where_clause() {
     let mut db = fresh();
-    db.execute("CREATE VIRTUAL TABLE s USING series(1, 10)").unwrap();
+    db.execute("CREATE VIRTUAL TABLE s USING series(1, 10)")
+        .unwrap();
     let r = db
         .query("SELECT value FROM s WHERE value > 7 ORDER BY value")
         .unwrap();
@@ -1145,7 +1189,8 @@ fn create_virtual_table_unknown_module_errors() {
 #[test]
 fn create_virtual_table_if_not_exists_skips_duplicate() {
     let mut db = fresh();
-    db.execute("CREATE VIRTUAL TABLE s USING series(1, 3)").unwrap();
+    db.execute("CREATE VIRTUAL TABLE s USING series(1, 3)")
+        .unwrap();
     // First create succeeds; second errors without IF NOT EXISTS.
     let dup = db.execute("CREATE VIRTUAL TABLE s USING series(1, 3)");
     assert!(dup.is_err());
@@ -1176,7 +1221,9 @@ fn kvstore_where_filters_inserted_rows() {
     db.execute("CREATE VIRTUAL TABLE kv USING kvstore").unwrap();
     db.execute("INSERT INTO kv VALUES ('a', 1), ('b', 2), ('c', 3)")
         .unwrap();
-    let r = db.query("SELECT key FROM kv WHERE value >= 2 ORDER BY key").unwrap();
+    let r = db
+        .query("SELECT key FROM kv WHERE value >= 2 ORDER BY key")
+        .unwrap();
     assert_eq!(r.rows.len(), 2);
     assert_eq!(r.rows[0].values[0], Value::Text("b".to_string()));
     assert_eq!(r.rows[1].values[0], Value::Text("c".to_string()));
@@ -1187,7 +1234,8 @@ fn series_module_rejects_insert() {
     // The series module is read-only — INSERT should surface as a
     // query error, not silently succeed.
     let mut db = fresh();
-    db.execute("CREATE VIRTUAL TABLE s USING series(1, 5)").unwrap();
+    db.execute("CREATE VIRTUAL TABLE s USING series(1, 5)")
+        .unwrap();
     let res = db.execute("INSERT INTO s VALUES (99)");
     assert!(res.is_err());
 }
@@ -1196,22 +1244,23 @@ fn series_module_rejects_insert() {
 
 fn explain_picks_index(db: &mut Database, sql: &str, idx_name: &str) -> bool {
     let plan = db.query(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
-    plan.rows
-        .iter()
-        .any(|r| r.values.iter().any(|v| {
-            matches!(v, Value::Text(s) if s.contains(idx_name))
-        }))
+    plan.rows.iter().any(|r| {
+        r.values
+            .iter()
+            .any(|v| matches!(v, Value::Text(s) if s.contains(idx_name)))
+    })
 }
 
 #[test]
 fn partial_index_picked_via_equality_into_range() {
     let mut db = fresh();
-    db.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, ts INTEGER, kind TEXT)").unwrap();
+    db.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, ts INTEGER, kind TEXT)")
+        .unwrap();
     // Index covers events with ts > 1000.
-    db.execute("CREATE INDEX idx_recent ON events(kind) WHERE ts > 1000").unwrap();
-    db.execute(
-        "INSERT INTO events VALUES (1, 5000, 'a'), (2, 200, 'a'), (3, 9999, 'b')",
-    ).unwrap();
+    db.execute("CREATE INDEX idx_recent ON events(kind) WHERE ts > 1000")
+        .unwrap();
+    db.execute("INSERT INTO events VALUES (1, 5000, 'a'), (2, 200, 'a'), (3, 9999, 'b')")
+        .unwrap();
 
     // Query says `ts = 5000`. That implies `ts > 1000`, so the partial
     // index is safe to use even though the predicate isn't verbatim.
@@ -1239,9 +1288,12 @@ fn partial_index_picked_via_equality_into_range() {
 #[test]
 fn partial_index_picked_via_range_tightening() {
     let mut db = fresh();
-    db.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, ts INTEGER, kind TEXT)").unwrap();
-    db.execute("CREATE INDEX idx_recent ON events(kind) WHERE ts > 1000").unwrap();
-    db.execute("INSERT INTO events VALUES (1, 5000, 'a')").unwrap();
+    db.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, ts INTEGER, kind TEXT)")
+        .unwrap();
+    db.execute("CREATE INDEX idx_recent ON events(kind) WHERE ts > 1000")
+        .unwrap();
+    db.execute("INSERT INTO events VALUES (1, 5000, 'a')")
+        .unwrap();
 
     // Query: ts > 2000 implies ts > 1000.
     assert!(
@@ -1257,9 +1309,12 @@ fn partial_index_picked_via_range_tightening() {
 #[test]
 fn partial_index_skipped_when_implication_does_not_hold() {
     let mut db = fresh();
-    db.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, ts INTEGER, kind TEXT)").unwrap();
-    db.execute("CREATE INDEX idx_recent ON events(kind) WHERE ts > 1000").unwrap();
-    db.execute("INSERT INTO events VALUES (1, 500, 'a')").unwrap();
+    db.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, ts INTEGER, kind TEXT)")
+        .unwrap();
+    db.execute("CREATE INDEX idx_recent ON events(kind) WHERE ts > 1000")
+        .unwrap();
+    db.execute("INSERT INTO events VALUES (1, 500, 'a')")
+        .unwrap();
 
     // Query: ts < 100 does NOT imply ts > 1000. Index must be skipped.
     let r = db
@@ -1273,9 +1328,12 @@ fn partial_index_skipped_when_implication_does_not_hold() {
 #[test]
 fn partial_index_picked_via_in_list_subset() {
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, k TEXT, v INTEGER)").unwrap();
-    db.execute("CREATE INDEX idx_ab ON t(v) WHERE k IN ('a', 'b', 'c')").unwrap();
-    db.execute("INSERT INTO t VALUES (1, 'a', 10), (2, 'b', 20), (3, 'd', 30)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, k TEXT, v INTEGER)")
+        .unwrap();
+    db.execute("CREATE INDEX idx_ab ON t(v) WHERE k IN ('a', 'b', 'c')")
+        .unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'a', 10), (2, 'b', 20), (3, 'd', 30)")
+        .unwrap();
 
     // Query: k IN ('a', 'b') is a subset of the index's IN list.
     assert!(
@@ -1293,7 +1351,8 @@ fn partial_index_picked_via_in_list_subset() {
 #[test]
 fn fts5_create_insert_and_brute_force_match() {
     let mut db = fresh();
-    db.execute("CREATE VIRTUAL TABLE docs USING fts5(content)").unwrap();
+    db.execute("CREATE VIRTUAL TABLE docs USING fts5(content)")
+        .unwrap();
     db.execute("INSERT INTO docs VALUES ('The quick brown fox')")
         .unwrap();
     db.execute("INSERT INTO docs VALUES ('Lazy dogs nap all day')")
@@ -1326,11 +1385,14 @@ fn fts5_create_insert_and_brute_force_match() {
 #[test]
 fn fts5_rank_orders_by_match_count() {
     let mut db = fresh();
-    db.execute("CREATE VIRTUAL TABLE docs USING fts5(content)").unwrap();
+    db.execute("CREATE VIRTUAL TABLE docs USING fts5(content)")
+        .unwrap();
     db.execute("INSERT INTO docs VALUES ('apple banana cherry')")
         .unwrap();
-    db.execute("INSERT INTO docs VALUES ('apple grape')").unwrap();
-    db.execute("INSERT INTO docs VALUES ('mango papaya')").unwrap();
+    db.execute("INSERT INTO docs VALUES ('apple grape')")
+        .unwrap();
+    db.execute("INSERT INTO docs VALUES ('mango papaya')")
+        .unwrap();
 
     let r = db
         .query(
@@ -1352,7 +1414,8 @@ fn fts5_rank_orders_by_match_count() {
 #[test]
 fn fts5_match_is_case_insensitive_via_tokenizer() {
     let mut db = fresh();
-    db.execute("CREATE VIRTUAL TABLE docs USING fts5(content)").unwrap();
+    db.execute("CREATE VIRTUAL TABLE docs USING fts5(content)")
+        .unwrap();
     db.execute("INSERT INTO docs VALUES ('The QUICK Brown Fox')")
         .unwrap();
     let r = db
@@ -1364,7 +1427,8 @@ fn fts5_match_is_case_insensitive_via_tokenizer() {
 #[test]
 fn fts5_match_ignores_punctuation() {
     let mut db = fresh();
-    db.execute("CREATE VIRTUAL TABLE docs USING fts5(content)").unwrap();
+    db.execute("CREATE VIRTUAL TABLE docs USING fts5(content)")
+        .unwrap();
     db.execute("INSERT INTO docs VALUES ('hello, world!')")
         .unwrap();
     let r = db
@@ -1376,7 +1440,8 @@ fn fts5_match_ignores_punctuation() {
 #[test]
 fn fts5_accepts_multi_column_with_per_column_weights() {
     let mut db = fresh();
-    db.execute("CREATE VIRTUAL TABLE docs USING fts5(title, body)").unwrap();
+    db.execute("CREATE VIRTUAL TABLE docs USING fts5(title, body)")
+        .unwrap();
     db.execute("INSERT INTO docs(title, body) VALUES ('Quick fox', 'jumps over')")
         .unwrap();
     let r = db
@@ -1446,9 +1511,12 @@ fn regular_table_does_not_set_without_rowid_flag() {
 #[test]
 fn rtree_create_and_insert_2d() {
     let mut db = fresh();
-    db.execute("CREATE VIRTUAL TABLE places USING rtree(2)").unwrap();
-    db.execute("INSERT INTO places VALUES (0, 1, 0, 1)").unwrap();
-    db.execute("INSERT INTO places VALUES (5, 6, 5, 6)").unwrap();
+    db.execute("CREATE VIRTUAL TABLE places USING rtree(2)")
+        .unwrap();
+    db.execute("INSERT INTO places VALUES (0, 1, 0, 1)")
+        .unwrap();
+    db.execute("INSERT INTO places VALUES (5, 6, 5, 6)")
+        .unwrap();
     let r = db
         .query("SELECT rowid, min_0, max_0, min_1, max_1 FROM places ORDER BY rowid")
         .unwrap();
@@ -1581,7 +1649,9 @@ fn vec_index_create_and_insert_round_trip() {
     db.execute_with_params("INSERT INTO embeds VALUES (?)", vec![v2.clone()])
         .unwrap();
 
-    let r = db.query("SELECT rowid, vector FROM embeds ORDER BY rowid").unwrap();
+    let r = db
+        .query("SELECT rowid, vector FROM embeds ORDER BY rowid")
+        .unwrap();
     assert_eq!(r.rows.len(), 2);
     assert_eq!(r.rows[0].values[0], Value::Integer(1));
     assert_eq!(r.rows[0].values[1], v1);
@@ -1592,22 +1662,14 @@ fn vec_index_create_and_insert_round_trip() {
 #[test]
 fn vec_index_brute_force_nearest_neighbor_via_sql() {
     let mut db = fresh();
-    db.execute("CREATE VIRTUAL TABLE e USING vec_index(dim=3)").unwrap();
-    db.execute_with_params(
-        "INSERT INTO e VALUES (?)",
-        vec![vec_blob(&[1.0, 0.0, 0.0])],
-    )
-    .unwrap();
-    db.execute_with_params(
-        "INSERT INTO e VALUES (?)",
-        vec![vec_blob(&[0.0, 1.0, 0.0])],
-    )
-    .unwrap();
-    db.execute_with_params(
-        "INSERT INTO e VALUES (?)",
-        vec![vec_blob(&[0.0, 0.0, 1.0])],
-    )
-    .unwrap();
+    db.execute("CREATE VIRTUAL TABLE e USING vec_index(dim=3)")
+        .unwrap();
+    db.execute_with_params("INSERT INTO e VALUES (?)", vec![vec_blob(&[1.0, 0.0, 0.0])])
+        .unwrap();
+    db.execute_with_params("INSERT INTO e VALUES (?)", vec![vec_blob(&[0.0, 1.0, 0.0])])
+        .unwrap();
+    db.execute_with_params("INSERT INTO e VALUES (?)", vec![vec_blob(&[0.0, 0.0, 1.0])])
+        .unwrap();
 
     // The user composes a brute-force nearest-neighbor query over the
     // vec_index table using the existing vec_distance scalar function.
@@ -1625,11 +1687,9 @@ fn vec_index_brute_force_nearest_neighbor_via_sql() {
 #[test]
 fn vec_index_rejects_dimension_mismatch_at_insert() {
     let mut db = fresh();
-    db.execute("CREATE VIRTUAL TABLE e USING vec_index(dim=3)").unwrap();
-    let res = db.execute_with_params(
-        "INSERT INTO e VALUES (?)",
-        vec![vec_blob(&[1.0, 0.0])],
-    );
+    db.execute("CREATE VIRTUAL TABLE e USING vec_index(dim=3)")
+        .unwrap();
+    let res = db.execute_with_params("INSERT INTO e VALUES (?)", vec![vec_blob(&[1.0, 0.0])]);
     assert!(res.is_err());
 }
 
@@ -1833,7 +1893,8 @@ fn rag_knn_plain_table_orderby_distance_is_brute_force() {
 #[test]
 fn multi_column_expression_index_picked() {
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, email TEXT)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, email TEXT)")
+        .unwrap();
     db.execute("CREATE INDEX idx_lower_pair ON t(lower(name), lower(email))")
         .unwrap();
     db.execute(
@@ -1893,9 +1954,11 @@ fn planner_prefers_more_selective_index_after_analyze() {
     let vfs = rsqlite_vfs::native::NativeVfs::new();
     {
         let mut db = Database::create(&vfs, path).unwrap();
-        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, x INTEGER)").unwrap();
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, x INTEGER)")
+            .unwrap();
         db.execute("CREATE INDEX idx_repeat ON t(x)").unwrap();
-        db.execute("CREATE UNIQUE INDEX idx_unique ON t(id)").unwrap();
+        db.execute("CREATE UNIQUE INDEX idx_unique ON t(id)")
+            .unwrap();
         // 6 rows. id is unique (INTEGER PRIMARY KEY); x has 2 distinct values.
         db.execute("INSERT INTO t VALUES (1, 1), (2, 1), (3, 1), (4, 2), (5, 2), (6, 2)")
             .unwrap();
@@ -1903,7 +1966,7 @@ fn planner_prefers_more_selective_index_after_analyze() {
     }
 
     // Reopen so the catalog reads the freshly-written sqlite_stat1.
-    let mut db = Database::open(&vfs, path).unwrap();
+    let db = Database::open(&vfs, path).unwrap();
     // Sanity-check: stats are loaded.
     assert!(
         db.catalog().index_stats.contains_key("idx_unique"),
@@ -1925,8 +1988,10 @@ fn planner_prefers_more_selective_index_after_analyze() {
 #[test]
 fn analyze_creates_sqlite_stat1_with_row_counts() {
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
-    db.execute("INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+        .unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')")
+        .unwrap();
     db.execute("ANALYZE").unwrap();
 
     let r = db
@@ -1941,9 +2006,11 @@ fn analyze_creates_sqlite_stat1_with_row_counts() {
 #[test]
 fn analyze_records_index_stats_too() {
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+        .unwrap();
     db.execute("CREATE INDEX idx_name ON t(name)").unwrap();
-    db.execute("INSERT INTO t VALUES (1, 'a'), (2, 'b')").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'a'), (2, 'b')")
+        .unwrap();
     db.execute("ANALYZE").unwrap();
 
     let r = db
@@ -1961,7 +2028,8 @@ fn analyze_records_index_stats_too() {
 fn analyze_computes_real_distinct_average() {
     // 6 rows but only 2 distinct values for `cat` — average should be 3.
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, cat TEXT)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, cat TEXT)")
+        .unwrap();
     db.execute("CREATE INDEX idx_cat ON t(cat)").unwrap();
     db.execute(
         "INSERT INTO t VALUES \
@@ -1974,7 +2042,10 @@ fn analyze_computes_real_distinct_average() {
         .query("SELECT stat FROM sqlite_stat1 WHERE tbl = 't' AND idx = 'idx_cat'")
         .unwrap();
     if let Value::Text(s) = &r.rows[0].values[0] {
-        assert_eq!(s, "6 3", "expected '6 3' (6 rows, avg 3 per distinct cat); got {s:?}");
+        assert_eq!(
+            s, "6 3",
+            "expected '6 3' (6 rows, avg 3 per distinct cat); got {s:?}"
+        );
     } else {
         panic!("expected text stat");
     }
@@ -1983,9 +2054,11 @@ fn analyze_computes_real_distinct_average() {
 #[test]
 fn analyze_unique_index_avg_is_one() {
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, k TEXT)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, k TEXT)")
+        .unwrap();
     db.execute("CREATE UNIQUE INDEX idx_k ON t(k)").unwrap();
-    db.execute("INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')").unwrap();
+    db.execute("INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')")
+        .unwrap();
     db.execute("ANALYZE").unwrap();
 
     let r = db
@@ -2001,15 +2074,20 @@ fn analyze_unique_index_avg_is_one() {
 #[test]
 fn analyze_refresh_replaces_stats() {
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+        .unwrap();
     db.execute("INSERT INTO t VALUES (1), (2)").unwrap();
     db.execute("ANALYZE").unwrap();
-    let first = db.query("SELECT stat FROM sqlite_stat1 WHERE tbl = 't'").unwrap();
+    let first = db
+        .query("SELECT stat FROM sqlite_stat1 WHERE tbl = 't'")
+        .unwrap();
     assert_eq!(first.rows[0].values[0], Value::Text("2".to_string()));
 
     db.execute("INSERT INTO t VALUES (3), (4), (5)").unwrap();
     db.execute("ANALYZE").unwrap();
-    let second = db.query("SELECT stat FROM sqlite_stat1 WHERE tbl = 't'").unwrap();
+    let second = db
+        .query("SELECT stat FROM sqlite_stat1 WHERE tbl = 't'")
+        .unwrap();
     assert_eq!(second.rows[0].values[0], Value::Text("5".to_string()));
     // Old entry was replaced, not appended.
     let count = db
@@ -2021,7 +2099,8 @@ fn analyze_refresh_replaces_stats() {
 #[test]
 fn analyze_skips_internal_tables() {
     let mut db = fresh();
-    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)").unwrap();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+        .unwrap();
     db.execute("ANALYZE").unwrap();
     let r = db
         .query("SELECT tbl FROM sqlite_stat1 WHERE tbl LIKE 'sqlite_%'")

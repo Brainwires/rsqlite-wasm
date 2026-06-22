@@ -1,3 +1,7 @@
+// wasm32 is single-threaded; `Arc<RefCell<…>>` in the OPFS/IDB backends never
+// crosses threads, so the lack of Send/Sync is intentional and harmless.
+#![allow(clippy::arc_with_non_send_sync)]
+
 mod idb;
 mod opfs;
 
@@ -233,7 +237,7 @@ impl WasmDatabase {
             .db
             .query_with_params(sql, params)
             .map_err(to_js_error)?;
-        return query_result_to_js(&result);
+        query_result_to_js(&result)
     }
 
     pub fn query(&mut self, sql: &str) -> Result<JsValue, JsError> {
@@ -299,24 +303,26 @@ impl WasmDatabase {
     #[wasm_bindgen(js_name = "createFunction")]
     pub fn create_function(&self, name: &str, n_args: i32, callback: js_sys::Function) {
         let cb_rc = std::rc::Rc::new(callback);
-        let wrapped = std::rc::Rc::new(move |args: &[Value]| -> Result<Value, rsqlite_core::error::Error> {
-            let js_args = js_sys::Array::new();
-            for v in args {
-                js_args.push(&value_to_js(v));
-            }
-            match cb_rc.apply(&JsValue::NULL, &js_args) {
-                Ok(result) => Ok(js_to_value(&result)),
-                Err(e) => {
-                    let msg = js_sys::JSON::stringify(&e)
-                        .ok()
-                        .and_then(|s| s.as_string())
-                        .unwrap_or_else(|| format!("{e:?}"));
-                    Err(rsqlite_core::error::Error::Other(format!(
-                        "user function threw: {msg}"
-                    )))
+        let wrapped = std::rc::Rc::new(
+            move |args: &[Value]| -> Result<Value, rsqlite_core::error::Error> {
+                let js_args = js_sys::Array::new();
+                for v in args {
+                    js_args.push(&value_to_js(v));
                 }
-            }
-        });
+                match cb_rc.apply(&JsValue::NULL, &js_args) {
+                    Ok(result) => Ok(js_to_value(&result)),
+                    Err(e) => {
+                        let msg = js_sys::JSON::stringify(&e)
+                            .ok()
+                            .and_then(|s| s.as_string())
+                            .unwrap_or_else(|| format!("{e:?}"));
+                        Err(rsqlite_core::error::Error::Other(format!(
+                            "user function threw: {msg}"
+                        )))
+                    }
+                }
+            },
+        );
         let n = if n_args < 0 {
             None
         } else {

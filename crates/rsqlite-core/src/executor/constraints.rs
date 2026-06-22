@@ -24,7 +24,10 @@ pub(super) fn check_check_constraints(
     }
 
     let col_names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
-    let row = Row { values: values.to_vec(), rowid: None };
+    let row = Row {
+        values: values.to_vec(),
+        rowid: None,
+    };
 
     for check_sql in &table_def.check_constraints {
         let parsed = rsqlite_parser::parse::parse_sql(&format!("SELECT {check_sql}"));
@@ -32,12 +35,10 @@ pub(super) fn check_check_constraints(
             Ok(stmts) => {
                 if let Some(sqlparser::ast::Statement::Query(q)) = stmts.into_iter().next() {
                     if let sqlparser::ast::SetExpr::Select(sel) = *q.body {
-                        if let Some(item) = sel.projection.into_iter().next() {
-                            if let sqlparser::ast::SelectItem::UnnamedExpr(e) = item {
-                                Some(e)
-                            } else {
-                                None
-                            }
+                        if let Some(sqlparser::ast::SelectItem::UnnamedExpr(e)) =
+                            sel.projection.into_iter().next()
+                        {
+                            Some(e)
                         } else {
                             None
                         }
@@ -650,12 +651,8 @@ pub(super) fn apply_foreign_key_update_actions(
                     )?;
                 }
                 crate::catalog::ReferentialAction::SetDefault => {
-                    let defaults = evaluate_column_defaults(
-                        &child_table,
-                        &child_col_indices,
-                        pager,
-                        catalog,
-                    )?;
+                    let defaults =
+                        evaluate_column_defaults(&child_table, &child_col_indices, pager, catalog)?;
                     set_child_fk_columns(
                         &child_table,
                         &matching_rowids,
@@ -708,8 +705,14 @@ fn cascade_delete_child_rows(
 
     for (rowid, values) in &snapshots {
         for (idx_root, idx_col_indices) in &table_indexes {
-            let key =
-                super::helpers::build_index_key(values, idx_col_indices, &plan_columns, pager, catalog, *rowid)?;
+            let key = super::helpers::build_index_key(
+                values,
+                idx_col_indices,
+                &plan_columns,
+                pager,
+                catalog,
+                *rowid,
+            )?;
             let _ = btree_index_delete(pager, *idx_root, &key);
         }
         btree_delete(pager, child_table.root_page, *rowid)
@@ -843,7 +846,10 @@ fn evaluate_column_defaults(
                 continue;
             }
         };
-        let placeholder_row = crate::types::Row { values: vec![Value::Null; child_table.columns.len()], rowid: None };
+        let placeholder_row = crate::types::Row {
+            values: vec![Value::Null; child_table.columns.len()],
+            rowid: None,
+        };
         let col_names: Vec<String> = child_table.columns.iter().map(|c| c.name.clone()).collect();
         match super::eval::eval_expr(&plan_expr, &placeholder_row, &col_names, pager, catalog) {
             Ok(v) => out.push(v),

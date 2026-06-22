@@ -487,10 +487,8 @@ pub fn plan_statement(stmt: &Statement, catalog: &Catalog) -> Result<Plan> {
             ..
         } => {
             let view_name = object_name_value(name);
-            if !or_replace {
-                if catalog.get_view(&view_name).is_some() {
-                    return Err(Error::Other(format!("view {view_name} already exists")));
-                }
+            if !or_replace && catalog.get_view(&view_name).is_some() {
+                return Err(Error::Other(format!("view {view_name} already exists")));
             }
             plan_select(query, catalog, &HashMap::new())?;
             let sql = format!("{stmt}");
@@ -566,10 +564,7 @@ pub fn plan_statement(stmt: &Statement, catalog: &Catalog) -> Result<Plan> {
                         let args = if parts[3].is_empty() {
                             Vec::new()
                         } else {
-                            parts[3]
-                                .split(',')
-                                .map(|s| s.trim().to_string())
-                                .collect()
+                            parts[3].split(',').map(|s| s.trim().to_string()).collect()
                         };
                         return Ok(Plan::CreateVirtualTable {
                             name,
@@ -1148,9 +1143,9 @@ fn plan_simple_select(
                 // that doesn't exist as an underlying table column. If
                 // yes → keep the old Sort(Project) shape; if no → push
                 // Sort below Project.
-                let needs_alias_resolution = keys.iter().any(|k| {
-                    plan_expr_references_alias_only(&k.expr, &output_names, &all_columns)
-                });
+                let needs_alias_resolution = keys
+                    .iter()
+                    .any(|k| plan_expr_references_alias_only(&k.expr, &output_names, &all_columns));
                 plan = match (plan, needs_alias_resolution) {
                     (Plan::Project { input, outputs }, false) => Plan::Project {
                         input: Box::new(Plan::Sort { input, keys }),
@@ -1757,8 +1752,7 @@ fn plan_create_table(ct: &ast::CreateTable, catalog: &Catalog) -> Result<Plan> {
         // SQLite requires WITHOUT ROWID tables to declare a PRIMARY KEY
         // (composite or single-column). Reject the missing-PK case at
         // plan time so the error is precise instead of surfacing later.
-        let has_any_pk = !table_pk_cols.is_empty()
-            || columns.iter().any(|c| c.is_primary_key);
+        let has_any_pk = !table_pk_cols.is_empty() || columns.iter().any(|c| c.is_primary_key);
         if !has_any_pk {
             return Err(Error::Other(format!(
                 "table {table_name} declared WITHOUT ROWID but has no PRIMARY KEY"
@@ -1786,12 +1780,11 @@ fn query_predicate_implies_index_predicate(
     catalog: &Catalog,
 ) -> bool {
     // Re-parse the index's stored predicate string into a PlanExpr.
-    let parsed = match rsqlite_parser::parse::parse_sql(&format!(
-        "SELECT 1 WHERE {index_predicate_src}"
-    )) {
-        Ok(p) => p,
-        Err(_) => return false,
-    };
+    let parsed =
+        match rsqlite_parser::parse::parse_sql(&format!("SELECT 1 WHERE {index_predicate_src}")) {
+            Ok(p) => p,
+            Err(_) => return false,
+        };
     let expr_ast = parsed.into_iter().next().and_then(|stmt| {
         if let sqlparser::ast::Statement::Query(q) = stmt {
             if let sqlparser::ast::SetExpr::Select(sel) = *q.body {
@@ -1833,8 +1826,16 @@ fn query_conjunct_implies(qp: &PlanExpr, ip: &PlanExpr) -> bool {
         return true;
     }
     if let (
-        PlanExpr::BinaryOp { left: ql, op: qo, right: qr },
-        PlanExpr::BinaryOp { left: il, op: io, right: ir },
+        PlanExpr::BinaryOp {
+            left: ql,
+            op: qo,
+            right: qr,
+        },
+        PlanExpr::BinaryOp {
+            left: il,
+            op: io,
+            right: ir,
+        },
     ) = (qp, ip)
     {
         // The two predicates must be talking about the same column.
@@ -1844,14 +1845,22 @@ fn query_conjunct_implies(qp: &PlanExpr, ip: &PlanExpr) -> bool {
                 if matches!(qp_column_name(ql, qr), Some(qn)
                     if matches!(qp_column_name(il, ir), Some(in_) if qn.eq_ignore_ascii_case(&in_)))
                 {
-                    return comparison_implies(q_op, &q_lit, i_op, &i_lit);
+                    return comparison_implies(q_op, q_lit, i_op, i_lit);
                 }
             }
         }
         // IN-list subset check: qp = `col IN (a, b)`, ip = `col IS NOT NULL`.
         // Handled below.
     }
-    if let (PlanExpr::InList { expr: q_e, list: q_list, negated: false }, _) = (qp, ip) {
+    if let (
+        PlanExpr::InList {
+            expr: q_e,
+            list: q_list,
+            negated: false,
+        },
+        _,
+    ) = (qp, ip)
+    {
         if let PlanExpr::IsNotNull(i_e) = ip {
             if plan_exprs_structurally_equal(q_e, i_e) && !q_list.is_empty() {
                 let all_non_null = q_list
@@ -1862,7 +1871,12 @@ fn query_conjunct_implies(qp: &PlanExpr, ip: &PlanExpr) -> bool {
                 }
             }
         }
-        if let PlanExpr::InList { expr: i_e, list: i_list, negated: false } = ip {
+        if let PlanExpr::InList {
+            expr: i_e,
+            list: i_list,
+            negated: false,
+        } = ip
+        {
             // q's list must be a subset of i's list. Conservative literal-equality.
             if plan_exprs_structurally_equal(q_e, i_e) {
                 return q_list.iter().all(|q_item| {
@@ -1916,7 +1930,12 @@ fn flip_comparison(op: BinOp) -> BinOp {
 /// Does `(col q_op q_lit)` imply `(col i_op i_lit)` for the same column?
 ///
 /// All `BinOp` variants reaching here are comparisons (Eq/NotEq/Lt/LtEq/Gt/GtEq).
-fn comparison_implies(q_op: BinOp, q_lit: &LiteralValue, i_op: BinOp, i_lit: &LiteralValue) -> bool {
+fn comparison_implies(
+    q_op: BinOp,
+    q_lit: &LiteralValue,
+    i_op: BinOp,
+    i_lit: &LiteralValue,
+) -> bool {
     let cmp = match compare_literal(q_lit, i_lit) {
         Some(c) => c,
         None => return false,
@@ -1986,32 +2005,54 @@ fn plan_exprs_structurally_equal(a: &PlanExpr, b: &PlanExpr) -> bool {
         }
         (PlanExpr::Rowid, PlanExpr::Rowid) => true,
         (PlanExpr::Literal(la), PlanExpr::Literal(lb)) => la == lb,
-        (PlanExpr::BinaryOp { left: la, op: oa, right: ra },
-         PlanExpr::BinaryOp { left: lb, op: ob, right: rb }) => {
+        (
+            PlanExpr::BinaryOp {
+                left: la,
+                op: oa,
+                right: ra,
+            },
+            PlanExpr::BinaryOp {
+                left: lb,
+                op: ob,
+                right: rb,
+            },
+        ) => {
             oa == ob
                 && plan_exprs_structurally_equal(la, lb)
                 && plan_exprs_structurally_equal(ra, rb)
         }
-        (PlanExpr::UnaryOp { op: oa, operand: aa },
-         PlanExpr::UnaryOp { op: ob, operand: bb }) => {
-            oa == ob && plan_exprs_structurally_equal(aa, bb)
-        }
+        (
+            PlanExpr::UnaryOp {
+                op: oa,
+                operand: aa,
+            },
+            PlanExpr::UnaryOp {
+                op: ob,
+                operand: bb,
+            },
+        ) => oa == ob && plan_exprs_structurally_equal(aa, bb),
         (PlanExpr::IsNull(aa), PlanExpr::IsNull(bb))
         | (PlanExpr::IsNotNull(aa), PlanExpr::IsNotNull(bb)) => {
             plan_exprs_structurally_equal(aa, bb)
         }
-        (PlanExpr::Function { name: na, args: aa },
-         PlanExpr::Function { name: nb, args: ab }) => {
+        (PlanExpr::Function { name: na, args: aa }, PlanExpr::Function { name: nb, args: ab }) => {
             na.eq_ignore_ascii_case(nb)
                 && aa.len() == ab.len()
-                && aa.iter()
+                && aa
+                    .iter()
                     .zip(ab.iter())
                     .all(|(x, y)| plan_exprs_structurally_equal(x, y))
         }
-        (PlanExpr::Cast { expr: ea, type_name: ta },
-         PlanExpr::Cast { expr: eb, type_name: tb }) => {
-            ta.eq_ignore_ascii_case(tb) && plan_exprs_structurally_equal(ea, eb)
-        }
+        (
+            PlanExpr::Cast {
+                expr: ea,
+                type_name: ta,
+            },
+            PlanExpr::Cast {
+                expr: eb,
+                type_name: tb,
+            },
+        ) => ta.eq_ignore_ascii_case(tb) && plan_exprs_structurally_equal(ea, eb),
         _ => false,
     }
 }
@@ -2142,7 +2183,12 @@ fn try_index_scan(
         // predicate appears verbatim as a top-level conjunct of the query
         // WHERE — anything fancier still falls through to a full scan.
         if let Some(idx_pred_src) = idx_def.predicate.as_deref() {
-            if !query_predicate_implies_index_predicate(predicate, idx_pred_src, _all_columns, catalog) {
+            if !query_predicate_implies_index_predicate(
+                predicate,
+                idx_pred_src,
+                _all_columns,
+                catalog,
+            ) {
                 continue;
             }
         }
@@ -2200,9 +2246,14 @@ fn try_index_scan(
     // in the WHERE's top-level And tree. Remaining conjuncts are wrapped
     // in a Filter — slight redundant work for the matched part, but
     // correct.
-    if let Some(plan) =
-        try_expression_index_scan(table_name, table_root, columns, predicate, _all_columns, catalog)
-    {
+    if let Some(plan) = try_expression_index_scan(
+        table_name,
+        table_root,
+        columns,
+        predicate,
+        _all_columns,
+        catalog,
+    ) {
         return Some(plan);
     }
 
@@ -2241,11 +2292,10 @@ fn try_expression_index_scan(
         // At least one column must be an expression (not a plain table
         // column) — otherwise the main `try_index_scan` path already
         // handles this index.
-        let any_expr = idx_def.columns.iter().any(|src| {
-            !all_columns
-                .iter()
-                .any(|c| c.name.eq_ignore_ascii_case(src))
-        });
+        let any_expr = idx_def
+            .columns
+            .iter()
+            .any(|src| !all_columns.iter().any(|c| c.name.eq_ignore_ascii_case(src)));
         if !any_expr {
             continue;
         }
@@ -2604,11 +2654,7 @@ fn build_remaining_predicate(predicate: &PlanExpr, index_columns: &[String]) -> 
 }
 
 fn plan_create_index(ci: &ast::CreateIndex) -> Result<Plan> {
-    let index_name = ci
-        .name
-        .as_ref()
-        .map(object_name_value)
-        .unwrap_or_default();
+    let index_name = ci.name.as_ref().map(object_name_value).unwrap_or_default();
     let table_name = object_name_value(&ci.table_name);
 
     let columns: Vec<String> = ci.columns.iter().map(|c| c.expr.to_string()).collect();
@@ -3069,11 +3115,7 @@ fn plan_delete(delete: &ast::Delete, catalog: &Catalog) -> Result<Plan> {
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let limit = delete
-        .limit
-        .as_ref()
-        .map(plan_count_expr)
-        .transpose()?;
+    let limit = delete.limit.as_ref().map(plan_count_expr).transpose()?;
 
     Ok(Plan::Delete(DeletePlan {
         table_name,
