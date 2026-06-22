@@ -944,18 +944,37 @@ pub(super) fn plan_order_expr(
     plan_expr(expr, table_columns, catalog)
 }
 
-pub(super) fn plan_limit_expr(expr: &Expr) -> Result<u64> {
+/// A `LIMIT` or `OFFSET` count. Either a literal resolved at plan time or
+/// a positional/indexed parameter resolved against the bound params at
+/// execution time (e.g. `LIMIT ?`). Placeholders consume a param slot via
+/// the same auto-index counter as expression placeholders, so positional
+/// ordering stays aligned with the caller's params vector.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CountExpr {
+    Const(u64),
+    Param(usize),
+}
+
+/// Plan a `LIMIT`/`OFFSET` expression, accepting either a numeric literal
+/// or a `?` placeholder. A placeholder is kept as [`CountExpr::Param`] and
+/// resolved at execution time.
+pub(super) fn plan_count_expr(expr: &Expr) -> Result<CountExpr> {
     match expr {
         Expr::Value(val) => match &val.value {
             ast::Value::Number(n, _) => n
                 .parse::<u64>()
+                .map(CountExpr::Const)
                 .map_err(|_| Error::Other(format!("invalid LIMIT/OFFSET value: {n}"))),
+            ast::Value::Placeholder(s) => Ok(PARAM_AUTO_INDEX.with(|c| {
+                let idx = parse_placeholder(s, &mut c.borrow_mut());
+                CountExpr::Param(idx)
+            })),
             _ => Err(Error::Other(format!(
-                "LIMIT/OFFSET must be a number, got: {val}"
+                "LIMIT/OFFSET must be a number or parameter, got: {val}"
             ))),
         },
         _ => Err(Error::Other(format!(
-            "LIMIT/OFFSET must be a literal, got: {expr}"
+            "LIMIT/OFFSET must be a literal or parameter, got: {expr}"
         ))),
     }
 }

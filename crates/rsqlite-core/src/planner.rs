@@ -36,7 +36,7 @@ mod expr;
 pub use expr::*;
 use expr::{
     collect_aggregates, collect_window_functions, contains_aggregate, contains_window_function,
-    plan_limit_expr, plan_order_expr, plan_select_items,
+    plan_count_expr, plan_order_expr, plan_select_items,
 };
 
 #[derive(Debug, Clone)]
@@ -146,7 +146,7 @@ pub struct DeletePlan {
     pub predicate: Option<PlanExpr>,
     pub returning: Option<Vec<ProjectionItem>>,
     pub order_by: Vec<SortKey>,
-    pub limit: Option<i64>,
+    pub limit: Option<CountExpr>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -301,8 +301,8 @@ pub enum Plan {
     },
     Limit {
         input: Box<Plan>,
-        limit: Option<u64>,
-        offset: u64,
+        limit: Option<CountExpr>,
+        offset: Option<CountExpr>,
     },
     Distinct {
         input: Box<Plan>,
@@ -1165,16 +1165,22 @@ fn plan_simple_select(
         }
     }
 
-    // LIMIT / OFFSET
-    let limit_val = query.limit.as_ref().map(plan_limit_expr).transpose()?;
-    let offset_val = query
+    // LIMIT / OFFSET. Both accept a `?` placeholder resolved at execution
+    // time (see CountExpr). A literal `OFFSET 0` is normalized to None so
+    // it neither forces a redundant Limit node nor blocks the vec_index
+    // pushdown, which matches on the absence of an offset.
+    let limit_val = query.limit.as_ref().map(plan_count_expr).transpose()?;
+    let offset_val = match query
         .offset
         .as_ref()
-        .map(|o| plan_limit_expr(&o.value))
+        .map(|o| plan_count_expr(&o.value))
         .transpose()?
-        .unwrap_or(0);
+    {
+        Some(CountExpr::Const(0)) => None,
+        other => other,
+    };
 
-    if limit_val.is_some() || offset_val > 0 {
+    if limit_val.is_some() || offset_val.is_some() {
         plan = Plan::Limit {
             input: Box::new(plan),
             limit: limit_val,
@@ -1199,8 +1205,11 @@ fn try_vec_index_nearest(plan: &Plan, catalog: &Catalog) -> Option<Plan> {
     let (limit_k, sort_inner, original) = match plan {
         Plan::Limit {
             input,
-            limit: Some(k),
-            offset: 0,
+            // The HNSW backend needs a concrete `k` at plan time, so the
+            // pushdown only fires for a literal LIMIT with no OFFSET. A
+            // parameterized `LIMIT ?` falls back to the generic sort+limit.
+            limit: Some(CountExpr::Const(k)),
+            offset: None,
         } => (*k, input.as_ref(), plan.clone()),
         _ => return None,
     };
@@ -3063,7 +3072,7 @@ fn plan_delete(delete: &ast::Delete, catalog: &Catalog) -> Result<Plan> {
     let limit = delete
         .limit
         .as_ref()
-        .map(|e| plan_limit_expr(e).map(|n| n as i64))
+        .map(plan_count_expr)
         .transpose()?;
 
     Ok(Plan::Delete(DeletePlan {

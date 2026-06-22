@@ -1661,6 +1661,174 @@ fn vec_index_supports_l2_metric() {
     }
 }
 
+// ── RAG integration contract (plain-BLOB-table brute-force KNN) ──────
+//
+// These lock the exact query shape a downstream RAG consumer (rullama's
+// vector store) relies on: chunks live in an ordinary BLOB table joined
+// to a `documents` table, KNN-ranked by `vec_distance_cosine`, scoped to
+// one conversation plus any global (`conversation_id IS NULL`) docs. If a
+// planner/executor change ever breaks this shape, these fail.
+
+#[test]
+fn rag_knn_join_scopes_to_conversation_plus_global() {
+    let mut db = fresh();
+    db.execute(
+        "CREATE TABLE documents (\
+           id INTEGER PRIMARY KEY, name TEXT NOT NULL, conversation_id TEXT)",
+    )
+    .unwrap();
+    db.execute(
+        "CREATE TABLE chunks (\
+           id INTEGER PRIMARY KEY, document_id INTEGER, text TEXT, \
+           vector BLOB, vector_dim INTEGER)",
+    )
+    .unwrap();
+
+    // doc 1 → conversation X, doc 2 → global (NULL), doc 3 → conversation Y.
+    db.execute(
+        "INSERT INTO documents VALUES \
+           (1, 'docX', 'X'), (2, 'global', NULL), (3, 'docY', 'Y')",
+    )
+    .unwrap();
+    // One chunk per doc, each a distinct unit axis.
+    db.execute_with_params(
+        "INSERT INTO chunks VALUES (1, 1, 'x', ?, 3)",
+        vec![vec_blob(&[1.0, 0.0, 0.0])],
+    )
+    .unwrap();
+    db.execute_with_params(
+        "INSERT INTO chunks VALUES (2, 2, 'g', ?, 3)",
+        vec![vec_blob(&[0.0, 1.0, 0.0])],
+    )
+    .unwrap();
+    db.execute_with_params(
+        "INSERT INTO chunks VALUES (3, 3, 'y', ?, 3)",
+        vec![vec_blob(&[0.0, 0.0, 1.0])],
+    )
+    .unwrap();
+
+    // rullama's literal KNN query. Param order:
+    //   1: query vector JSON (vec_from_json)
+    //   2: vector_dim filter
+    //   3: scope sentinel for `? IS NULL`
+    //   4: conversation_id to match
+    //   5: LIMIT
+    const KNN: &str = "SELECT chunks.id, chunks.text, documents.name, \
+            vec_distance_cosine(chunks.vector, vec_from_json(?)) AS distance \
+         FROM chunks JOIN documents ON documents.id = chunks.document_id \
+         WHERE chunks.vector_dim = ? \
+           AND ( ? IS NULL OR documents.conversation_id = ? \
+                 OR documents.conversation_id IS NULL ) \
+         ORDER BY distance ASC LIMIT ?";
+
+    // From conversation X: sees docX + global, never docY. Query vector is
+    // closest to the global chunk [0,1,0], so it ranks first.
+    let r = db
+        .query_with_params(
+            KNN,
+            vec![
+                Value::Text("[0.0,1.0,0.05]".into()),
+                Value::Integer(3),
+                Value::Text("X".into()),
+                Value::Text("X".into()),
+                Value::Integer(10),
+            ],
+        )
+        .unwrap();
+    let names: Vec<String> = r
+        .rows
+        .iter()
+        .map(|row| match &row.values[2] {
+            Value::Text(s) => s.clone(),
+            other => panic!("expected text name, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(names, vec!["global".to_string(), "docX".to_string()]);
+
+    // From conversation Y: sees docY + global, never docX.
+    let r = db
+        .query_with_params(
+            KNN,
+            vec![
+                Value::Text("[0.0,1.0,0.05]".into()),
+                Value::Integer(3),
+                Value::Text("Y".into()),
+                Value::Text("Y".into()),
+                Value::Integer(10),
+            ],
+        )
+        .unwrap();
+    let names: Vec<String> = r
+        .rows
+        .iter()
+        .map(|row| match &row.values[2] {
+            Value::Text(s) => s.clone(),
+            other => panic!("expected text name, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(names, vec!["global".to_string(), "docY".to_string()]);
+
+    // A NULL scope sentinel disables the filter: every doc is a candidate.
+    let r = db
+        .query_with_params(
+            KNN,
+            vec![
+                Value::Text("[0.0,1.0,0.05]".into()),
+                Value::Integer(3),
+                Value::Null,
+                Value::Null,
+                Value::Integer(10),
+            ],
+        )
+        .unwrap();
+    assert_eq!(r.rows.len(), 3, "NULL scope should match all documents");
+}
+
+#[test]
+fn rag_knn_plain_table_orderby_distance_is_brute_force() {
+    // The vec_index planner pushdown (`SELECT rowid ... ORDER BY
+    // vec_distance_<metric>(col, ?) LIMIT k`) must only fire for vec_index
+    // virtual tables — never hijack an identically-shaped query against a
+    // plain BLOB table. A plain table has no HNSW graph, so a correct
+    // brute-force ordering here proves the pushdown stayed out of the way.
+    let mut db = fresh();
+    db.execute("CREATE TABLE chunks (id INTEGER PRIMARY KEY, vector BLOB)")
+        .unwrap();
+    db.execute_with_params(
+        "INSERT INTO chunks VALUES (1, ?)",
+        vec![vec_blob(&[1.0, 0.0, 0.0])],
+    )
+    .unwrap();
+    db.execute_with_params(
+        "INSERT INTO chunks VALUES (2, ?)",
+        vec![vec_blob(&[0.0, 1.0, 0.0])],
+    )
+    .unwrap();
+    db.execute_with_params(
+        "INSERT INTO chunks VALUES (3, ?)",
+        vec![vec_blob(&[0.0, 0.0, 1.0])],
+    )
+    .unwrap();
+
+    let r = db
+        .query_with_params(
+            "SELECT id, vec_distance_cosine(vector, ?) AS distance \
+             FROM chunks ORDER BY distance ASC LIMIT 2",
+            vec![vec_blob(&[0.0, 0.9, 0.1])],
+        )
+        .unwrap();
+    let ids: Vec<i64> = r
+        .rows
+        .iter()
+        .map(|row| match row.values[0] {
+            Value::Integer(i) => i,
+            ref other => panic!("expected integer id, got {other:?}"),
+        })
+        .collect();
+    // Query is closest to row 2 ([0,1,0]), then row 3 ([0,0,1]).
+    assert_eq!(ids, vec![2, 3]);
+}
+
 // ── Multi-column expression-index lookup ─────────────────────────────
 
 #[test]
