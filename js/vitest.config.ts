@@ -32,13 +32,16 @@ export default defineConfig({
       exclude: ["dist/**", "scripts/**", "test/**", "**/*.d.ts"],
       reporter: ["text", "lcov", "html"],
       reportsDirectory: "coverage",
-      // No threshold. The Node test target loads the wasm-bindgen output
-      // directly and exercises the Rust surface (where the real coverage
-      // gate is — see `scripts/coverage.sh rust`). The src/*.ts wrappers
-      // (Database, WorkerDatabase) are thin JS shims around web APIs
-      // (dynamic import, Worker) that don't run under node, so a
-      // threshold here would be aspirational rather than meaningful.
-      // Coverage is reported as an artifact for inspection.
+      // The src/*.ts wrappers (Database, WorkerDatabase, the worker entry,
+      // and the devtools bridge) are exercised directly by the unit tests
+      // (with the wasm module / Worker mocked), so we enforce a floor here.
+      // The deeper Rust engine coverage gate lives in `scripts/coverage.sh rust`.
+      thresholds: {
+        lines: 90,
+        functions: 85,
+        statements: 90,
+        branches: 80,
+      },
     },
   },
 });
