@@ -1,24 +1,109 @@
 use crate::btree::{
-    BTreeCursor, IndexCursor, PageType, btree_header_offset, build_index_leaf_cell,
-    compare_records, compare_records_by_prefix, init_interior_index_page, init_interior_page,
-    init_leaf_index_page, init_leaf_page, parse_btree_header, parse_index_interior_cell,
-    parse_index_leaf_cell, parse_table_interior_cell, parse_table_leaf_cell, read_cell_pointers,
-    write_cell_pointers,
+    BTreeCursor, IndexCursor, PageType, btree_header_offset, compare_records,
+    compare_records_by_prefix, init_interior_index_page, init_interior_page,
+    init_leaf_index_page, init_leaf_page, local_payload_size, parse_btree_header,
+    parse_index_interior_cell, parse_index_leaf_cell, parse_table_interior_cell,
+    read_cell_pointers, reassemble_payload, write_cell_pointers,
 };
 use crate::codec::{Record, Value};
 use crate::error::{Result, StorageError};
 use crate::pager::Pager;
 use crate::varint;
 
-fn build_table_leaf_cell(rowid: i64, payload: &[u8]) -> Vec<u8> {
-    let mut cell = Vec::with_capacity(payload.len() + 18);
+/// Write the spilled tail of an oversized payload across a chain of overflow
+/// pages (SQLite format): each overflow page begins with a 4-byte big-endian
+/// pointer to the next page (0 on the last), followed by up to `usable - 4`
+/// payload bytes. Returns the page number of the first overflow page.
+fn write_overflow_chain(pager: &mut Pager, tail: &[u8]) -> Result<u32> {
+    let usable = pager.usable_size() as usize;
+    let per_page = usable - 4;
+
+    // Allocate all pages first so each can point at its successor.
+    let page_count = tail.len().div_ceil(per_page);
+    let mut pages = Vec::with_capacity(page_count);
+    for _ in 0..page_count {
+        pages.push(pager.allocate_page()?);
+    }
+
+    for (i, &page) in pages.iter().enumerate() {
+        let start = i * per_page;
+        let end = (start + per_page).min(tail.len());
+        let chunk = &tail[start..end];
+        let next = if i + 1 < pages.len() { pages[i + 1] } else { 0 };
+        let data = &mut pager.get_page_mut(page)?.data;
+        data.fill(0);
+        data[0..4].copy_from_slice(&next.to_be_bytes());
+        data[4..4 + chunk.len()].copy_from_slice(chunk);
+    }
+
+    Ok(pages[0])
+}
+
+/// Build a table-leaf cell, spilling the payload onto overflow pages when it
+/// exceeds the local threshold. The on-disk layout is:
+/// `varint(payload_size) varint(rowid) <local payload bytes> [4-byte first
+/// overflow page]`.
+fn build_table_leaf_cell_with_overflow(
+    pager: &mut Pager,
+    rowid: i64,
+    payload: &[u8],
+) -> Result<Vec<u8>> {
+    let usable = pager.usable_size();
+    let local_size = local_payload_size(payload.len(), usable);
+
+    let mut cell = Vec::with_capacity(local_size + 18 + 4);
     let mut tmp = [0u8; 9];
     let n = varint::write_varint(payload.len() as u64, &mut tmp);
     cell.extend_from_slice(&tmp[..n]);
     let n = varint::write_varint(rowid as u64, &mut tmp);
     cell.extend_from_slice(&tmp[..n]);
-    cell.extend_from_slice(payload);
-    cell
+    cell.extend_from_slice(&payload[..local_size]);
+
+    if local_size < payload.len() {
+        let first = write_overflow_chain(pager, &payload[local_size..])?;
+        cell.extend_from_slice(&first.to_be_bytes());
+    }
+    Ok(cell)
+}
+
+/// On-disk byte length of a table-leaf cell beginning at `offset`, including
+/// the inline payload and the 4-byte overflow pointer when the payload spills.
+fn table_leaf_cell_raw_len(data: &[u8], offset: usize, usable: u32) -> usize {
+    let (payload_size, n1) = varint::read_varint(&data[offset..]);
+    let (_, n2) = varint::read_varint(&data[offset + n1..]);
+    let payload_size = payload_size as usize;
+    let local = local_payload_size(payload_size, usable);
+    let overflow = if local < payload_size { 4 } else { 0 };
+    n1 + n2 + local + overflow
+}
+
+/// On-disk byte length of an index-leaf cell beginning at `offset`.
+fn index_leaf_cell_raw_len(data: &[u8], offset: usize, usable: u32) -> usize {
+    let (payload_size, n1) = varint::read_varint(&data[offset..]);
+    let payload_size = payload_size as usize;
+    let local = local_payload_size(payload_size, usable);
+    let overflow = if local < payload_size { 4 } else { 0 };
+    n1 + local + overflow
+}
+
+/// Build an index-leaf cell, spilling onto overflow pages when needed.
+/// Layout: `varint(payload_size) <local payload bytes> [4-byte first
+/// overflow page]`.
+fn build_index_leaf_cell_with_overflow(pager: &mut Pager, payload: &[u8]) -> Result<Vec<u8>> {
+    let usable = pager.usable_size();
+    let local_size = local_payload_size(payload.len(), usable);
+
+    let mut cell = Vec::with_capacity(local_size + 9 + 4);
+    let mut tmp = [0u8; 9];
+    let n = varint::write_varint(payload.len() as u64, &mut tmp);
+    cell.extend_from_slice(&tmp[..n]);
+    cell.extend_from_slice(&payload[..local_size]);
+
+    if local_size < payload.len() {
+        let first = write_overflow_chain(pager, &payload[local_size..])?;
+        cell.extend_from_slice(&first.to_be_bytes());
+    }
+    Ok(cell)
 }
 
 fn build_table_interior_cell(left_child: u32, rowid: i64) -> Vec<u8> {
@@ -30,23 +115,55 @@ fn build_table_interior_cell(left_child: u32, rowid: i64) -> Vec<u8> {
     cell
 }
 
-fn build_index_interior_cell(left_child: u32, payload: &[u8]) -> Vec<u8> {
-    let mut cell = Vec::with_capacity(payload.len() + 13);
+fn build_index_interior_cell(
+    pager: &mut Pager,
+    left_child: u32,
+    payload: &[u8],
+) -> Result<Vec<u8>> {
+    let usable = pager.usable_size();
+    let local_size = local_payload_size(payload.len(), usable);
+
+    let mut cell = Vec::with_capacity(local_size + 13 + 4);
     cell.extend_from_slice(&left_child.to_be_bytes());
     let mut tmp = [0u8; 9];
     let n = varint::write_varint(payload.len() as u64, &mut tmp);
     cell.extend_from_slice(&tmp[..n]);
-    cell.extend_from_slice(payload);
-    cell
+    cell.extend_from_slice(&payload[..local_size]);
+
+    if local_size < payload.len() {
+        let first = write_overflow_chain(pager, &payload[local_size..])?;
+        cell.extend_from_slice(&first.to_be_bytes());
+    }
+    Ok(cell)
 }
 
 pub fn btree_insert(pager: &mut Pager, root_page: u32, rowid: i64, record: &Record) -> Result<u32> {
     let payload = record.encode();
-    let cell = build_table_leaf_cell(rowid, &payload);
-    insert_into_page(pager, root_page, rowid, &cell)
+    let cell = build_table_leaf_cell_with_overflow(pager, rowid, &payload)?;
+    insert_into_page(pager, root_page, rowid, &cell, true)?;
+    // Roots are immutable: deepening relocates content to fresh children
+    // and re-inits the original page in place, so the root number never
+    // changes. We return it unconditionally for clarity at call sites.
+    Ok(root_page)
 }
 
-fn insert_into_page(pager: &mut Pager, page_num: u32, rowid: i64, cell: &[u8]) -> Result<u32> {
+/// Insert `cell` into the table btree rooted at `page_num`.
+///
+/// `is_root` marks the call as operating on a table's actual root page. Root
+/// pages are immutable in this engine (SQLite-faithful): when a split would
+/// otherwise create a new root, we instead deepen the tree in place via
+/// [`balance_deeper_table_root`], relocating the old root's content to a fresh
+/// child and re-initializing the original page as an interior page. This keeps
+/// the catalog's stored root page number valid forever. The recursive call for
+/// deeper interior nodes passes `is_root = false`, where a returned new page is
+/// stitched in via [`update_child_pointer`].
+fn insert_into_page(
+    pager: &mut Pager,
+    page_num: u32,
+    rowid: i64,
+    cell: &[u8],
+    is_root: bool,
+) -> Result<u32> {
     let page_data = pager.get_page(page_num)?.data.clone();
     let offset = btree_header_offset(page_num);
     let header = parse_btree_header(&page_data, offset)?;
@@ -59,10 +176,10 @@ fn insert_into_page(pager: &mut Pager, page_num: u32, rowid: i64, cell: &[u8]) -
                 new_page,
                 median_rowid,
             } => {
-                if page_num == 1 {
-                    // Page 1 must remain the schema root; deepen instead.
-                    balance_deeper_table_root(pager, 1, new_page, median_rowid)?;
-                    Ok(1)
+                if is_root {
+                    // The root must keep its page number; deepen in place.
+                    balance_deeper_table_root(pager, page_num, new_page, median_rowid)?;
+                    Ok(page_num)
                 } else {
                     let new_root = pager.allocate_page()?;
                     {
@@ -110,9 +227,9 @@ fn insert_into_page(pager: &mut Pager, page_num: u32, rowid: i64, cell: &[u8]) -
                             new_page: new_int_page,
                             median_rowid: med,
                         } => {
-                            if page_num == 1 {
-                                balance_deeper_table_root(pager, 1, new_int_page, med)?;
-                                Ok(1)
+                            if is_root {
+                                balance_deeper_table_root(pager, page_num, new_int_page, med)?;
+                                Ok(page_num)
                             } else {
                                 let new_root = pager.allocate_page()?;
                                 {
@@ -128,7 +245,7 @@ fn insert_into_page(pager: &mut Pager, page_num: u32, rowid: i64, cell: &[u8]) -
                 }
             }
         } else {
-            let new_child_root = insert_into_page(pager, child_page, rowid, cell)?;
+            let new_child_root = insert_into_page(pager, child_page, rowid, cell, false)?;
             if new_child_root != child_page {
                 update_child_pointer(pager, page_num, child_page, new_child_root)?;
             }
@@ -173,11 +290,15 @@ fn copy_table_page_content(pager: &mut Pager, src: u32, dst: u32) -> Result<()> 
 
     match header.page_type {
         PageType::LeafTable => {
+            // Relocate raw cell bytes verbatim so overflow chains survive.
             let mut cells = Vec::with_capacity(pointers.len());
             for &ptr in &pointers {
-                let c = parse_table_leaf_cell(&src_data, ptr as usize, usable)?;
-                let raw = build_table_leaf_cell(c.rowid, &c.payload);
-                cells.push((c.rowid, raw));
+                let cell_start = ptr as usize;
+                let (_, n1) = varint::read_varint(&src_data[cell_start..]);
+                let (rowid, _) = varint::read_varint(&src_data[cell_start + n1..]);
+                let raw_len = table_leaf_cell_raw_len(&src_data, cell_start, usable);
+                let raw = src_data[cell_start..cell_start + raw_len].to_vec();
+                cells.push((rowid as i64, raw));
             }
             {
                 let data = &mut pager.get_page_mut(dst)?.data;
@@ -222,6 +343,14 @@ fn try_insert_cell_into_leaf(
     rowid: i64,
     cell: &[u8],
 ) -> Result<InsertResult> {
+    // With overflow spilling, a built leaf cell can never exceed
+    // `max_local + varint headers + 4-byte overflow ptr`, which always fits
+    // an empty page. If this fires, the cell was built without overflow.
+    debug_assert!(
+        cell.len() + 2 <= pager.usable_size() as usize - btree_header_offset(page_num) - 8,
+        "inline leaf cell of {} bytes does not fit an empty page",
+        cell.len()
+    );
     let page = pager.get_page_mut(page_num)?;
     let data = &mut page.data;
     let offset = btree_header_offset(page_num);
@@ -273,6 +402,26 @@ fn try_insert_cell_into_leaf(
     }
 }
 
+/// Choose a split index for a sorted list of cell sizes so that the left
+/// prefix holds roughly half of the total on-page footprint (cell bytes plus
+/// the 2-byte cell-pointer each). At least one cell is kept on each side.
+fn size_balanced_split(sizes: impl Iterator<Item = usize>) -> usize {
+    let footprints: Vec<usize> = sizes.map(|s| s + 2).collect();
+    let total: usize = footprints.iter().sum();
+    let half = total / 2;
+    let mut acc = 0usize;
+    let mut mid = 0usize;
+    for (i, &f) in footprints.iter().enumerate() {
+        acc += f;
+        if acc >= half {
+            mid = i + 1;
+            break;
+        }
+    }
+    // Clamp so neither side is empty.
+    mid.clamp(1, footprints.len().saturating_sub(1)).max(1)
+}
+
 fn split_leaf(
     pager: &mut Pager,
     page_num: u32,
@@ -286,17 +435,28 @@ fn split_leaf(
     let header = parse_btree_header(&page_data, offset)?;
     let pointers = read_cell_pointers(&page_data, offset + header.header_size(), header.cell_count);
 
+    // Relocate cells verbatim (raw bytes, including any trailing overflow
+    // pointer) so existing overflow chains are preserved untouched.
     let mut cells: Vec<(i64, Vec<u8>)> = Vec::new();
     for &ptr in &pointers {
         let cell_start = ptr as usize;
-        let c = parse_table_leaf_cell(&page_data, cell_start, usable)?;
-        let raw_cell = build_table_leaf_cell(c.rowid, &c.payload);
-        cells.push((c.rowid, raw_cell));
+        let (rowid, _) = {
+            let (_, n1) = varint::read_varint(&page_data[cell_start..]);
+            let (rid, _) = varint::read_varint(&page_data[cell_start + n1..]);
+            (rid as i64, ())
+        };
+        let raw_len = table_leaf_cell_raw_len(&page_data, cell_start, usable);
+        let raw_cell = page_data[cell_start..cell_start + raw_len].to_vec();
+        cells.push((rowid, raw_cell));
     }
     cells.push((new_rowid, new_cell.to_vec()));
     cells.sort_by_key(|(rowid, _)| *rowid);
 
-    let mid = cells.len() / 2;
+    // Split by accumulated cell size, not by count: a single overflow cell
+    // can nearly fill a page, so a naive count-based midpoint could leave one
+    // half larger than a page. Pick the smallest left prefix whose byte total
+    // reaches half the combined size, keeping at least one cell on each side.
+    let mid = size_balanced_split(cells.iter().map(|(_, c)| c.len()));
     let left_cells = &cells[..mid];
     let right_cells = &cells[mid..];
     let median_rowid = left_cells.last().map(|(r, _)| *r).unwrap_or(0);
@@ -574,8 +734,10 @@ pub fn btree_create_index(pager: &mut Pager) -> Result<u32> {
 
 pub fn btree_index_insert(pager: &mut Pager, root_page: u32, key: &Record) -> Result<u32> {
     let payload = key.encode();
-    let cell = build_index_leaf_cell(&payload);
-    index_insert_into_page(pager, root_page, key, &cell)
+    let cell = build_index_leaf_cell_with_overflow(pager, &payload)?;
+    index_insert_into_page(pager, root_page, key, &cell, true)?;
+    // Index roots are immutable, just like table roots.
+    Ok(root_page)
 }
 
 fn index_insert_into_page(
@@ -583,6 +745,7 @@ fn index_insert_into_page(
     page_num: u32,
     key: &Record,
     cell: &[u8],
+    is_root: bool,
 ) -> Result<u32> {
     let page_data = pager.get_page(page_num)?.data.clone();
     let offset = btree_header_offset(page_num);
@@ -597,7 +760,9 @@ fn index_insert_into_page(
                 new_page,
                 median_rowid: _,
             } => {
-                let new_root = pager.allocate_page()?;
+                // The median separator is the largest key remaining on the
+                // left page (page_num after the split rewrote it as the left
+                // half). Reassemble its payload in case it overflows.
                 let median_page_data = pager.get_page(page_num)?.data.clone();
                 let median_offset = btree_header_offset(page_num);
                 let median_header = parse_btree_header(&median_page_data, median_offset)?;
@@ -608,14 +773,36 @@ fn index_insert_into_page(
                 );
                 let last_ptr = median_pointers[median_header.cell_count as usize - 1] as usize;
                 let last_cell = parse_index_leaf_cell(&median_page_data, last_ptr, usable)?;
+                let sep_payload = reassemble_payload(
+                    pager,
+                    &last_cell.payload,
+                    last_cell.payload_size,
+                    last_cell.overflow_page,
+                )?;
 
-                {
-                    let root_data = &mut pager.get_page_mut(new_root)?.data;
-                    init_interior_index_page(root_data, new_root, new_page);
+                if is_root {
+                    // Keep the root page number stable: relocate the old root
+                    // (now the left half) to a fresh child and rebuild the
+                    // root as an interior index page.
+                    let new_left = pager.allocate_page()?;
+                    copy_index_page_content(pager, page_num, new_left)?;
+                    {
+                        let root_data = &mut pager.get_page_mut(page_num)?.data;
+                        init_interior_index_page(root_data, page_num, new_page);
+                    }
+                    let interior_cell = build_index_interior_cell(pager, new_left, &sep_payload)?;
+                    insert_cell_into_interior(pager, page_num, &interior_cell)?;
+                    Ok(page_num)
+                } else {
+                    let new_root = pager.allocate_page()?;
+                    {
+                        let root_data = &mut pager.get_page_mut(new_root)?.data;
+                        init_interior_index_page(root_data, new_root, new_page);
+                    }
+                    let interior_cell = build_index_interior_cell(pager, page_num, &sep_payload)?;
+                    insert_cell_into_interior(pager, new_root, &interior_cell)?;
+                    Ok(new_root)
                 }
-                let interior_cell = build_index_interior_cell(page_num, &last_cell.payload);
-                insert_cell_into_interior(pager, new_root, &interior_cell)?;
-                Ok(new_root)
             }
         }
     } else {
@@ -626,19 +813,85 @@ fn index_insert_into_page(
         for i in 0..header.cell_count as usize {
             let cell_offset = pointers[i] as usize;
             let ic = parse_index_interior_cell(&page_data, cell_offset, usable)?;
-            let ic_record = Record::decode(&ic.payload)?;
+            let ic_payload =
+                reassemble_payload(pager, &ic.payload, ic.payload_size, ic.overflow_page)?;
+            let ic_record = Record::decode(&ic_payload)?;
             if compare_records(key, &ic_record) != std::cmp::Ordering::Greater {
                 child_page = ic.left_child_page;
                 break;
             }
         }
 
-        let new_child_root = index_insert_into_page(pager, child_page, key, cell)?;
+        let new_child_root = index_insert_into_page(pager, child_page, key, cell, false)?;
         if new_child_root != child_page {
             update_child_pointer(pager, page_num, child_page, new_child_root)?;
         }
         Ok(page_num)
     }
+}
+
+/// Copy the b-tree content of an index page `src` to `dst`. Cells are
+/// relocated verbatim (raw bytes, preserving overflow pointers) so the
+/// offset shift between page 1 and a regular page is irrelevant for index
+/// roots (which are never page 1). Supports leaf and interior index pages.
+fn copy_index_page_content(pager: &mut Pager, src: u32, dst: u32) -> Result<()> {
+    let usable = pager.usable_size();
+    let src_data = pager.get_page(src)?.data.clone();
+    let src_offset = btree_header_offset(src);
+    let header = parse_btree_header(&src_data, src_offset)?;
+    let pointers =
+        read_cell_pointers(&src_data, src_offset + header.header_size(), header.cell_count);
+
+    match header.page_type {
+        PageType::LeafIndex => {
+            let mut cells: Vec<(i64, Vec<u8>)> = Vec::with_capacity(pointers.len());
+            for &ptr in &pointers {
+                let cell_start = ptr as usize;
+                let raw_len = index_leaf_cell_raw_len(&src_data, cell_start, usable);
+                let raw = src_data[cell_start..cell_start + raw_len].to_vec();
+                cells.push((0, raw));
+            }
+            {
+                let data = &mut pager.get_page_mut(dst)?.data;
+                init_leaf_index_page(data, dst);
+            }
+            rewrite_index_leaf_page(pager, dst, &cells)?;
+        }
+        PageType::InteriorIndex => {
+            let right_child = header
+                .right_most_pointer
+                .ok_or_else(|| StorageError::Other("interior index missing right_most".into()))?;
+            let mut cells: Vec<Vec<u8>> = Vec::with_capacity(pointers.len());
+            for &ptr in &pointers {
+                let cell_start = ptr as usize;
+                let raw_len = index_interior_cell_raw_len(&src_data, cell_start, usable);
+                cells.push(src_data[cell_start..cell_start + raw_len].to_vec());
+            }
+            {
+                let data = &mut pager.get_page_mut(dst)?.data;
+                init_interior_index_page(data, dst, right_child);
+            }
+            for cell in cells {
+                insert_cell_into_interior(pager, dst, &cell)?;
+            }
+        }
+        other => {
+            return Err(StorageError::Other(format!(
+                "copy_index_page_content: unsupported page type {other:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// On-disk byte length of an index-interior cell beginning at `offset`
+/// (4-byte left child + varint(size) + local payload + optional overflow ptr).
+fn index_interior_cell_raw_len(data: &[u8], offset: usize, usable: u32) -> usize {
+    let (payload_size, n1) = varint::read_varint(&data[offset + 4..]);
+    let payload_size = payload_size as usize;
+    let local = local_payload_size(payload_size, usable);
+    let overflow = if local < payload_size { 4 } else { 0 };
+    4 + n1 + local + overflow
 }
 
 fn try_insert_cell_into_index_leaf(
@@ -648,11 +901,12 @@ fn try_insert_cell_into_index_leaf(
     cell: &[u8],
 ) -> Result<InsertResult> {
     let usable = pager.usable_size();
-    let page = pager.get_page_mut(page_num)?;
-    let data = &mut page.data;
     let offset = btree_header_offset(page_num);
-    let header = parse_btree_header(data, offset)?;
 
+    // Determine the insert position first, reassembling any overflowing
+    // payloads via the pager before taking the mutable page borrow.
+    let snapshot = pager.get_page(page_num)?.data.clone();
+    let header = parse_btree_header(&snapshot, offset)?;
     let ptr_area_start = offset + header.header_size();
     let ptr_area_end = ptr_area_start + header.cell_count as usize * 2;
     let content_start = header.cell_content_offset as usize;
@@ -661,18 +915,26 @@ fn try_insert_cell_into_index_leaf(
     let free_space = content_start - ptr_area_end;
 
     if space_needed <= free_space {
-        let pointers = read_cell_pointers(data, ptr_area_start, header.cell_count);
+        let pointers = read_cell_pointers(&snapshot, ptr_area_start, header.cell_count);
 
         let mut insert_pos = pointers.len();
         for (i, &ptr) in pointers.iter().enumerate() {
-            let existing_cell = parse_index_leaf_cell(data, ptr as usize, usable)?;
-            let existing_record = Record::decode(&existing_cell.payload)?;
+            let existing_cell = parse_index_leaf_cell(&snapshot, ptr as usize, usable)?;
+            let existing_payload = reassemble_payload(
+                pager,
+                &existing_cell.payload,
+                existing_cell.payload_size,
+                existing_cell.overflow_page,
+            )?;
+            let existing_record = Record::decode(&existing_payload)?;
             if compare_records(key, &existing_record) != std::cmp::Ordering::Greater {
                 insert_pos = i;
                 break;
             }
         }
 
+        let page = pager.get_page_mut(page_num)?;
+        let data = &mut page.data;
         let new_content_start = content_start - cell.len();
         data[new_content_start..new_content_start + cell.len()].copy_from_slice(cell);
 
@@ -711,17 +973,22 @@ fn split_index_leaf(
     let header = parse_btree_header(&page_data, offset)?;
     let pointers = read_cell_pointers(&page_data, offset + header.header_size(), header.cell_count);
 
+    // Reassemble each key's full payload for the sort comparison, but
+    // relocate the raw cell bytes verbatim so overflow chains are preserved.
     let mut cells: Vec<(Record, Vec<u8>)> = Vec::new();
     for &ptr in &pointers {
-        let c = parse_index_leaf_cell(&page_data, ptr as usize, usable)?;
-        let record = Record::decode(&c.payload)?;
-        let raw = build_index_leaf_cell(&c.payload);
+        let cell_start = ptr as usize;
+        let c = parse_index_leaf_cell(&page_data, cell_start, usable)?;
+        let full = reassemble_payload(pager, &c.payload, c.payload_size, c.overflow_page)?;
+        let record = Record::decode(&full)?;
+        let raw_len = index_leaf_cell_raw_len(&page_data, cell_start, usable);
+        let raw = page_data[cell_start..cell_start + raw_len].to_vec();
         cells.push((record, raw));
     }
     cells.push((new_key.clone(), new_cell.to_vec()));
     cells.sort_by(|(a, _), (b, _)| compare_records(a, b));
 
-    let mid = cells.len() / 2;
+    let mid = size_balanced_split(cells.iter().map(|(_, raw)| raw.len()));
     let left_cells: Vec<(i64, Vec<u8>)> = cells[..mid]
         .iter()
         .map(|(_, raw)| (0, raw.clone()))
@@ -783,18 +1050,31 @@ pub fn btree_index_delete(pager: &mut Pager, root_page: u32, key: &Record) -> Re
     let mut cursor = IndexCursor::new(pager, root_page);
     let entries = cursor.collect_all()?;
 
-    let remaining: Vec<Vec<u8>> = entries
+    let survivors: Vec<Record> = entries
         .into_iter()
         .filter(|rec| compare_records(rec, key) != std::cmp::Ordering::Equal)
-        .map(|rec| {
-            let payload = rec.encode();
-            build_index_leaf_cell(&payload)
-        })
         .collect();
 
-    let cells: Vec<(i64, Vec<u8>)> = remaining.into_iter().map(|raw| (0, raw)).collect();
-    rewrite_index_leaf_page(pager, root_page, &cells)?;
+    rebuild_index_btree(pager, root_page, &survivors)
+}
 
+/// Re-initialize the index root as an empty leaf and re-insert all `keys`
+/// through the normal index-insert path, rebuilding a valid (possibly
+/// multi-page) index tree with the root in place. As with table deletes,
+/// overflow pages of removed/rebuilt entries are not reclaimed.
+fn rebuild_index_btree(pager: &mut Pager, root_page: u32, keys: &[Record]) -> Result<()> {
+    let page_size = pager.page_size() as usize;
+    {
+        let data = &mut pager.get_page_mut(root_page)?.data;
+        let offset = btree_header_offset(root_page);
+        data[offset..page_size].fill(0);
+        init_leaf_index_page(data, root_page);
+    }
+    for key in keys {
+        let payload = key.encode();
+        let cell = build_index_leaf_cell_with_overflow(pager, &payload)?;
+        index_insert_into_page(pager, root_page, key, &cell, true)?;
+    }
     Ok(())
 }
 
@@ -812,7 +1092,7 @@ pub fn btree_index_delete_by_prefix(
     let entries = cursor.collect_all()?;
 
     let mut deleted = false;
-    let mut remaining_cells: Vec<(i64, Vec<u8>)> = Vec::with_capacity(entries.len());
+    let mut survivors: Vec<Record> = Vec::with_capacity(entries.len());
     for rec in entries {
         if !deleted
             && compare_records_by_prefix(&rec, prefix, prefix_len) == std::cmp::Ordering::Equal
@@ -820,14 +1100,24 @@ pub fn btree_index_delete_by_prefix(
             deleted = true;
             continue;
         }
-        let payload = rec.encode();
-        remaining_cells.push((0, build_index_leaf_cell(&payload)));
+        survivors.push(rec);
     }
 
-    rewrite_index_leaf_page(pager, root_page, &remaining_cells)?;
-    Ok(())
+    rebuild_index_btree(pager, root_page, &survivors)
 }
 
+/// Delete the row with `rowid` from the table btree rooted at `root_page`.
+///
+/// The btree may span multiple pages once splits have occurred, so we cannot
+/// simply collapse all survivors onto the root leaf. Instead we collect the
+/// surviving rows, re-initialize the root as an empty leaf, and re-insert each
+/// survivor through the normal insert path (which re-splits and deepens the
+/// root in place as needed). This keeps the root page number stable and the
+/// tree well-formed for any number of rows.
+///
+/// NOTE: overflow pages belonging to deleted (or rebuilt) rows are not
+/// returned to a freelist — the pager has no freelist — so they leak. This is
+/// a documented shortcut; correctness is preserved.
 pub fn btree_delete(pager: &mut Pager, root_page: u32, rowid: i64) -> Result<()> {
     let mut cursor = BTreeCursor::new(pager, root_page);
     let mut rows: Vec<(i64, Vec<u8>)> = Vec::new();
@@ -841,15 +1131,24 @@ pub fn btree_delete(pager: &mut Pager, root_page: u32, rowid: i64) -> Result<()>
         has_row = cursor.next()?;
     }
 
-    rewrite_leaf_page(
-        pager,
-        root_page,
-        &rows
-            .iter()
-            .map(|(r, p)| (*r, build_table_leaf_cell(*r, p)))
-            .collect::<Vec<_>>(),
-    )?;
+    rebuild_table_btree(pager, root_page, &rows)
+}
 
+/// Re-initialize the table root as an empty leaf and re-insert all `rows`
+/// (already ordered by rowid) through the normal insert path so the tree is
+/// rebuilt into a valid (possibly multi-page) shape with the root in place.
+fn rebuild_table_btree(pager: &mut Pager, root_page: u32, rows: &[(i64, Vec<u8>)]) -> Result<()> {
+    let page_size = pager.page_size() as usize;
+    {
+        let data = &mut pager.get_page_mut(root_page)?.data;
+        let offset = btree_header_offset(root_page);
+        data[offset..page_size].fill(0);
+        init_leaf_page(data, root_page);
+    }
+    for (rowid, payload) in rows {
+        let cell = build_table_leaf_cell_with_overflow(pager, *rowid, payload)?;
+        insert_into_page(pager, root_page, *rowid, &cell, true)?;
+    }
     Ok(())
 }
 
