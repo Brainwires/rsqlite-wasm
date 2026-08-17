@@ -3,6 +3,8 @@
 #![allow(clippy::arc_with_non_send_sync)]
 
 mod idb;
+#[cfg(feature = "nodefs")]
+mod nodefs;
 mod opfs;
 
 use wasm_bindgen::JsCast;
@@ -66,6 +68,8 @@ enum VfsBackend {
         mux: MultiplexVfs,
         raw: idb::IdbVfs,
     },
+    #[cfg(feature = "nodefs")]
+    File(nodefs::NodeFsVfs),
 }
 
 #[wasm_bindgen]
@@ -215,6 +219,29 @@ impl WasmDatabase {
         })
     }
 
+    /// Open (or create) a database backed by a real file on the host
+    /// filesystem, via `node:fs`. Available on the Node/Deno build only.
+    /// Synchronous — unlike the OPFS/IDB backends there are no async handles to
+    /// pre-register. `path` is used verbatim (absolute or relative to cwd).
+    #[cfg(feature = "nodefs")]
+    #[wasm_bindgen(js_name = "openWithFile")]
+    pub fn open_with_file(path: &str) -> Result<WasmDatabase, JsError> {
+        let vfs = nodefs::NodeFsVfs::new();
+        let db_path = path.to_string();
+        let db = if db_path_is_loadable(&vfs, &db_path)? {
+            Database::open(&vfs, &db_path).map_err(to_js_error)?
+        } else {
+            // Missing, or too small to hold a header (e.g. a crashed prior
+            // session left an empty file) — start fresh.
+            Database::create(&vfs, &db_path).map_err(to_js_error)?
+        };
+        Ok(WasmDatabase {
+            db,
+            backend: VfsBackend::File(vfs),
+            path: db_path,
+        })
+    }
+
     pub fn exec(&mut self, sql: &str) -> Result<u64, JsError> {
         let result = self.db.execute(sql).map_err(to_js_error)?;
         Ok(result.rows_affected)
@@ -275,6 +302,8 @@ impl WasmDatabase {
             VfsBackend::Memory(v) => v,
             VfsBackend::Opfs { mux, .. } => mux,
             VfsBackend::Idb { mux, .. } => mux,
+            #[cfg(feature = "nodefs")]
+            VfsBackend::File(v) => v,
         };
         let file = vfs.open(&self.path, flags).map_err(to_js_error)?;
         let size = file.file_size().map_err(to_js_error)? as usize;

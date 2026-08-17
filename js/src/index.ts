@@ -3,7 +3,10 @@ export { WorkerDatabase } from "./worker-proxy.js";
 export { exposeForDevtools, type ExposeForDevtoolsOptions } from "./devtools.js";
 
 interface WasmModule {
-  default: (input?: RequestInfo | URL) => Promise<unknown>;
+  // The `--target web` build exports an async init that fetches the `.wasm`.
+  // The `--target nodejs` build auto-instantiates at import time and has no
+  // `default`, so this is optional and guarded at the call site.
+  default?: (input?: RequestInfo | URL) => Promise<unknown>;
   WasmDatabase: WasmDatabaseConstructor;
 }
 
@@ -47,9 +50,23 @@ interface WasmDatabaseConstructor {
     maxShards?: number
   ): Promise<WasmDatabaseInstance>;
   fromBuffer(data: Uint8Array): WasmDatabaseInstance;
+  /** Present only in the Node/Deno build (the `nodefs` feature). */
+  openWithFile?(path: string): WasmDatabaseInstance;
 }
 
 import type { SqlValue, Row, DatabaseOptions } from "./types.js";
+
+/** True under Deno (which needs createRequire to load the CJS nodejs build). */
+function isDeno(): boolean {
+  return typeof (globalThis as { Deno?: unknown }).Deno !== "undefined";
+}
+
+/** True under a server runtime (Node.js or Deno) where the `node:fs`-backed
+ *  build applies. The browser build is used everywhere else. */
+function isServerRuntime(): boolean {
+  const g = globalThis as { process?: { versions?: { node?: string } } };
+  return isDeno() || !!g.process?.versions?.node;
+}
 
 let wasmModule: WasmModule | null = null;
 let wasmInitPromise: Promise<WasmModule> | null = null;
@@ -59,14 +76,41 @@ async function loadWasm(wasmUrl?: string | URL): Promise<WasmModule> {
   if (wasmInitPromise) return wasmInitPromise;
 
   wasmInitPromise = (async () => {
-    // The compiled JS sits at dist/index.js and the wasm-pack output is at
-    // dist/wasm/rsqlite_wasm.js, so the relative resolution works whether
-    // the file is loaded directly, via a bundler, or from a CDN.
-    const mod: WasmModule = await import(
-      /* webpackIgnore: true */
-      wasmUrl?.toString() ?? new URL("./wasm/rsqlite_wasm.js", import.meta.url).href
-    );
-    await mod.default();
+    // Deno cannot `import()` the CommonJS `--target nodejs` build from a file
+    // URL (it sees `require` as undefined); load it through createRequire,
+    // which resolves CJS under Deno for both local and `npm:` consumption.
+    // This build synchronously self-instantiates the wasm (no fetch, no init)
+    // and carries the `node:fs`-backed file VFS.
+    if (!wasmUrl && isDeno()) {
+      // Variable specifier so tsc (browser lib, no @types/node) doesn't try to
+      // resolve node:module; it exists at runtime under Deno and Node.
+      const nodeModule = "node:module";
+      const { createRequire } = (await import(nodeModule)) as {
+        createRequire: (url: string) => (id: string) => WasmModule;
+      };
+      const require = createRequire(import.meta.url);
+      const mod = require("./wasm-node/rsqlite_wasm.js");
+      wasmModule = mod;
+      return mod;
+    }
+
+    // Node uses dynamic import of the same nodejs build (also mockable under
+    // vitest). The browser uses the `--target web` build, whose `default()`
+    // fetches the `.wasm`. An explicit `wasmUrl` always wins (web target).
+    const url =
+      wasmUrl?.toString() ??
+      new URL(
+        isServerRuntime()
+          ? "./wasm-node/rsqlite_wasm.js"
+          : "./wasm/rsqlite_wasm.js",
+        import.meta.url
+      ).href;
+    const mod: WasmModule = await import(/* webpackIgnore: true */ url);
+    // Web target only: initialize by fetching the wasm. The nodejs target has
+    // no `default` and is already live.
+    if (typeof mod.default === "function") {
+      await mod.default();
+    }
     wasmModule = mod;
     return mod;
   })();
@@ -108,6 +152,16 @@ export class Database {
         name ?? "rsqlite",
         chunkSize
       );
+      return new Database(inner);
+    }
+
+    if (backend === "file") {
+      if (typeof mod.WasmDatabase.openWithFile !== "function") {
+        throw new Error(
+          "rsqlite-wasm: the 'file' backend is only available in the Node.js/Deno build"
+        );
+      }
+      const inner = mod.WasmDatabase.openWithFile(name ?? "rsqlite.db");
       return new Database(inner);
     }
 

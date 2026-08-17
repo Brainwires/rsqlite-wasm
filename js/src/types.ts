@@ -7,8 +7,13 @@ export interface Row {
 }
 
 export interface DatabaseOptions {
-  /** Storage backend. Defaults to auto-detection (OPFS > IndexedDB). */
-  backend?: "memory" | "opfs" | "indexeddb";
+  /** Storage backend. Defaults to auto-detection (OPFS > IndexedDB).
+   *
+   *  `"file"` persists to a real file on the host filesystem via `node:fs`
+   *  and is available only under Node.js / Deno (server-side) builds — the
+   *  database name is used as the file path. It is the recommended durable
+   *  backend outside the browser. */
+  backend?: "memory" | "opfs" | "indexeddb" | "file";
   /** Explicit URL for the worker script. When omitted, resolved via
    *  `new URL("./worker.js", import.meta.url)`. Bundlers that inline
    *  worker-proxy.js break `import.meta.url` resolution — pass the

@@ -16,6 +16,16 @@ export default defineConfig({
           new URL("./test/fixtures/wasm-stub.ts", import.meta.url)
         ),
       },
+      {
+        // Under vitest's node environment, loadWasm() resolves the
+        // `--target nodejs` build (./wasm-node/rsqlite_wasm.js). Alias it to
+        // the same stub so resolution succeeds; index.test.ts's vi.mock then
+        // supplies the real fakes.
+        find: new URL("./src/wasm-node/rsqlite_wasm.js", import.meta.url).href,
+        replacement: fileURLToPath(
+          new URL("./test/fixtures/wasm-stub.ts", import.meta.url)
+        ),
+      },
     ],
     // The Node-target wasm-pack output uses CommonJS and synchronous WASM
     // initialization, which works under Node without any browser shims.

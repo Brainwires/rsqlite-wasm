@@ -100,6 +100,41 @@ db.close();
 
 The WASM module runs inside a Web Worker. The `WorkerDatabase` class is a main-thread proxy that communicates via `postMessage`. OPFS is used for persistence when available, with IndexedDB as a fallback.
 
+## Quick Start — JavaScript (Node.js / Deno, server-side)
+
+Outside the browser there is no OPFS or Web Worker, and the engine persists to a
+**real file** on disk via the `node:fs`-backed `"file"` backend. The same
+package works in Node.js and Deno; the runtime is detected automatically and the
+`--target nodejs` build (synchronous, no `fetch`) is loaded — no Web Worker, no
+async init.
+
+```typescript
+import { Database } from "rsqlite-wasm";
+
+// Path on disk. Created if missing; reopened (data intact) if it exists.
+const db = await Database.open("./data/app.db", { backend: "file" });
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS todos (
+    id INTEGER PRIMARY KEY,
+    title TEXT NOT NULL
+  )
+`);
+db.exec("INSERT INTO todos (title) VALUES ('Buy groceries')");
+
+const rows = db.query("SELECT * FROM todos");
+console.log(rows);
+
+db.close(); // flushes and releases the file descriptor
+```
+
+Under Deno, import via the npm specifier (`import { Database } from "npm:rsqlite-wasm"`); the `node:fs` backend resolves through Deno's Node compatibility layer. The on-disk file is a standard SQLite-3 database — openable by the `sqlite3` CLI and any SQLite tooling.
+
+> **Concurrency:** the file backend is **single-writer** today. File-level
+> locking (`flock`/`fcntl`) is not yet implemented, so a single process should
+> own the database file — do not point multiple processes at the same file
+> concurrently. Cross-process locking is tracked as a follow-up.
+
 ## DevTools (Brainwires OPFS extension)
 
 The [Brainwires OPFS](https://github.com/Brainwires/opfs-extension) Chrome

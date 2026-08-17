@@ -29,6 +29,8 @@ interface WasmDatabaseConstructor {
   new (): WasmDatabaseInstance;
   openInMemory(): WasmDatabaseInstance;
   fromBuffer(data: Uint8Array): WasmDatabaseInstance;
+  /** Node/Deno-only file backend (the `nodefs` cargo feature). */
+  openWithFile(path: string): WasmDatabaseInstance;
 }
 
 let cached: NodeWasmModule | null = null;

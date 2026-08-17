@@ -1,36 +1,37 @@
 // Tests for src/index.ts — the synchronous `Database` wrapper class and the
-// loadWasm/initWasm memoization. The wrapper dynamically import()s the
-// browser wasm module (`./wasm/rsqlite_wasm.js`), which cannot load under
-// node. We intercept that dynamic import with vi.mock against the resolved
-// file URL and substitute a fully stubbed WasmDatabase surface.
+// loadWasm/initWasm memoization. Under vitest's node environment loadWasm()
+// resolves the `--target nodejs` build (`./wasm-node/rsqlite_wasm.js`), which
+// auto-instantiates at import time and exposes no `default` init. We intercept
+// that dynamic import with vi.mock against the resolved file URL and substitute
+// a fully stubbed WasmDatabase surface (including the Node-only openWithFile).
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
-// The dynamic import target inside loadWasm is:
-//   new URL("./wasm/rsqlite_wasm.js", import.meta.url).href
+// The dynamic import target inside loadWasm under node is:
+//   new URL("./wasm-node/rsqlite_wasm.js", import.meta.url).href
 // import.meta.url for src/index.ts resolves to the src/ dir at test time, so
-// the wasm sibling URL is src/wasm/rsqlite_wasm.js. We mock that exact
+// the sibling URL is src/wasm-node/rsqlite_wasm.js. We mock that exact
 // specifier. vi.mock is hoisted; the factory builds canned instances.
 
 // vi.mock is hoisted to the top of the module, so the specifier and the spy
 // registry it closes over must be created via vi.hoisted (which runs first).
 const { wasmUrl, calls, makeInstance } = vi.hoisted(() => {
-  const url = new URL("../src/wasm/rsqlite_wasm.js", import.meta.url).href;
+  const url = new URL("../src/wasm-node/rsqlite_wasm.js", import.meta.url).href;
   const registry: {
-    defaultInit: ReturnType<typeof vi.fn>;
     ctor: ReturnType<typeof vi.fn>;
     openInMemory: ReturnType<typeof vi.fn>;
     openWithOpfs: ReturnType<typeof vi.fn>;
     openWithIdb: ReturnType<typeof vi.fn>;
+    openWithFile: ReturnType<typeof vi.fn>;
     openPersisted: ReturnType<typeof vi.fn>;
     fromBuffer: ReturnType<typeof vi.fn>;
     instances: ReturnType<typeof mk>[];
   } = {
-    defaultInit: vi.fn(),
     ctor: vi.fn(),
     openInMemory: vi.fn(),
     openWithOpfs: vi.fn(),
     openWithIdb: vi.fn(),
+    openWithFile: vi.fn(),
     openPersisted: vi.fn(),
     fromBuffer: vi.fn(),
     instances: [],
@@ -84,14 +85,16 @@ vi.mock(wasmUrl, () => {
       calls.fromBuffer(data);
       return makeInstance();
     }
+    static openWithFile(path: string) {
+      calls.openWithFile(path);
+      return makeInstance();
+    }
   }
-  return {
-    default: (...args: unknown[]) => {
-      calls.defaultInit(...args);
-      return Promise.resolve();
-    },
-    WasmDatabase,
-  };
+  // Under ESM interop a required CJS module's `default` is its module.exports
+  // object (not the web build's async init function). Mirror that: a non-
+  // function `default` so loadWasm's `typeof mod.default === "function"` guard
+  // correctly skips the init call for the nodejs-target build.
+  return { WasmDatabase, default: { WasmDatabase } };
 });
 
 // Import after the mock is registered. Because loadWasm memoizes the module
@@ -145,6 +148,16 @@ describe("Database.open backend dispatch", () => {
   it("indexeddb backend default name", async () => {
     await Database.open(undefined, { backend: "indexeddb" });
     expect(calls.openWithIdb).toHaveBeenCalledWith("rsqlite", undefined);
+  });
+
+  it("file backend forwards the path (node:fs build)", async () => {
+    await Database.open("/tmp/cache.db", { backend: "file" });
+    expect(calls.openWithFile).toHaveBeenCalledWith("/tmp/cache.db");
+  });
+
+  it("file backend defaults the path when name omitted", async () => {
+    await Database.open(undefined, { backend: "file" });
+    expect(calls.openWithFile).toHaveBeenCalledWith("rsqlite.db");
   });
 
   it("default/auto backend uses openPersisted", async () => {
@@ -335,14 +348,13 @@ describe("Database close + ensureOpen", () => {
 });
 
 describe("loadWasm / initWasm memoization", () => {
-  it("default init was called and module is memoized (single instance reuse)", async () => {
-    // By now many opens have happened but the wasm default() init should
-    // have run at most once thanks to wasmModule/wasmInitPromise caching.
+  it("module is memoized (single import, reused across opens)", async () => {
+    // The nodejs-target build auto-instantiates at import time (no default()
+    // init to call). Reaching here after many prior opens without throwing
+    // proves the memoized module path (wasmModule early-return) is used —
+    // subsequent opens don't re-import.
     await Database.openInMemory();
-    expect(calls.defaultInit).toHaveBeenCalledTimes(0);
-    // ^ cleared each beforeEach; the real assertion is that subsequent
-    // opens don't re-import. Reaching here without throwing proves the
-    // memoized module path (wasmModule early-return) is used.
+    expect(calls.openInMemory).toHaveBeenCalledTimes(1);
   });
 
   it("initWasm resolves without throwing (early-return path)", async () => {
