@@ -1,5 +1,5 @@
 use rsqlite_storage::codec::Value;
-use rsqlite_storage::pager::Pager;
+use rsqlite_storage::pager::{Pager, Synchronous};
 
 use crate::catalog::Catalog;
 use crate::error::{Error, Result};
@@ -363,6 +363,37 @@ pub fn execute_pragma(
                 rows: vec![],
             })
         }
+        "synchronous" => match argument {
+            Some(val) => {
+                let level = match val.trim().trim_matches('\'').to_ascii_lowercase().as_str() {
+                    "0" | "off" => Synchronous::Off,
+                    "1" | "normal" => Synchronous::Normal,
+                    "2" | "full" | "3" | "extra" => Synchronous::Full,
+                    other => {
+                        return Err(Error::Other(format!("invalid synchronous mode: {other}")));
+                    }
+                };
+                pager.set_synchronous(level);
+                Ok(QueryResult {
+                    columns: vec!["synchronous".to_string()],
+                    rows: vec![],
+                })
+            }
+            None => {
+                let n = match pager.synchronous() {
+                    Synchronous::Off => 0,
+                    Synchronous::Normal => 1,
+                    Synchronous::Full => 2,
+                };
+                Ok(QueryResult {
+                    columns: vec!["synchronous".to_string()],
+                    rows: vec![Row {
+                        values: vec![Value::Integer(n)],
+                        rowid: None,
+                    }],
+                })
+            }
+        },
         _ => Err(Error::Other(format!("unsupported PRAGMA: {name}"))),
     }
 }

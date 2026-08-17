@@ -8,6 +8,18 @@ use crate::header::{DatabaseHeader, HEADER_SIZE};
 
 const DEFAULT_CACHE_SIZE: usize = 256;
 
+/// Mirrors SQLite's `PRAGMA synchronous`: how aggressively the pager fsyncs.
+/// `Full` (default) syncs on every commit; `Normal` skips the per-commit sync but
+/// keeps structural (`full`) syncs; `Off` never syncs. Lower levels trade
+/// crash-durability for write speed — appropriate for regenerable data such as a
+/// cache, where losing the last few writes on a crash is acceptable.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Synchronous {
+    Off,
+    Normal,
+    Full,
+}
+
 pub struct Pager {
     file: Box<dyn VfsFile>,
     pub header: DatabaseHeader,
@@ -29,6 +41,8 @@ pub struct Pager {
     saved_page_count: u32,
     saved_free_list: Vec<u32>,
     savepoints: Vec<SavepointState>,
+    /// `PRAGMA synchronous` level — gates the per-commit fsync (default `Full`).
+    synchronous: Synchronous,
 }
 
 struct SavepointState {
@@ -83,6 +97,7 @@ impl Pager {
             saved_page_count: page_count,
             saved_free_list: Vec::new(),
             savepoints: Vec::new(),
+            synchronous: Synchronous::Full,
         };
         pager.load_free_list()?;
         pager.saved_free_list = pager.free_list.clone();
@@ -135,7 +150,31 @@ impl Pager {
             saved_page_count: 1,
             saved_free_list: Vec::new(),
             savepoints: Vec::new(),
+            synchronous: Synchronous::Full,
         })
+    }
+
+    /// The current `PRAGMA synchronous` level.
+    pub fn synchronous(&self) -> Synchronous {
+        self.synchronous
+    }
+
+    /// Set the `PRAGMA synchronous` level (durability vs. write speed).
+    pub fn set_synchronous(&mut self, level: Synchronous) {
+        self.synchronous = level;
+    }
+
+    /// Sync the file honoring the current `synchronous` level: `Off` never syncs,
+    /// `Normal` syncs only structural (`full`) operations, `Full` always syncs.
+    fn maybe_sync(&mut self, flags: SyncFlags) -> Result<()> {
+        match self.synchronous {
+            Synchronous::Off => Ok(()),
+            Synchronous::Normal if !flags.full => Ok(()),
+            _ => {
+                self.file.sync(flags)?;
+                Ok(())
+            }
+        }
     }
 
     /// Read a page. Pages are 1-indexed (page 1 is the first page).
@@ -275,7 +314,7 @@ impl Pager {
         self.header.write(&mut header_buf);
         self.file.write(0, &header_buf)?;
 
-        self.file.sync(SyncFlags { full: false })?;
+        self.maybe_sync(SyncFlags { full: false })?;
         Ok(())
     }
 
@@ -502,7 +541,7 @@ impl Pager {
     pub fn replace_content(&mut self, data: &[u8]) -> Result<()> {
         self.file.truncate(0)?;
         self.file.write(0, data)?;
-        self.file.sync(SyncFlags { full: true })?;
+        self.maybe_sync(SyncFlags { full: true })?;
 
         let mut header_buf = [0u8; HEADER_SIZE];
         header_buf.copy_from_slice(&data[..HEADER_SIZE]);

@@ -1,6 +1,44 @@
 # Changelog
 
-## 0.1.1 — unreleased
+## 0.1.3
+
+Adds `PRAGMA synchronous`, letting callers trade fsync-per-commit durability for
+write throughput. `rsqlite-wasm` bumps to 0.1.3; the supporting changes land in
+`rsqlite-core` (pragma dispatch) and `rsqlite-storage` (the pager gate).
+
+### New features
+
+- **`PRAGMA synchronous = OFF | NORMAL | FULL`** (and the read form
+  `PRAGMA synchronous`). `FULL` (default) fsyncs on every commit — unchanged
+  behavior. `NORMAL` skips the per-commit fsync (keeping structural syncs); `OFF`
+  never syncs. On the `node:fs` file backend this is a large write speedup (~50×
+  for `NORMAL` in a commit-per-write loop) at the cost of losing the last few
+  commits on a crash — appropriate for regenerable data such as a cache.
+
+## 0.1.2
+
+Adds a first-class server-side (Node.js / Deno) file-persistence backend. Only
+the `rsqlite-wasm` crate changes in this release; the rest of the family stays
+at 0.1.1.
+
+### New features
+
+- **Server-side file persistence (Node.js / Deno).** A new `node:fs`-backed VFS
+  compiles into the `--target nodejs` build (`nodefs` cargo feature) and is
+  exposed as `WasmDatabase.openWithFile(path)` / `Database.open(path, { backend:
+  "file" })`. Databases persist to a real file on disk — no OPFS, no Web Worker,
+  no `fetch` — and the file is a standard SQLite-3 database readable by the
+  `sqlite3` CLI. The JS wrapper auto-detects Node/Deno and loads the nodejs
+  build (which synchronously self-instantiates). Single-writer only for now (see
+  follow-ups).
+
+### Known follow-ups
+
+- **Cross-process file locking for the `file` backend.** The `node:fs` VFS tracks
+  locks advisorily only (no `flock`/`fcntl`), so the file backend is
+  single-writer; multi-process access to one file is unsafe.
+
+## 0.1.1
 
 Correctness, security, and cleanup release: fixes data-loss/corruption bugs in
 the storage engine and a parameter-binding bug, hardens the DevTools bridge, and
