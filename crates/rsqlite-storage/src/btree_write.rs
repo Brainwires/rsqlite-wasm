@@ -1052,43 +1052,102 @@ fn rewrite_index_leaf_page(
     Ok(())
 }
 
-pub fn btree_index_delete(pager: &mut Pager, root_page: u32, key: &Record) -> Result<()> {
-    let mut cursor = IndexCursor::new(pager, root_page);
-    let entries = cursor.collect_all()?;
-
-    let survivors: Vec<Record> = entries
-        .into_iter()
-        .filter(|rec| compare_records(rec, key) != std::cmp::Ordering::Equal)
-        .collect();
-
-    rebuild_index_btree(pager, root_page, &survivors)
+/// Descend an index btree to the leaf where `key` routes (same rule as
+/// insertion: the first separator `>= key` sends the search to its left
+/// child), returning the leaf page number.
+fn find_index_leaf(pager: &mut Pager, page: u32, key: &Record) -> Result<u32> {
+    let data = pager.get_page(page)?.data.clone();
+    let offset = btree_header_offset(page);
+    let header = parse_btree_header(&data, offset)?;
+    if header.page_type == PageType::LeafIndex {
+        return Ok(page);
+    }
+    let usable = pager.usable_size();
+    let pointers = read_cell_pointers(&data, offset + header.header_size(), header.cell_count);
+    let mut child = header
+        .right_most_pointer
+        .ok_or_else(|| StorageError::Corrupt("interior index missing rightmost pointer".into()))?;
+    for &ptr in &pointers {
+        let ic = parse_index_interior_cell(&data, ptr as usize, usable)?;
+        let ic_payload = reassemble_payload(pager, &ic.payload, ic.payload_size, ic.overflow_page)?;
+        let ic_record = Record::decode(&ic_payload)?;
+        if compare_records(key, &ic_record) != std::cmp::Ordering::Greater {
+            child = ic.left_child_page;
+            break;
+        }
+    }
+    find_index_leaf(pager, child, key)
 }
 
-/// Delete several index keys with a SINGLE rebuild. For each key in `keys`,
-/// removes one matching entry (the first encountered). See
-/// [`btree_delete_many`] for the rationale: per-key rebuilds are O(n²).
-pub fn btree_index_delete_many(pager: &mut Pager, root_page: u32, keys: &[Record]) -> Result<()> {
-    if keys.is_empty() {
-        return Ok(());
-    }
-    let mut cursor = IndexCursor::new(pager, root_page);
-    let entries = cursor.collect_all()?;
+/// Remove the first index-leaf cell matching `matches` from `leaf` in place:
+/// rewrite just that page without the cell and free any overflow chain it
+/// owned. Interior separators are deliberately left untouched — a delete only
+/// shrinks a subtree's contents, so every separator stays a valid routing
+/// bound (searches for the removed key route correctly and find nothing).
+/// Returns whether a cell was removed.
+fn index_leaf_delete_one(
+    pager: &mut Pager,
+    leaf: u32,
+    matches: impl Fn(&Record) -> bool,
+) -> Result<bool> {
+    let usable = pager.usable_size();
+    let page_data = pager.get_page(leaf)?.data.clone();
+    let offset = btree_header_offset(leaf);
+    let header = parse_btree_header(&page_data, offset)?;
+    let pointers = read_cell_pointers(&page_data, offset + header.header_size(), header.cell_count);
 
-    // Each key removes at most one matching survivor. Track how many of each
-    // key we still need to drop via a small multiset over indices.
-    let mut to_remove: Vec<bool> = vec![false; keys.len()];
-    let mut survivors: Vec<Record> = Vec::with_capacity(entries.len());
-    'entries: for rec in entries {
-        for (i, key) in keys.iter().enumerate() {
-            if !to_remove[i] && compare_records(&rec, key) == std::cmp::Ordering::Equal {
-                to_remove[i] = true;
-                continue 'entries;
+    let mut survivors: Vec<(i64, Vec<u8>)> = Vec::with_capacity(pointers.len());
+    let mut freed: Vec<u32> = Vec::new();
+    let mut found = false;
+    for &ptr in &pointers {
+        let cell_start = ptr as usize;
+        let cell = parse_index_leaf_cell(&page_data, cell_start, usable)?;
+        if !found {
+            let full =
+                reassemble_payload(pager, &cell.payload, cell.payload_size, cell.overflow_page)?;
+            let rec = Record::decode(&full)?;
+            if matches(&rec) {
+                found = true;
+                if let Some(first) = cell.overflow_page {
+                    let n = cell.payload_size - cell.payload.len();
+                    freed.extend(collect_overflow_pages(pager, first, n)?);
+                }
+                continue;
             }
         }
-        survivors.push(rec);
+        let raw_len = index_leaf_cell_raw_len(&page_data, cell_start, usable);
+        survivors.push((0, page_data[cell_start..cell_start + raw_len].to_vec()));
     }
+    if !found {
+        return Ok(false);
+    }
+    rewrite_index_leaf_page(pager, leaf, &survivors)?;
+    for p in freed {
+        pager.free_page(p);
+    }
+    Ok(true)
+}
 
-    rebuild_index_btree(pager, root_page, &survivors)
+/// Delete one index entry equal to `key`, in place (O(log n)): route to its
+/// leaf and rewrite that single page. See [`index_leaf_delete_one`].
+pub fn btree_index_delete(pager: &mut Pager, root_page: u32, key: &Record) -> Result<()> {
+    let leaf = find_index_leaf(pager, root_page, key)?;
+    index_leaf_delete_one(pager, leaf, |rec| {
+        compare_records(rec, key) == std::cmp::Ordering::Equal
+    })?;
+    Ok(())
+}
+
+/// Delete several index keys, each in place (O(k log n)) — one leaf rewrite
+/// per key rather than a whole-tree rebuild.
+pub fn btree_index_delete_many(pager: &mut Pager, root_page: u32, keys: &[Record]) -> Result<()> {
+    for key in keys {
+        let leaf = find_index_leaf(pager, root_page, key)?;
+        index_leaf_delete_one(pager, leaf, |rec| {
+            compare_records(rec, key) == std::cmp::Ordering::Equal
+        })?;
+    }
+    Ok(())
 }
 
 /// Re-initialize the index root as an empty leaf and re-insert all `keys`
@@ -1144,60 +1203,86 @@ pub fn btree_index_delete_by_prefix(
     rebuild_index_btree(pager, root_page, &survivors)
 }
 
-/// Delete the row with `rowid` from the table btree rooted at `root_page`.
-///
-/// The btree may span multiple pages once splits have occurred, so we cannot
-/// simply collapse all survivors onto the root leaf. Instead we collect the
-/// surviving rows, re-initialize the root as an empty leaf, and re-insert each
-/// survivor through the normal insert path (which re-splits and deepens the
-/// root in place as needed). This keeps the root page number stable and the
-/// tree well-formed for any number of rows.
-///
-/// NOTE: overflow pages belonging to deleted (or rebuilt) rows are not
-/// returned to a freelist — the pager has no freelist — so they leak. This is
-/// a documented shortcut; correctness is preserved.
-pub fn btree_delete(pager: &mut Pager, root_page: u32, rowid: i64) -> Result<()> {
-    let mut cursor = BTreeCursor::new(pager, root_page);
-    let mut rows: Vec<(i64, Vec<u8>)> = Vec::new();
-    let mut has_row = cursor.first()?;
-    while has_row {
-        let current = cursor.current()?;
-        if current.rowid != rowid {
-            let payload = current.record.encode();
-            rows.push((current.rowid, payload));
-        }
-        has_row = cursor.next()?;
+/// Descend a table btree to the leaf where `rowid` routes, returning the leaf
+/// page number (mirrors the routing in [`crate::btree::btree_row_exists`]).
+fn find_table_leaf(pager: &mut Pager, page: u32, rowid: i64) -> Result<u32> {
+    let data = pager.get_page(page)?.data.clone();
+    let offset = btree_header_offset(page);
+    let header = parse_btree_header(&data, offset)?;
+    if header.page_type.is_leaf() {
+        return Ok(page);
     }
-
-    rebuild_table_btree(pager, root_page, &rows)
+    let pointers = read_cell_pointers(&data, offset + header.header_size(), header.cell_count);
+    for &ptr in &pointers {
+        let cell = parse_table_interior_cell(&data, ptr as usize);
+        if rowid <= cell.rowid {
+            return find_table_leaf(pager, cell.left_child_page, rowid);
+        }
+    }
+    let right = header
+        .right_most_pointer
+        .ok_or_else(|| StorageError::Corrupt("interior table missing rightmost pointer".into()))?;
+    find_table_leaf(pager, right, rowid)
 }
 
-/// Delete every rowid in `rowids` from the table btree rooted at `root_page`
-/// with a SINGLE rebuild.
+/// Delete the row with `rowid` in place (O(log n)): route to its leaf and
+/// rewrite that single page without the cell, freeing any overflow chain.
+/// Returns whether a row was removed.
 ///
-/// Calling [`btree_delete`] once per rowid rebuilds the entire tree for every
-/// deleted row — O(deleted × surviving) work that is unusably slow at scale.
-/// This collects all survivors once, then rebuilds once. Full payloads
-/// (including overflow tails) are materialized into owned `Vec`s before any
-/// page is re-initialized, so no page is read after being overwritten.
-pub fn btree_delete_many(pager: &mut Pager, root_page: u32, rowids: &[i64]) -> Result<()> {
-    if rowids.is_empty() {
-        return Ok(());
-    }
-    let remove: std::collections::HashSet<i64> = rowids.iter().copied().collect();
+/// The leaf may become empty and interior separators are left as-is; both are
+/// tolerated — a table separator is a rowid upper bound for its left subtree,
+/// and a delete only lowers a subtree's max, so routing stays correct and an
+/// empty leaf simply yields no rows on lookup / accepts inserts normally. See
+/// [`btree_max_rowid`], which is robust to an empty rightmost leaf.
+pub fn btree_delete_one(pager: &mut Pager, root_page: u32, rowid: i64) -> Result<bool> {
+    let leaf = find_table_leaf(pager, root_page, rowid)?;
+    let usable = pager.usable_size();
+    let page_data = pager.get_page(leaf)?.data.clone();
+    let offset = btree_header_offset(leaf);
+    let header = parse_btree_header(&page_data, offset)?;
+    let pointers = read_cell_pointers(&page_data, offset + header.header_size(), header.cell_count);
 
-    let mut cursor = BTreeCursor::new(pager, root_page);
-    let mut rows: Vec<(i64, Vec<u8>)> = Vec::new();
-    let mut has_row = cursor.first()?;
-    while has_row {
-        let current = cursor.current()?;
-        if !remove.contains(&current.rowid) {
-            rows.push((current.rowid, current.record.encode()));
+    let mut survivors: Vec<(i64, Vec<u8>)> = Vec::with_capacity(pointers.len());
+    let mut freed: Vec<u32> = Vec::new();
+    let mut found = false;
+    for &ptr in &pointers {
+        let cell_start = ptr as usize;
+        let cell = parse_table_leaf_cell(&page_data, cell_start, usable)?;
+        if cell.rowid == rowid {
+            found = true;
+            if let Some(first) = cell.overflow_page {
+                let n = cell.payload_size - cell.payload.len();
+                freed.extend(collect_overflow_pages(pager, first, n)?);
+            }
+            continue;
         }
-        has_row = cursor.next()?;
+        let raw_len = table_leaf_cell_raw_len(&page_data, cell_start, usable);
+        survivors.push((cell.rowid, page_data[cell_start..cell_start + raw_len].to_vec()));
     }
+    if !found {
+        return Ok(false);
+    }
+    rewrite_leaf_page(pager, leaf, &survivors)?;
+    for p in freed {
+        pager.free_page(p);
+    }
+    Ok(true)
+}
 
-    rebuild_table_btree(pager, root_page, &rows)
+/// Delete the row with `rowid` from the table btree rooted at `root_page`
+/// (in place — see [`btree_delete_one`]).
+pub fn btree_delete(pager: &mut Pager, root_page: u32, rowid: i64) -> Result<()> {
+    btree_delete_one(pager, root_page, rowid)?;
+    Ok(())
+}
+
+/// Delete every rowid in `rowids`, each in place (O(k log n)) — one leaf
+/// rewrite per row rather than a whole-tree rebuild.
+pub fn btree_delete_many(pager: &mut Pager, root_page: u32, rowids: &[i64]) -> Result<()> {
+    for &rowid in rowids {
+        btree_delete_one(pager, root_page, rowid)?;
+    }
+    Ok(())
 }
 
 /// Walk the overflow chain starting at `first` and return its page numbers.
@@ -1221,6 +1306,10 @@ fn collect_overflow_pages(pager: &mut Pager, first: u32, mut remaining: usize) -
 /// chains. Used to reclaim a tree's pages before a rebuild so they are reused
 /// rather than orphaned (which would leave `PRAGMA integrity_check`-rejecting
 /// "never used" pages).
+///
+/// Retained for a future whole-tree compaction path; table deletes are now
+/// in-place (see [`btree_delete_one`]) and no longer rebuild.
+#[allow(dead_code)]
 fn collect_table_tree_pages(pager: &mut Pager, root_page: u32) -> Result<Vec<u32>> {
     let usable = pager.usable_size();
     let mut out = Vec::new();
@@ -1324,6 +1413,10 @@ fn collect_index_tree_pages(pager: &mut Pager, root_page: u32) -> Result<Vec<u32
 /// before re-initializing we reclaim every non-root page of the old tree onto
 /// the pager's freelist. The rebuild then reuses those pages instead of growing
 /// the file, keeping the database free of orphaned "never used" pages.
+///
+/// Retained for a future whole-tree compaction path; table deletes are now
+/// in-place (see [`btree_delete_one`]) and no longer rebuild.
+#[allow(dead_code)]
 fn rebuild_table_btree(pager: &mut Pager, root_page: u32, rows: &[(i64, Vec<u8>)]) -> Result<()> {
     let old_pages = collect_table_tree_pages(pager, root_page)?;
     let page_size = pager.page_size() as usize;
@@ -1388,6 +1481,38 @@ pub fn insert_schema_entry(
             Value::Text(tbl_name.to_string()),
             Value::Integer(rootpage as i64),
             Value::Text(sql.to_string()),
+        ],
+    };
+
+    let max_rowid = crate::btree::btree_max_rowid(pager, 1)?;
+    let new_rowid = max_rowid + 1;
+    let new_root = btree_insert(pager, 1, new_rowid, &record)?;
+
+    debug_assert_eq!(
+        new_root, 1,
+        "sqlite_schema root must remain page 1 after insert (deepening should keep it)"
+    );
+
+    Ok(())
+}
+
+/// Like [`insert_schema_entry`] but writes SQL `NULL`. Used for implicit
+/// `sqlite_autoindex_*` rows which, matching SQLite, carry no CREATE
+/// statement; their columns are re-derived from the owning table on load.
+pub fn insert_schema_entry_null_sql(
+    pager: &mut Pager,
+    entry_type: &str,
+    name: &str,
+    tbl_name: &str,
+    rootpage: u32,
+) -> Result<()> {
+    let record = Record {
+        values: vec![
+            Value::Text(entry_type.to_string()),
+            Value::Text(name.to_string()),
+            Value::Text(tbl_name.to_string()),
+            Value::Integer(rootpage as i64),
+            Value::Null,
         ],
     };
 

@@ -4,7 +4,7 @@ mod btree_write;
 pub use btree_write::{
     btree_create_index, btree_create_table, btree_delete, btree_delete_many, btree_index_delete,
     btree_index_delete_by_prefix, btree_index_delete_many, btree_index_insert, btree_insert,
-    delete_schema_entries, insert_schema_entry,
+    delete_schema_entries, insert_schema_entry, insert_schema_entry_null_sql,
 };
 
 use crate::codec::{Record, Value};
@@ -496,8 +496,24 @@ pub fn btree_max_rowid(pager: &mut Pager, root_page: u32) -> Result<i64> {
         let cell = parse_table_leaf_cell(&page_data, last_ptr, usable)?;
         Ok(cell.rowid)
     } else {
+        // Take the max of the rightmost subtree and the last interior
+        // separator. In-place deletes (which don't rebalance) can empty the
+        // rightmost leaf, so the right subtree may report 0 even though rows
+        // exist to the left. A table separator is the rowid upper bound of its
+        // left subtree — possibly stale (higher than any live rowid) after a
+        // delete — so falling back to it never *under*estimates the max, and a
+        // slightly-high "next rowid = max + 1" only skips ids, never collides.
         let right = header.right_most_pointer.unwrap();
-        btree_max_rowid(pager, right)
+        let right_max = btree_max_rowid(pager, right)?;
+        let last_separator = if header.cell_count > 0 {
+            let pointers =
+                read_cell_pointers(&page_data, offset + header.header_size(), header.cell_count);
+            let last_ptr = pointers[header.cell_count as usize - 1] as usize;
+            parse_table_interior_cell(&page_data, last_ptr).rowid
+        } else {
+            0
+        };
+        Ok(right_max.max(last_separator))
     }
 }
 
@@ -533,6 +549,59 @@ pub fn btree_row_exists(pager: &mut Pager, root_page: u32, target_rowid: i64) ->
         }
         let right = header.right_most_pointer.unwrap();
         btree_row_exists(pager, right, target_rowid)
+    }
+}
+
+/// Descend a table b-tree by rowid and return the decoded row, or `None`
+/// when no row has that rowid. O(log n) — the read-side twin of
+/// [`btree_row_exists`], returning the row instead of a bool. Replaces the
+/// O(rows) linear scan callers used to do to fetch a single row by rowid.
+pub fn btree_read_row_by_rowid(
+    pager: &mut Pager,
+    root_page: u32,
+    target_rowid: i64,
+) -> Result<Option<CursorRow>> {
+    let page_data = pager.get_page(root_page)?.data.clone();
+    let offset = btree_header_offset(root_page);
+    let header = parse_btree_header(&page_data, offset)?;
+
+    if header.cell_count == 0 && header.page_type.is_leaf() {
+        return Ok(None);
+    }
+
+    let pointers = read_cell_pointers(&page_data, offset + header.header_size(), header.cell_count);
+
+    if header.page_type.is_leaf() {
+        let usable = pager.usable_size();
+        for &ptr in &pointers {
+            let cell = parse_table_leaf_cell(&page_data, ptr as usize, usable)?;
+            if cell.rowid == target_rowid {
+                let full = reassemble_payload(
+                    pager,
+                    &cell.payload,
+                    cell.payload_size,
+                    cell.overflow_page,
+                )?;
+                let record = Record::decode(&full)?;
+                return Ok(Some(CursorRow {
+                    rowid: cell.rowid,
+                    record,
+                }));
+            }
+            if cell.rowid > target_rowid {
+                return Ok(None);
+            }
+        }
+        Ok(None)
+    } else {
+        for &ptr in &pointers {
+            let cell = parse_table_interior_cell(&page_data, ptr as usize);
+            if target_rowid <= cell.rowid {
+                return btree_read_row_by_rowid(pager, cell.left_child_page, target_rowid);
+            }
+        }
+        let right = header.right_most_pointer.unwrap();
+        btree_read_row_by_rowid(pager, right, target_rowid)
     }
 }
 
@@ -789,18 +858,96 @@ impl<'a> IndexCursor<'a> {
 
     /// Position the cursor at the first record whose leading
     /// `prefix.values.len()` values equal `prefix`. Returns true when
-    /// such a record is found, false otherwise (cursor left at end).
+    /// such a record is found, false otherwise (cursor left at the first
+    /// record that sorts after the prefix, or at end).
+    ///
+    /// O(log n): descends the b-tree using the same child-selection rule as
+    /// the write path (`index_insert_into_page`), then continues to the leaf
+    /// entry the search key would occupy. Because interior separator keys are
+    /// duplicated into leaves (the split promotes the *largest key remaining*
+    /// on the left leaf), the descent lands in the leaf that holds the first
+    /// matching entry, so no sibling walk is needed.
     pub fn seek_first_with_prefix(&mut self, prefix: &Record) -> Result<bool> {
         let prefix_len = prefix.values.len();
-        let mut has_row = self.first()?;
-        while has_row {
+        self.seek_at_or_after(prefix)?;
+        if self.state == CursorState::Valid {
             let rec = self.current()?;
             if compare_records_by_prefix(&rec, prefix, prefix_len) == std::cmp::Ordering::Equal {
                 return Ok(true);
             }
-            has_row = self.next()?;
         }
         Ok(false)
+    }
+
+    /// Position the cursor at the first record whose leading
+    /// `key.values.len()` values are >= `key` (a lower-bound seek). Returns
+    /// true when the cursor lands on such a record, false when every record
+    /// sorts before `key` (cursor left at end). Used by equality and range
+    /// index scans; iterate forward with [`next`](Self::next) from here.
+    pub fn seek_at_or_after(&mut self, key: &Record) -> Result<bool> {
+        let prefix_len = key.values.len();
+        self.stack.clear();
+        self.state = CursorState::Invalid;
+
+        let mut page_num = self.root_page;
+        loop {
+            let page_data = self.pager.get_page(page_num)?.data.clone();
+            let offset = btree_header_offset(page_num);
+            let header = parse_btree_header(&page_data, offset)?;
+            let usable = self.pager.usable_size();
+            let pointers =
+                read_cell_pointers(&page_data, offset + header.header_size(), header.cell_count);
+
+            if header.page_type.is_leaf() {
+                // First leaf cell whose prefix is >= key. If none, the leaf is
+                // exhausted (idx == cell_count) and the descent guarantees no
+                // later leaf can match, so the cursor is at end.
+                let mut idx = header.cell_count as usize;
+                for i in 0..header.cell_count as usize {
+                    let cell = parse_index_leaf_cell(&page_data, pointers[i] as usize, usable)?;
+                    let full = reassemble_payload(
+                        self.pager,
+                        &cell.payload,
+                        cell.payload_size,
+                        cell.overflow_page,
+                    )?;
+                    let rec = Record::decode(&full)?;
+                    if compare_records_by_prefix(&rec, key, prefix_len) != std::cmp::Ordering::Less {
+                        idx = i;
+                        break;
+                    }
+                }
+                self.stack.push((page_num, idx));
+                if idx < header.cell_count as usize {
+                    self.state = CursorState::Valid;
+                    return Ok(true);
+                }
+                self.state = CursorState::AtEnd;
+                return Ok(false);
+            }
+
+            // Interior: descend into the first child whose separator is >= key
+            // (its subtree may hold an entry >= key); otherwise the rightmost
+            // child. Separators are the max key of the left subtree, mirroring
+            // the write-side descent rule.
+            let mut chosen = header.cell_count as usize; // default: rightmost
+            for i in 0..header.cell_count as usize {
+                let cell = parse_index_interior_cell(&page_data, pointers[i] as usize, usable)?;
+                let full = reassemble_payload(
+                    self.pager,
+                    &cell.payload,
+                    cell.payload_size,
+                    cell.overflow_page,
+                )?;
+                let rec = Record::decode(&full)?;
+                if compare_records_by_prefix(&rec, key, prefix_len) != std::cmp::Ordering::Less {
+                    chosen = i;
+                    break;
+                }
+            }
+            self.stack.push((page_num, chosen));
+            page_num = self.get_child_page(&page_data, offset, &header, chosen)?;
+        }
     }
 
     fn get_child_page(

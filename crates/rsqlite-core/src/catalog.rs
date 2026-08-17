@@ -268,6 +268,28 @@ impl Catalog {
             }
         }
 
+        // Implicit PK/UNIQUE indexes (SQLite's `sqlite_autoindex_*`) carry no
+        // SQL, so `parse_index_def` left their columns empty. Re-derive them
+        // from the owning table's constraints — the `_<n>` ordinal selects the
+        // constraint in the same deterministic order the DDL created them.
+        for index in indexes.values_mut() {
+            if !index.columns.is_empty() {
+                continue;
+            }
+            let lname = index.name.to_lowercase();
+            if !lname.starts_with("sqlite_autoindex_") {
+                continue;
+            }
+            if let (Some(table), Some(n)) = (
+                tables.get(&index.table_name.to_lowercase()),
+                autoindex_ordinal(&lname),
+            ) {
+                if let Some(cols) = implicit_index_specs(table).get(n.saturating_sub(1)) {
+                    index.columns = cols.clone();
+                }
+            }
+        }
+
         let index_stats = load_index_stats(pager, &tables).unwrap_or_default();
 
         Ok(Catalog {
@@ -629,6 +651,69 @@ fn map_referential_action(action: Option<ast::ReferentialAction>) -> Referential
         Some(ast::ReferentialAction::Restrict) => ReferentialAction::Restrict,
         Some(ast::ReferentialAction::NoAction) | None => ReferentialAction::NoAction,
     }
+}
+
+/// The column-sets that receive an implicit index (SQLite's
+/// `sqlite_autoindex_*`) for a table's PRIMARY KEY and UNIQUE constraints, in
+/// the deterministic order the DDL creates them: the PRIMARY KEY first (a
+/// single INTEGER PK is the rowid alias and is skipped — it needs no index),
+/// then each UNIQUE column in declaration order, dropping a UNIQUE spec that
+/// duplicates the PK. Column names are returned in their declared case.
+///
+/// Shared by DDL (creation) and catalog load (re-deriving the SQL-less
+/// autoindex columns) so the `_<n>` ordinal always maps to the same
+/// constraint. Returns empty for WITHOUT ROWID tables — their PK is the table
+/// btree itself, so no separate index is created.
+pub(crate) fn implicit_index_specs(table: &TableDef) -> Vec<Vec<String>> {
+    if table.without_rowid {
+        return Vec::new();
+    }
+
+    let mut specs: Vec<Vec<String>> = Vec::new();
+
+    // PRIMARY KEY.
+    if !table.pk_columns.is_empty() {
+        // Composite PK: map the lowercased member names back to declared case.
+        let cols: Vec<String> = table
+            .pk_columns
+            .iter()
+            .map(|lc| {
+                table
+                    .columns
+                    .iter()
+                    .find(|c| c.name.eq_ignore_ascii_case(lc))
+                    .map(|c| c.name.clone())
+                    .unwrap_or_else(|| lc.clone())
+            })
+            .collect();
+        specs.push(cols);
+    } else if let Some(col) = table
+        .columns
+        .iter()
+        .find(|c| c.is_primary_key && !c.is_rowid_alias)
+    {
+        specs.push(vec![col.name.clone()]);
+    }
+
+    // UNIQUE columns (skip the rowid alias; dedupe an identical single-column PK).
+    for col in &table.columns {
+        if col.is_unique && !col.is_rowid_alias {
+            let dup = specs
+                .iter()
+                .any(|s| s.len() == 1 && s[0].eq_ignore_ascii_case(&col.name));
+            if !dup {
+                specs.push(vec![col.name.clone()]);
+            }
+        }
+    }
+
+    specs
+}
+
+/// Parse the trailing 1-based ordinal `n` from a `sqlite_autoindex_<table>_<n>`
+/// name (the final `_`-delimited segment).
+pub(crate) fn autoindex_ordinal(name: &str) -> Option<usize> {
+    name.rsplit('_').next()?.parse::<usize>().ok()
 }
 
 fn parse_index_def(entry: &SchemaEntry) -> Result<Option<IndexDef>> {

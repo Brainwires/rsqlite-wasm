@@ -124,12 +124,74 @@ pub(super) fn check_unique_constraints(
         return Ok(());
     }
 
+    // Fast path: check each constraint against its index via an O(log n) seek
+    // rather than a full-table scan. A constraint whose index is (unexpectedly)
+    // absent is deferred to the scan fallback below, so correctness never
+    // depends on the index existing.
+    let mut scan_unique: Vec<(usize, &str)> = Vec::new();
+    for (col_idx, col_name) in &unique_cols {
+        let new_val = &values[*col_idx];
+        if matches!(new_val, Value::Null) {
+            continue;
+        }
+        match super::helpers::find_equality_index(catalog, table_name, &[col_name]) {
+            Some(ix) => {
+                let rowids = super::helpers::index_seek_rowids(
+                    pager,
+                    ix.root_page,
+                    std::slice::from_ref(new_val),
+                )?;
+                if rowids.iter().any(|rid| Some(*rid) != exclude_rowid) {
+                    return Err(Error::Other(format!(
+                        "UNIQUE constraint failed: {}.{}",
+                        table_name, col_name
+                    )));
+                }
+            }
+            None => scan_unique.push((*col_idx, col_name)),
+        }
+    }
+
+    // Composite-PK tuple check: a row conflicts only when *every* PK column
+    // matches simultaneously. Per SQLite semantics any NULL in the new tuple
+    // disables the conflict (NULLs are distinct under UNIQUE).
+    let mut scan_composite = false;
+    if !composite_pk.is_empty() {
+        let any_null = composite_pk
+            .iter()
+            .any(|(idx, _)| matches!(values[*idx], Value::Null));
+        if !any_null {
+            let names: Vec<&str> = composite_pk.iter().map(|(_, n)| *n).collect();
+            match super::helpers::find_equality_index(catalog, table_name, &names) {
+                Some(ix) => {
+                    let key: Vec<Value> =
+                        composite_pk.iter().map(|(i, _)| values[*i].clone()).collect();
+                    let rowids = super::helpers::index_seek_rowids(pager, ix.root_page, &key)?;
+                    if rowids.iter().any(|rid| Some(*rid) != exclude_rowid) {
+                        let names = composite_pk
+                            .iter()
+                            .map(|(_, name)| format!("{table_name}.{name}"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        return Err(Error::Other(format!("UNIQUE constraint failed: {names}")));
+                    }
+                }
+                None => scan_composite = true,
+            }
+        }
+    }
+
+    // Scan fallback — only reached for a constraint whose index is missing.
+    if scan_unique.is_empty() && !scan_composite {
+        return Ok(());
+    }
+
     let mut cursor = BTreeCursor::new(pager, root_page);
     let rows = cursor
         .collect_all()
         .map_err(|e| Error::Other(e.to_string()))?;
 
-    for (col_idx, col_name) in &unique_cols {
+    for (col_idx, col_name) in &scan_unique {
         let new_val = &values[*col_idx];
         if matches!(new_val, Value::Null) {
             continue;
@@ -151,37 +213,27 @@ pub(super) fn check_unique_constraints(
         }
     }
 
-    // Composite-PK tuple check: a row conflicts only when *every* PK
-    // column matches simultaneously. Per SQLite semantics any NULL in
-    // the new tuple disables the conflict (NULLs are distinct under
-    // UNIQUE), matching the behavior of an SQLite composite UNIQUE
-    // index over the same columns.
-    if !composite_pk.is_empty() {
-        let any_null = composite_pk
-            .iter()
-            .any(|(idx, _)| matches!(values[*idx], Value::Null));
-        if !any_null {
-            for row in &rows {
-                if let Some(exclude) = exclude_rowid {
-                    if row.rowid == exclude {
-                        continue;
-                    }
+    if scan_composite {
+        for row in &rows {
+            if let Some(exclude) = exclude_rowid {
+                if row.rowid == exclude {
+                    continue;
                 }
-                let all_match = composite_pk.iter().all(|(idx, _)| {
-                    row.record
-                        .values
-                        .get(*idx)
-                        .map(|existing| compare(existing, &values[*idx]) == 0)
-                        .unwrap_or(false)
-                });
-                if all_match {
-                    let names = composite_pk
-                        .iter()
-                        .map(|(_, name)| format!("{table_name}.{name}"))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    return Err(Error::Other(format!("UNIQUE constraint failed: {names}")));
-                }
+            }
+            let all_match = composite_pk.iter().all(|(idx, _)| {
+                row.record
+                    .values
+                    .get(*idx)
+                    .map(|existing| compare(existing, &values[*idx]) == 0)
+                    .unwrap_or(false)
+            });
+            if all_match {
+                let names = composite_pk
+                    .iter()
+                    .map(|(_, name)| format!("{table_name}.{name}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(Error::Other(format!("UNIQUE constraint failed: {names}")));
             }
         }
     }

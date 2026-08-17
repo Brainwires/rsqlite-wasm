@@ -1,6 +1,6 @@
 use rsqlite_storage::btree::{
     BTreeCursor, btree_create_index, btree_create_table, btree_delete, btree_index_insert,
-    btree_insert, delete_schema_entries, insert_schema_entry,
+    btree_insert, delete_schema_entries, insert_schema_entry, insert_schema_entry_null_sql,
 };
 use rsqlite_storage::codec::{Record, Value};
 use rsqlite_storage::pager::Pager;
@@ -61,7 +61,47 @@ pub(super) fn execute_create_table(
         }
     }
 
+    create_implicit_indexes(&plan.table_name, pager, catalog)?;
+
     Ok(ExecResult::affected(0))
+}
+
+/// Create the implicit `sqlite_autoindex_*` indexes for a freshly-created
+/// table's PRIMARY KEY / UNIQUE constraints. Called at CREATE TABLE time, so
+/// the table is empty and each index starts empty; later writes maintain them
+/// (INSERT/UPDATE/DELETE already fan out to every catalog index). This is what
+/// turns PK/UNIQUE equality lookups into O(log n) index seeks instead of full
+/// table scans. A single INTEGER PRIMARY KEY is the rowid alias and is left
+/// out (it's the table btree's own key); WITHOUT ROWID tables are skipped
+/// (their PK is the table btree itself).
+fn create_implicit_indexes(
+    table_name: &str,
+    pager: &mut Pager,
+    catalog: &mut Catalog,
+) -> Result<()> {
+    let specs = match catalog.get_table(table_name) {
+        Some(t) => crate::catalog::implicit_index_specs(t),
+        None => return Ok(()),
+    };
+    if specs.is_empty() {
+        return Ok(());
+    }
+
+    // The table is empty at CREATE TABLE time, so each index starts empty and
+    // needs no row population. Its columns are re-derived from the table on the
+    // reload below (autoindex rows carry no SQL).
+    for i in 0..specs.len() {
+        let index_name = format!("sqlite_autoindex_{table_name}_{}", i + 1);
+        let root = btree_create_index(pager).map_err(|e| Error::Other(e.to_string()))?;
+        insert_schema_entry_null_sql(pager, "index", &index_name, table_name, root)
+            .map_err(|e| Error::Other(e.to_string()))?;
+    }
+
+    if !pager.in_transaction() {
+        pager.flush()?;
+    }
+    catalog.reload(pager)?;
+    Ok(())
 }
 
 pub(super) fn execute_create_table_as_select(

@@ -1,12 +1,16 @@
-use rsqlite_storage::btree::{BTreeCursor, CursorRow};
+use std::cmp::Ordering;
+
+use rsqlite_storage::btree::{
+    BTreeCursor, CursorRow, IndexCursor, btree_read_row_by_rowid, compare_records_by_prefix,
+};
 use rsqlite_storage::codec::{Record, Value};
 use rsqlite_storage::pager::Pager;
 
-use crate::catalog::Catalog;
+use crate::catalog::{Catalog, IndexDef};
 use crate::error::{Error, Result};
 use crate::eval_helpers::literal_to_value;
-use crate::planner::{ColumnRef, PlanExpr, ProjectionItem, UnaryOp};
-use crate::types::QueryResult;
+use crate::planner::{BinOp, ColumnRef, PlanExpr, ProjectionItem, UnaryOp};
+use crate::types::{QueryResult, Row};
 
 pub(super) fn values_equal(a: &Value, b: &Value) -> bool {
     match (a, b) {
@@ -126,6 +130,198 @@ pub(super) fn row_values_for_rowid(
         }
     }
     vec![Value::Null; table_columns.len()]
+}
+
+/// Find a non-partial index on `table` whose key columns are exactly
+/// `col_names` (same order, case-insensitive) — i.e. an index that can serve
+/// an equality lookup on those columns via a seek. Returns `None` when no such
+/// index exists (the caller then falls back to a full scan).
+pub(super) fn find_equality_index<'a>(
+    catalog: &'a Catalog,
+    table: &str,
+    col_names: &[&str],
+) -> Option<&'a IndexDef> {
+    catalog.indexes.values().find(|ix| {
+        ix.predicate.is_none()
+            && ix.table_name.eq_ignore_ascii_case(table)
+            && ix.columns.len() == col_names.len()
+            && ix
+                .columns
+                .iter()
+                .zip(col_names)
+                .all(|(a, b)| a.eq_ignore_ascii_case(b))
+    })
+}
+
+/// Seek an index by an equality key over its leading columns and return the
+/// rowids of every matching entry (the rowid is the index entry's tail value).
+/// O(log n + matches). Callers must apply NULL semantics themselves — this
+/// returns entries whose key orders equal to `key_values`, and NULL orders
+/// equal to NULL.
+pub(super) fn index_seek_rowids(
+    pager: &mut Pager,
+    index_root: u32,
+    key_values: &[Value],
+) -> Result<Vec<i64>> {
+    let prefix = Record {
+        values: key_values.to_vec(),
+    };
+    let prefix_len = key_values.len();
+    let mut cursor = IndexCursor::new(pager, index_root);
+    let mut rowids = Vec::new();
+    if cursor
+        .seek_at_or_after(&prefix)
+        .map_err(|e| Error::Other(e.to_string()))?
+    {
+        loop {
+            let rec = cursor
+                .current()
+                .map_err(|e| Error::Other(e.to_string()))?;
+            if compare_records_by_prefix(&rec, &prefix, prefix_len) == Ordering::Greater {
+                break;
+            }
+            if let Some(Value::Integer(rid)) = rec.values.last() {
+                rowids.push(*rid);
+            }
+            if !cursor.next().map_err(|e| Error::Other(e.to_string()))? {
+                break;
+            }
+        }
+    }
+    Ok(rowids)
+}
+
+/// Try to satisfy a DELETE/UPDATE `WHERE` clause with an index seek: extract
+/// the top-level `col = <constant>` equalities (AND-conjoined only, so every
+/// matching row must satisfy them), find the index whose longest leading
+/// column-prefix they cover, and return just the rows in that key range as
+/// *candidates*. The caller must still evaluate the full predicate on them —
+/// the seek only narrows the set (it may over-match on a non-covered suffix or
+/// extra conditions), never under-matches. Returns `None` when no equality or
+/// index applies (caller falls back to a full scan), or `Some(vec![])` when a
+/// NULL key makes the equality unsatisfiable.
+pub(super) fn index_candidate_rows(
+    predicate: &PlanExpr,
+    table: &str,
+    table_root: u32,
+    pager: &mut Pager,
+    catalog: &Catalog,
+) -> Result<Option<Vec<CursorRow>>> {
+    let mut eqs: Vec<(String, PlanExpr)> = Vec::new();
+    collect_and_equalities(predicate, &mut eqs);
+    if eqs.is_empty() {
+        return Ok(None);
+    }
+
+    // Pick the index whose longest leading column-prefix is fully covered by
+    // the equalities (a longer prefix is more selective).
+    let mut best: Option<(u32, Vec<PlanExpr>)> = None;
+    for ix in catalog.indexes.values() {
+        if ix.predicate.is_some()
+            || ix.columns.is_empty()
+            || !ix.table_name.eq_ignore_ascii_case(table)
+        {
+            continue;
+        }
+        let mut key_exprs = Vec::new();
+        for c in &ix.columns {
+            match eqs.iter().find(|(n, _)| n.eq_ignore_ascii_case(c)) {
+                Some((_, v)) => key_exprs.push(v.clone()),
+                None => break, // only a leading prefix is seekable
+            }
+        }
+        if !key_exprs.is_empty() {
+            let better = best.as_ref().is_none_or(|(_, k)| key_exprs.len() > k.len());
+            if better {
+                best = Some((ix.root_page, key_exprs));
+            }
+        }
+    }
+    let (index_root, key_exprs) = match best {
+        Some(b) => b,
+        None => return Ok(None),
+    };
+
+    // The extractor only accepted column-free value expressions, so evaluating
+    // against an empty row (params/literals) is safe.
+    let empty = Row::new(vec![]);
+    let mut key_values = Vec::with_capacity(key_exprs.len());
+    for e in &key_exprs {
+        key_values.push(super::eval::eval_expr(e, &empty, &[], pager, catalog)?);
+    }
+    // `col = NULL` is never true in SQL — no rows match.
+    if key_values.iter().any(|v| matches!(v, Value::Null)) {
+        return Ok(Some(Vec::new()));
+    }
+
+    let rowids = index_seek_rowids(pager, index_root, &key_values)?;
+    let mut rows = Vec::with_capacity(rowids.len());
+    for rid in rowids {
+        if let Some(row) = btree_read_row_by_rowid(pager, table_root, rid)
+            .map_err(|e| Error::Other(e.to_string()))?
+        {
+            rows.push(row);
+        }
+    }
+    Ok(Some(rows))
+}
+
+/// Collect the top-level `col = <constant>` equalities from a predicate,
+/// descending only through `AND` (so every matching row must satisfy each one).
+/// `OR`/other operators stop the descent for that branch.
+fn collect_and_equalities(expr: &PlanExpr, out: &mut Vec<(String, PlanExpr)>) {
+    match expr {
+        PlanExpr::BinaryOp {
+            left,
+            op: BinOp::And,
+            right,
+        } => {
+            collect_and_equalities(left, out);
+            collect_and_equalities(right, out);
+        }
+        PlanExpr::BinaryOp {
+            left,
+            op: BinOp::Eq,
+            right,
+        } => {
+            if let Some(pair) = col_eq_constant(left, right) {
+                out.push(pair);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Match `column = <column-free expr>` (either argument order), returning the
+/// lowercased column name and the value expression. Rowid-alias columns are
+/// excluded (served by the rowid point-lookup path, not an index).
+fn col_eq_constant(a: &PlanExpr, b: &PlanExpr) -> Option<(String, PlanExpr)> {
+    fn try_side(col: &PlanExpr, val: &PlanExpr) -> Option<(String, PlanExpr)> {
+        if let PlanExpr::Column(c) = col {
+            if !c.is_rowid_alias && expr_is_column_free(val) {
+                return Some((c.name.to_lowercase(), val.clone()));
+            }
+        }
+        None
+    }
+    try_side(a, b).or_else(|| try_side(b, a))
+}
+
+/// True when `expr` references no row data — only literals, bound params, and
+/// pure functions of those. Such an expression evaluates to the same value for
+/// every row, so it's a safe index-lookup key.
+fn expr_is_column_free(expr: &PlanExpr) -> bool {
+    match expr {
+        PlanExpr::Literal(_) | PlanExpr::Param(_) => true,
+        PlanExpr::UnaryOp { operand, .. } => expr_is_column_free(operand),
+        PlanExpr::BinaryOp { left, right, .. } => {
+            expr_is_column_free(left) && expr_is_column_free(right)
+        }
+        PlanExpr::Cast { expr, .. } | PlanExpr::Collate { expr, .. } => expr_is_column_free(expr),
+        PlanExpr::Function { args, .. } => args.iter().all(expr_is_column_free),
+        // Columns, rowid, subqueries, aggregates, etc. are row-dependent.
+        _ => false,
+    }
 }
 
 /// One position within an index's key tuple. Most indexes are column-only

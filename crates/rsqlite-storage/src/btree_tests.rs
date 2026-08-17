@@ -352,3 +352,328 @@ fn write_and_verify_with_sqlite3() {
 
     let _ = std::fs::remove_file(test_db);
 }
+
+// ── Index / rowid seek primitives (Phase 1) ──
+
+/// Deterministic LCG shuffle so tests exercise real interior-page layouts
+/// without depending on `rand` (and without `Math.random`-style nondeterminism).
+fn lcg_shuffle(items: &mut [i64], mut seed: u64) {
+    for i in (1..items.len()).rev() {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        let j = (seed >> 33) as usize % (i + 1);
+        items.swap(i, j);
+    }
+}
+
+#[test]
+fn index_seek_matches_linear_scan() {
+    let vfs = MemoryVfs::new();
+    let mut pager = Pager::create(&vfs, "test.db").unwrap();
+    let mut root = btree_create_index(&mut pager).unwrap();
+
+    // 800 entries [key, rowid] inserted shuffled → forces multiple b-tree levels.
+    let n = 800i64;
+    let mut order: Vec<i64> = (0..n).collect();
+    lcg_shuffle(&mut order, 12345);
+    for &k in &order {
+        let rec = Record {
+            values: vec![Value::Integer(k), Value::Integer(k + 1000)],
+        };
+        root = btree_index_insert(&mut pager, root, &rec).unwrap();
+    }
+
+    let all = {
+        let mut c = IndexCursor::new(&mut pager, root);
+        c.collect_all().unwrap()
+    };
+    assert_eq!(all.len(), n as usize);
+
+    // Every key is found, at the same first entry a linear scan would return.
+    for k in 0..n {
+        let prefix = Record {
+            values: vec![Value::Integer(k)],
+        };
+        let mut cur = IndexCursor::new(&mut pager, root);
+        assert!(
+            cur.seek_first_with_prefix(&prefix).unwrap(),
+            "seek failed for key {k}"
+        );
+        let rec = cur.current().unwrap();
+        let linear = all
+            .iter()
+            .find(|r| r.values[0] == Value::Integer(k))
+            .unwrap();
+        assert_eq!(rec.values, linear.values, "seek/linear mismatch at {k}");
+    }
+
+    // Keys outside the tree return false (below, above, far above).
+    for k in [-1i64, n, n + 50, 100_000] {
+        let prefix = Record {
+            values: vec![Value::Integer(k)],
+        };
+        let mut cur = IndexCursor::new(&mut pager, root);
+        assert!(
+            !cur.seek_first_with_prefix(&prefix).unwrap(),
+            "unexpected hit for absent key {k}"
+        );
+    }
+}
+
+#[test]
+fn index_seek_duplicate_prefix_is_first_and_iterates() {
+    let vfs = MemoryVfs::new();
+    let mut pager = Pager::create(&vfs, "test.db").unwrap();
+    let mut root = btree_create_index(&mut pager).unwrap();
+
+    // Distinct keys 0..400 (minus 42) plus a 300-entry duplicate group on
+    // key=42, inserted descending so the group is not pre-sorted on the page.
+    let n = 400i64;
+    for k in 0..n {
+        if k == 42 {
+            continue;
+        }
+        let rec = Record {
+            values: vec![Value::Integer(k), Value::Integer(k)],
+        };
+        root = btree_index_insert(&mut pager, root, &rec).unwrap();
+    }
+    let dup_rowids: Vec<i64> = (0..300).collect();
+    for &r in dup_rowids.iter().rev() {
+        let rec = Record {
+            values: vec![Value::Integer(42), Value::Integer(r)],
+        };
+        root = btree_index_insert(&mut pager, root, &rec).unwrap();
+    }
+
+    let prefix = Record {
+        values: vec![Value::Integer(42)],
+    };
+    let mut cur = IndexCursor::new(&mut pager, root);
+    assert!(cur.seek_first_with_prefix(&prefix).unwrap());
+    // First hit is the smallest-rowid duplicate.
+    assert_eq!(cur.current().unwrap().values[1], Value::Integer(0));
+
+    let mut seen = Vec::new();
+    loop {
+        let rec = cur.current().unwrap();
+        if compare_records_by_prefix(&rec, &prefix, 1) != std::cmp::Ordering::Equal {
+            break;
+        }
+        if let Value::Integer(r) = rec.values[1] {
+            seen.push(r);
+        }
+        if !cur.next().unwrap() {
+            break;
+        }
+    }
+    assert_eq!(seen, dup_rowids, "must iterate every duplicate exactly once");
+}
+
+#[test]
+fn table_rowid_seek_matches_linear() {
+    let vfs = MemoryVfs::new();
+    let mut pager = Pager::create(&vfs, "test.db").unwrap();
+    let mut root = btree_create_table(&mut pager).unwrap();
+
+    let n = 1000i64;
+    let mut order: Vec<i64> = (1..=n).collect();
+    lcg_shuffle(&mut order, 987654321);
+    for &rid in &order {
+        let rec = Record {
+            values: vec![Value::Text(format!("row{rid}")), Value::Integer(rid * 7)],
+        };
+        root = btree_insert(&mut pager, root, rid, &rec).unwrap();
+    }
+
+    for rid in 1..=n {
+        let row = btree_read_row_by_rowid(&mut pager, root, rid)
+            .unwrap()
+            .unwrap_or_else(|| panic!("missing rowid {rid}"));
+        assert_eq!(row.rowid, rid);
+        assert_eq!(row.record.values[0], Value::Text(format!("row{rid}")));
+        assert_eq!(row.record.values[1], Value::Integer(rid * 7));
+    }
+
+    for rid in [0i64, n + 1, n + 999] {
+        assert!(
+            btree_read_row_by_rowid(&mut pager, root, rid)
+                .unwrap()
+                .is_none(),
+            "unexpected row for absent rowid {rid}"
+        );
+    }
+}
+
+// ── In-place deletes (Phase: write path) ──
+
+#[test]
+fn table_inplace_delete_keeps_survivors() {
+    let vfs = MemoryVfs::new();
+    let mut pager = Pager::create(&vfs, "test.db").unwrap();
+    let mut root = btree_create_table(&mut pager).unwrap();
+
+    let n = 1200i64;
+    for rid in 1..=n {
+        let rec = Record {
+            values: vec![Value::Text(format!("v{rid}"))],
+        };
+        root = btree_insert(&mut pager, root, rid, &rec).unwrap();
+    }
+
+    // Delete a scattered ~1/3 of the rows, one at a time (in-place).
+    let mut deleted = std::collections::HashSet::new();
+    let mut order: Vec<i64> = (1..=n).collect();
+    lcg_shuffle(&mut order, 2024);
+    for &rid in order.iter().take((n / 3) as usize) {
+        btree_delete(&mut pager, root, rid).unwrap();
+        deleted.insert(rid);
+    }
+
+    // collect_all returns exactly the survivors, in rowid order, values intact.
+    let rows = {
+        let mut c = BTreeCursor::new(&mut pager, root);
+        c.collect_all().unwrap()
+    };
+    let survivors: Vec<i64> = (1..=n).filter(|r| !deleted.contains(r)).collect();
+    assert_eq!(rows.len(), survivors.len(), "survivor count");
+    for (row, &rid) in rows.iter().zip(&survivors) {
+        assert_eq!(row.rowid, rid);
+        assert_eq!(row.record.values[0], Value::Text(format!("v{rid}")));
+    }
+
+    // Point lookups: survivors found, deleted gone.
+    for rid in 1..=n {
+        let got = btree_read_row_by_rowid(&mut pager, root, rid).unwrap();
+        assert_eq!(
+            got.is_some(),
+            !deleted.contains(&rid),
+            "rowid {rid} presence"
+        );
+    }
+}
+
+#[test]
+fn index_inplace_delete_keeps_survivors() {
+    let vfs = MemoryVfs::new();
+    let mut pager = Pager::create(&vfs, "test.db").unwrap();
+    let mut root = btree_create_index(&mut pager).unwrap();
+
+    let n = 900i64;
+    let mut order: Vec<i64> = (0..n).collect();
+    lcg_shuffle(&mut order, 55);
+    for &k in &order {
+        let rec = Record {
+            values: vec![Value::Integer(k), Value::Integer(k)],
+        };
+        root = btree_index_insert(&mut pager, root, &rec).unwrap();
+    }
+
+    // Delete ~half the keys in place.
+    let mut deleted = std::collections::HashSet::new();
+    for &k in order.iter().take((n / 2) as usize) {
+        let key = Record {
+            values: vec![Value::Integer(k), Value::Integer(k)],
+        };
+        btree_index_delete(&mut pager, root, &key).unwrap();
+        deleted.insert(k);
+    }
+
+    // Seeks find survivors and miss deleted keys.
+    for k in 0..n {
+        let prefix = Record {
+            values: vec![Value::Integer(k)],
+        };
+        let mut cur = IndexCursor::new(&mut pager, root);
+        let found = cur.seek_first_with_prefix(&prefix).unwrap();
+        assert_eq!(found, !deleted.contains(&k), "key {k} presence via seek");
+    }
+
+    // Full scan yields exactly the survivors.
+    let remaining = {
+        let mut c = IndexCursor::new(&mut pager, root);
+        c.collect_all().unwrap()
+    };
+    assert_eq!(remaining.len(), (n - deleted.len() as i64) as usize);
+}
+
+#[test]
+fn inplace_delete_all_then_reinsert() {
+    let vfs = MemoryVfs::new();
+    let mut pager = Pager::create(&vfs, "test.db").unwrap();
+    let mut root = btree_create_table(&mut pager).unwrap();
+
+    let n = 500i64;
+    for rid in 1..=n {
+        let rec = Record {
+            values: vec![Value::Integer(rid)],
+        };
+        root = btree_insert(&mut pager, root, rid, &rec).unwrap();
+    }
+    let all: Vec<i64> = (1..=n).collect();
+    btree_delete_many(&mut pager, root, &all).unwrap();
+
+    let rows = {
+        let mut c = BTreeCursor::new(&mut pager, root);
+        c.collect_all().unwrap()
+    };
+    assert_eq!(rows.len(), 0, "table empty after deleting everything");
+
+    // Re-insert into the (now sparse/empty) tree works and reads back.
+    for rid in 1..=n {
+        let rec = Record {
+            values: vec![Value::Integer(rid * 2)],
+        };
+        root = btree_insert(&mut pager, root, rid, &rec).unwrap();
+    }
+    for rid in 1..=n {
+        let row = btree_read_row_by_rowid(&mut pager, root, rid)
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.record.values[0], Value::Integer(rid * 2));
+    }
+}
+
+#[test]
+fn max_rowid_robust_after_deleting_highest() {
+    // Deleting the highest rowid may empty the rightmost leaf; btree_max_rowid
+    // must not fall back to 0 and let a re-insert collide with a live rowid.
+    let vfs = MemoryVfs::new();
+    let mut pager = Pager::create(&vfs, "test.db").unwrap();
+    let mut root = btree_create_table(&mut pager).unwrap();
+
+    let n = 1000i64;
+    for rid in 1..=n {
+        let rec = Record {
+            values: vec![Value::Integer(rid)],
+        };
+        root = btree_insert(&mut pager, root, rid, &rec).unwrap();
+    }
+    // Delete the top 50 rowids one at a time.
+    for rid in (n - 49..=n).rev() {
+        btree_delete(&mut pager, root, rid).unwrap();
+    }
+    // Next rowid must be strictly greater than every surviving rowid (n-50).
+    let next = btree_max_rowid(&mut pager, root).unwrap() + 1;
+    assert!(
+        next > n - 50,
+        "next rowid {next} must exceed the surviving max {}",
+        n - 50
+    );
+    // And inserting at `next` must not overwrite a survivor.
+    let rec = Record {
+        values: vec![Value::Integer(9999)],
+    };
+    root = btree_insert(&mut pager, root, next, &rec).unwrap();
+    let survivors = {
+        let mut c = BTreeCursor::new(&mut pager, root);
+        c.collect_all().unwrap()
+    };
+    // (n - 50) survivors + 1 new row, all distinct rowids.
+    assert_eq!(survivors.len(), (n - 50 + 1) as usize);
+    let mut ids: Vec<i64> = survivors.iter().map(|r| r.rowid).collect();
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len(), (n - 50 + 1) as usize, "no rowid collision");
+}

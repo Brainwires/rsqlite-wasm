@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.1.4
+
+Real B-tree index seeks and in-place row deletion — turning PRIMARY KEY / UNIQUE
+lookups and single-row deletes from O(rows) into O(log n). Before this, every
+read materialized the whole b-tree and linear-filtered, and every delete rebuilt
+the entire tree; a point lookup on a 5 000-row table took ~8 ms and scaled
+linearly. Now both are flat and competitive with Deno KV. The whole family
+(`rsqlite-parser`, `rsqlite-wasm-vfs`, `rsqlite-storage`, `rsqlite-core`,
+`rsqlite-wasm`) moves to 0.1.4 together.
+
+### New features
+
+- **Index-cursor seeks** (`rsqlite-storage`): `IndexCursor::seek_at_or_after` /
+  `seek_first_with_prefix` now descend the b-tree instead of scanning, and a new
+  `btree_read_row_by_rowid` fetches a single table row by a rowid descent.
+- **Implicit PK/UNIQUE indexes** (`rsqlite-core`): `CREATE TABLE` now emits
+  SQLite-style `sqlite_autoindex_*` indexes for non-integer PRIMARY KEY and
+  UNIQUE columns, so the planner turns `WHERE key = ?` into an index `SEARCH`.
+  The SQL-less autoindex rows are re-derived from the table on load (matching
+  SQLite's on-disk format — real `sqlite3` reads the files unchanged).
+- **Seek-backed reads and constraint checks**: index equality/range scans, the
+  UNIQUE-constraint check, and index-narrowed `DELETE` / `UPDATE` `WHERE col = ?`
+  now seek rather than scan.
+- **In-place deletes** (`rsqlite-storage`): `btree_delete` / `btree_delete_many`
+  and the index deletes remove a single cell by rewriting only its leaf page
+  (O(log n)) instead of rebuilding the whole tree. Trees may grow sparse
+  (deletes don't rebalance), which real `sqlite3` `PRAGMA integrity_check`
+  accepts as `ok`; `btree_max_rowid` is hardened against an emptied rightmost
+  leaf so re-inserted rowids never collide.
+
 ## 0.1.3
 
 Adds `PRAGMA synchronous`, letting callers trade fsync-per-commit durability for

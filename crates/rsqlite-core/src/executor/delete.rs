@@ -35,10 +35,28 @@ pub(super) fn execute_delete(
 
     let column_names: Vec<String> = plan.table_columns.iter().map(|c| c.name.clone()).collect();
 
-    let mut cursor = BTreeCursor::new(pager, plan.root_page);
-    let btree_rows = cursor
-        .collect_all()
-        .map_err(|e| Error::Other(e.to_string()))?;
+    // Narrow the candidate rows to an index key range when the WHERE clause has
+    // a usable `col = ?` equality; otherwise scan the whole table. Either way
+    // the full predicate is re-evaluated below, so this only affects speed.
+    let btree_rows = match plan.predicate.as_ref().map(|pred| {
+        super::helpers::index_candidate_rows(pred, &plan.table_name, plan.root_page, pager, catalog)
+    }) {
+        Some(result) => match result? {
+            Some(rows) => rows,
+            None => {
+                let mut cursor = BTreeCursor::new(pager, plan.root_page);
+                cursor
+                    .collect_all()
+                    .map_err(|e| Error::Other(e.to_string()))?
+            }
+        },
+        None => {
+            let mut cursor = BTreeCursor::new(pager, plan.root_page);
+            cursor
+                .collect_all()
+                .map_err(|e| Error::Other(e.to_string()))?
+        }
+    };
 
     let mut to_delete: Vec<i64> = Vec::new();
     // Track per-rowid sort keys for LIMIT/ORDER BY ordering.

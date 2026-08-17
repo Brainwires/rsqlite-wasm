@@ -57,10 +57,35 @@ pub(super) fn execute_update(
 
     let column_names: Vec<String> = plan.table_columns.iter().map(|c| c.name.clone()).collect();
 
-    let mut cursor = BTreeCursor::new(pager, plan.root_page);
-    let btree_rows = cursor
-        .collect_all()
-        .map_err(|e| Error::Other(e.to_string()))?;
+    // Narrow to an index key range when the WHERE clause has a usable
+    // `col = ?` equality (single-table UPDATE only — a FROM join makes column
+    // references ambiguous). The full predicate is re-evaluated per row below,
+    // so this only affects speed. UPDATE FROM always scans.
+    let candidate_rows = if plan.from.is_none() {
+        match plan.predicate.as_ref().map(|pred| {
+            super::helpers::index_candidate_rows(
+                pred,
+                &plan.table_name,
+                plan.root_page,
+                pager,
+                catalog,
+            )
+        }) {
+            Some(result) => result?,
+            None => None,
+        }
+    } else {
+        None
+    };
+    let btree_rows = match candidate_rows {
+        Some(rows) => rows,
+        None => {
+            let mut cursor = BTreeCursor::new(pager, plan.root_page);
+            cursor
+                .collect_all()
+                .map_err(|e| Error::Other(e.to_string()))?
+        }
+    };
 
     // For UPDATE FROM, snapshot the FROM table rows once.
     let from_rows: Vec<Vec<Value>> = if let Some(from) = &plan.from {

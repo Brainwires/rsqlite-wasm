@@ -282,6 +282,187 @@ fn explain_virtual_table_scan() {
     );
 }
 
+// ───────── implicit PK/UNIQUE indexes: seek instead of scan ─────────
+
+#[test]
+fn text_pk_lookup_uses_index_search_not_scan() {
+    // The cache table shape: a TEXT PRIMARY KEY. Its implicit autoindex must
+    // turn `WHERE key = ?` into an index SEARCH, not a full-table SCAN.
+    let mut db = mem_db();
+    db.execute("CREATE TABLE cache (key TEXT PRIMARY KEY, val TEXT)")
+        .unwrap();
+    for i in 0..50 {
+        db.execute(&format!("INSERT INTO cache VALUES ('k{i}', 'v{i}')"))
+            .unwrap();
+    }
+
+    let details = plan_details(
+        &db.query("EXPLAIN QUERY PLAN SELECT val FROM cache WHERE key = 'k7'")
+            .unwrap(),
+    );
+    assert!(
+        details.iter().any(|d| d.contains("SEARCH") && d.contains("USING INDEX")),
+        "expected an index SEARCH for a TEXT PK lookup, got: {details:?}"
+    );
+    assert!(
+        !details.iter().any(|d| d.contains("SCAN TABLE cache")),
+        "TEXT PK lookup must not fall back to a table scan: {details:?}"
+    );
+}
+
+#[test]
+fn text_pk_lookup_returns_correct_rows_at_scale() {
+    // Correctness of the seek path against a table large enough to span
+    // multiple index/table b-tree pages.
+    let mut db = mem_db();
+    db.execute("CREATE TABLE cache (key TEXT PRIMARY KEY, val TEXT)")
+        .unwrap();
+    let n = 2000;
+    for i in 0..n {
+        db.execute(&format!("INSERT INTO cache VALUES ('k{i:05}', 'v{i}')"))
+            .unwrap();
+    }
+
+    // Every key resolves to exactly its row via the index seek.
+    for i in [0, 1, 42, 999, 1000, n - 1] {
+        let r = db
+            .query_with_params(
+                "SELECT val FROM cache WHERE key = ?",
+                vec![Value::Text(format!("k{i:05}"))],
+            )
+            .unwrap();
+        assert_eq!(r.rows.len(), 1, "one row for k{i:05}");
+        assert_eq!(r.rows[0].values[0], Value::Text(format!("v{i}")));
+    }
+
+    // A missing key yields nothing.
+    let r = db
+        .query_with_params(
+            "SELECT val FROM cache WHERE key = ?",
+            vec![Value::Text("nope".into())],
+        )
+        .unwrap();
+    assert_eq!(r.rows.len(), 0);
+}
+
+#[test]
+fn text_pk_delete_and_replace_keep_index_consistent() {
+    // DELETE ... WHERE key = ? and INSERT OR REPLACE must keep the autoindex
+    // consistent — a stale index entry would resurrect or hide rows.
+    let mut db = mem_db();
+    db.execute("CREATE TABLE cache (key TEXT PRIMARY KEY, val TEXT)")
+        .unwrap();
+    for i in 0..100 {
+        db.execute(&format!("INSERT INTO cache VALUES ('k{i}', 'v{i}')"))
+            .unwrap();
+    }
+
+    db.execute("DELETE FROM cache WHERE key = 'k50'").unwrap();
+    let r = db.query("SELECT val FROM cache WHERE key = 'k50'").unwrap();
+    assert_eq!(r.rows.len(), 0, "deleted key must not be found via the index");
+
+    db.execute("INSERT OR REPLACE INTO cache VALUES ('k51', 'replaced')")
+        .unwrap();
+    let r = db.query("SELECT val FROM cache WHERE key = 'k51'").unwrap();
+    assert_eq!(r.rows.len(), 1);
+    assert_eq!(r.rows[0].values[0], Value::Text("replaced".into()));
+
+    // Total row count is intact (one deleted, one replaced-in-place).
+    let r = db.query("SELECT COUNT(*) FROM cache").unwrap();
+    assert_eq!(r.rows[0].values[0], Value::Integer(99));
+}
+
+#[test]
+fn delete_uses_index_candidates_correctly() {
+    // The candidate narrowing must never drop a row the full predicate matches,
+    // across: composite-PK prefix seek, a partially-indexed compound WHERE
+    // (scan fallback on the non-leading columns), and an OR (no extraction).
+    let mut db = mem_db();
+    db.execute("CREATE TABLE tags (tag TEXT NOT NULL, ns TEXT NOT NULL, key TEXT NOT NULL, PRIMARY KEY (tag, ns, key))")
+        .unwrap();
+    for t in 0..20 {
+        for k in 0..5 {
+            db.execute(&format!(
+                "INSERT INTO tags VALUES ('t{t}', 'data', 'k{k}')"
+            ))
+            .unwrap();
+        }
+    }
+    assert_eq!(
+        db.query("SELECT COUNT(*) FROM tags").unwrap().rows[0].values[0],
+        Value::Integer(100)
+    );
+
+    // Composite-PK prefix seek: DELETE ... WHERE tag = ? removes exactly that
+    // tag's 5 rows (tag is the leading PK column).
+    db.execute("DELETE FROM tags WHERE tag = 't3'").unwrap();
+    assert_eq!(
+        db.query("SELECT COUNT(*) FROM tags WHERE tag = 't3'").unwrap().rows[0].values[0],
+        Value::Integer(0)
+    );
+    assert_eq!(
+        db.query("SELECT COUNT(*) FROM tags").unwrap().rows[0].values[0],
+        Value::Integer(95)
+    );
+
+    // Full-tuple equality: removes one row.
+    db.execute("DELETE FROM tags WHERE tag = 't4' AND ns = 'data' AND key = 'k2'")
+        .unwrap();
+    assert_eq!(
+        db.query("SELECT COUNT(*) FROM tags").unwrap().rows[0].values[0],
+        Value::Integer(94)
+    );
+
+    // Non-leading compound (ns + key, no leading tag): must fall back to a scan
+    // and still delete every matching row across all tags.
+    db.execute("DELETE FROM tags WHERE ns = 'data' AND key = 'k0'")
+        .unwrap();
+    assert_eq!(
+        db.query("SELECT COUNT(*) FROM tags WHERE key = 'k0'").unwrap().rows[0].values[0],
+        Value::Integer(0)
+    );
+
+    // OR predicate: no equality extraction → scan; both arms honored.
+    let before = db.query("SELECT COUNT(*) FROM tags").unwrap().rows[0].values[0].clone();
+    db.execute("DELETE FROM tags WHERE tag = 't5' OR key = 'k1'")
+        .unwrap();
+    let after = db.query("SELECT COUNT(*) FROM tags").unwrap().rows[0].values[0].clone();
+    assert!(
+        matches!((&before, &after), (Value::Integer(b), Value::Integer(a)) if a < b),
+        "OR delete should remove rows: {before:?} -> {after:?}"
+    );
+    assert_eq!(
+        db.query("SELECT COUNT(*) FROM tags WHERE tag = 't5' OR key = 'k1'").unwrap().rows[0]
+            .values[0],
+        Value::Integer(0),
+        "no row matching either arm should survive"
+    );
+}
+
+#[test]
+fn unique_column_lookup_uses_index_search() {
+    let mut db = mem_db();
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, email TEXT UNIQUE)")
+        .unwrap();
+    for i in 0..30 {
+        db.execute(&format!("INSERT INTO t VALUES ({i}, 'u{i}@x.io')"))
+            .unwrap();
+    }
+    let details = plan_details(
+        &db.query("EXPLAIN QUERY PLAN SELECT id FROM t WHERE email = 'u5@x.io'")
+            .unwrap(),
+    );
+    assert!(
+        details.iter().any(|d| d.contains("SEARCH") && d.contains("USING INDEX")),
+        "expected an index SEARCH for a UNIQUE column lookup, got: {details:?}"
+    );
+    let r = db
+        .query("SELECT id FROM t WHERE email = 'u5@x.io'")
+        .unwrap();
+    assert_eq!(r.rows.len(), 1);
+    assert_eq!(r.rows[0].values[0], Value::Integer(5));
+}
+
 #[test]
 fn explain_union_compound() {
     let mut db = mem_db();
