@@ -14,7 +14,7 @@ env:
 jobs:
   rust:
     name: Rust workspace
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(startsWith(github.event_name, 'pull_request') && '"ubuntu-latest"' || (startsWith(vars.RUNNER_LINUX_X64, '[') && vars.RUNNER_LINUX_X64 || format('"{0}"', vars.RUNNER_LINUX_X64 || 'ubuntu-latest'))) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -44,6 +44,7 @@ jobs:
 
   wasm-tests:
     name: WASM-target unit tests
+    # Stays on GitHub-hosted: headless Chrome/chromedriver for wasm-pack test (no Chrome on the self-hosted pool).
     runs-on: ubuntu-latest
     needs: rust
     steps:
@@ -70,7 +71,7 @@ jobs:
 
   coverage-rust:
     name: Rust coverage
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(startsWith(github.event_name, 'pull_request') && '"ubuntu-latest"' || (startsWith(vars.RUNNER_LINUX_X64, '[') && vars.RUNNER_LINUX_X64 || format('"{0}"', vars.RUNNER_LINUX_X64 || 'ubuntu-latest'))) }}
     needs: rust
     steps:
       - uses: actions/checkout@v4
@@ -113,7 +114,7 @@ jobs:
 
   js:
     name: JS package
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(startsWith(github.event_name, 'pull_request') && '"ubuntu-latest"' || (startsWith(vars.RUNNER_LINUX_X64, '[') && vars.RUNNER_LINUX_X64 || format('"{0}"', vars.RUNNER_LINUX_X64 || 'ubuntu-latest'))) }}
     needs: rust
     steps:
       - uses: actions/checkout@v4
